@@ -42,6 +42,7 @@ final class ClipboardBridge: NSObject, ObservableObject {
     private let wireReassembler = ClipboardWireReassembler()
     private var writeQueue: [Data] = []
     private var writeInFlight = false
+    private var pendingContent: ClipboardContent?
 
     func start() {
         _ = central
@@ -56,48 +57,144 @@ final class ClipboardBridge: NSObject, ObservableObject {
         do {
             let pasteboard = UIPasteboard.general
             let content: ClipboardContent
+
             if let text = pasteboard.string, !text.isEmpty {
                 content = try ClipboardProtocol.text(text)
             } else if let image = pasteboard.image, let png = image.pngData() {
-                try ensureSafeImageDimensions(width: Int(image.size.width * image.scale),
-                                              height: Int(image.size.height * image.scale))
+                try ensureSafeImageDimensions(
+                    width: Int(image.size.width * image.scale),
+                    height: Int(image.size.height * image.scale))
                 content = try ClipboardProtocol.image(.png, png)
             } else {
                 status = "텍스트 또는 이미지만 지원합니다."
                 return
             }
 
+            try sendOrQueue(content)
+        } catch {
+            status = "클립보드 전송 준비 실패: \(error.localizedDescription)"
+        }
+    }
+
+    func sendPendingShareIfPresent() {
+        guard let (envelope, imageData) = SharedPayloadStore.consume() else {
+            return
+        }
+
+        do {
+            let content: ClipboardContent
+
+            switch envelope.kind {
+            case .text:
+                guard let text = envelope.text, !text.isEmpty else {
+                    throw ClipboardProtocol.ProtocolError.invalidContent
+                }
+                content = try ClipboardProtocol.text(text)
+
+            case .image:
+                guard let imageData else {
+                    throw ClipboardProtocol.ProtocolError.invalidContent
+                }
+
+                try ensureSafeImageDimensions(imageData)
+                guard let image = UIImage(data: imageData),
+                      let png = image.pngData() else {
+                    throw ClipboardProtocol.ProtocolError.invalidContent
+                }
+
+                try ensureSafeImageDimensions(
+                    width: Int(image.size.width * image.scale),
+                    height: Int(image.size.height * image.scale))
+                content = try ClipboardProtocol.image(.png, png)
+            }
+
+            try sendOrQueue(content)
+        } catch {
+            status = "공유 내용 전송 준비 실패: \(error.localizedDescription)"
+        }
+    }
+
+    private func sendOrQueue(_ content: ClipboardContent) throws {
+        if let p2p, p2p.ready {
+            p2p.send(frames: try ClipboardProtocol.encode(content))
+            return
+        }
+
+        let bleAllowed =
+            content.kind == .text ||
+            content.data.count <= 512 * 1024
+
+        if bleAllowed,
+           let peripheral,
+           rx != nil,
+           credential != nil {
+            try enqueueBle(content, peripheral: peripheral)
+            return
+        }
+
+        pendingContent = content
+
+        if !bleAllowed {
+            status = "큰 이미지 전송을 위해 P2P 고속 연결이 필요합니다."
+
+            if fastLinkAvailable {
+                connectFastLink()
+            } else if let peripheral,
+                      let characteristic = directLinkCharacteristic {
+                pendingFastLinkConnect = true
+                peripheral.readValue(for: characteristic)
+            } else {
+                start()
+            }
+        } else {
+            status = "PC 연결 후 Clipboard 전송 대기"
+            start()
+        }
+    }
+
+    private func flushPendingContent() {
+        guard let content = pendingContent else { return }
+
+        do {
             if let p2p, p2p.ready {
+                pendingContent = nil
                 p2p.send(frames: try ClipboardProtocol.encode(content))
                 return
             }
 
-            guard let peripheral, rx != nil else {
-                status = "PC Clipboard BLE 연결이 없습니다."
-                return
-            }
+            let bleAllowed =
+                content.kind == .text ||
+                content.data.count <= 512 * 1024
 
-            if content.kind != .text && content.data.count > 512 * 1024 {
-                status = fastLinkAvailable
-                    ? "이미지가 커서 P2P 고속 연결이 필요합니다."
-                    : "512 KiB 초과 이미지는 P2P 고속 연결 후 전송해 주세요."
-                return
+            if bleAllowed,
+               let peripheral,
+               rx != nil,
+               credential != nil {
+                pendingContent = nil
+                try enqueueBle(content, peripheral: peripheral)
             }
-
-            let maxWrite = peripheral.maximumWriteValueLength(for: .withResponse)
-            let frames = try ClipboardProtocol.encode(content, chunkSize: 16 * 1024)
-            for frame in frames {
-                let transferId = UInt32.random(in: UInt32.min...UInt32.max)
-                writeQueue.append(contentsOf: try ClipboardProtocol.splitBle(
-                    frame,
-                    maxGattValue: maxWrite,
-                    transferId: transferId
-                ))
-            }
-            writeNext()
         } catch {
-            status = "클립보드 전송 준비 실패: \(error.localizedDescription)"
+            status = "대기 중 Clipboard 전송 실패: \(error.localizedDescription)"
         }
+    }
+
+    private func enqueueBle(
+        _ content: ClipboardContent,
+        peripheral: CBPeripheral
+    ) throws {
+        let maxWrite = peripheral.maximumWriteValueLength(for: .withResponse)
+        let frames = try ClipboardProtocol.encode(content, chunkSize: 16 * 1024)
+
+        for frame in frames {
+            let transferId = UInt32.random(in: UInt32.min...UInt32.max)
+            writeQueue.append(contentsOf: try ClipboardProtocol.splitBle(
+                frame,
+                maxGattValue: maxWrite,
+                transferId: transferId
+            ))
+        }
+
+        writeNext()
     }
 
     func connectFastLink() {
@@ -191,6 +288,11 @@ final class ClipboardBridge: NSObject, ObservableObject {
             onStatus: { [weak self] text in
                 DispatchQueue.main.async {
                     self?.status = text
+                }
+            },
+            onReady: { [weak self] in
+                DispatchQueue.main.async {
+                    self?.flushPendingContent()
                 }
             }
         )
@@ -480,6 +582,7 @@ extension ClipboardBridge: CBPeripheralDelegate {
             if value.count == 64 {
                 credential = value
                 status = "BLE Clipboard 연결됨 · 동일 Wi-Fi 불필요"
+                flushPendingContent()
                 if let directLinkCharacteristic {
                     peripheral.readValue(for: directLinkCharacteristic)
                 }
