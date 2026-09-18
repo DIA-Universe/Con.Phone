@@ -1,15 +1,18 @@
 import Foundation
 import Combine
 import CoreBluetooth
+import NetworkExtension
 import UIKit
 
 final class ClipboardBridge: NSObject, ObservableObject {
     @Published var status = "대기 중"
+    @Published var fastLinkAvailable = false
 
     private let serviceUUID = CBUUID(string: "67A7F001-7E5B-4A2E-9B8B-1C9A5B6D1001")
     private let txUUID = CBUUID(string: "67A7F002-7E5B-4A2E-9B8B-1C9A5B6D1001")
     private let rxUUID = CBUUID(string: "67A7F003-7E5B-4A2E-9B8B-1C9A5B6D1001")
     private let secretUUID = CBUUID(string: "67A7F004-7E5B-4A2E-9B8B-1C9A5B6D1001")
+    private let directLinkUUID = CBUUID(string: "67A7F006-7E5B-4A2E-9B8B-1C9A5B6D1001")
 
     private lazy var central = CBCentralManager(
         delegate: self,
@@ -20,7 +23,17 @@ final class ClipboardBridge: NSObject, ObservableObject {
     private var peripheral: CBPeripheral?
     private var tx: CBCharacteristic?
     private var rx: CBCharacteristic?
+    private var directLinkCharacteristic: CBCharacteristic?
     private var credential: Data?
+    private var directConfig: DirectConfig?
+    private var lan: LanClipboardChannel?
+    private var directHostRefreshAttempt = 0
+
+    private struct DirectConfig {
+        let ssid: String
+        let passphrase: String
+        let hostAddress: String?
+    }
 
     private let bleReassembler = BleReassembler()
     private let wireReassembler = ClipboardWireReassembler()
@@ -37,11 +50,6 @@ final class ClipboardBridge: NSObject, ObservableObject {
     }
 
     func sendPasteboard() {
-        guard let peripheral, let rx else {
-            status = "PC Clipboard BLE 연결이 없습니다."
-            return
-        }
-
         do {
             let pasteboard = UIPasteboard.general
             let content: ClipboardContent
@@ -54,8 +62,22 @@ final class ClipboardBridge: NSObject, ObservableObject {
                 return
             }
 
+            if let lan, lan.ready {
+                lan.send(frames: try ClipboardProtocol.encode(content))
+                return
+            }
+
+            guard let peripheral, let rx else {
+                status = fastLinkAvailable
+                    ? "BLE 연결이 없습니다. P2P 고속 연결을 다시 확인해 주세요."
+                    : "PC Clipboard BLE 연결이 없습니다."
+                return
+            }
+
             if content.kind != .text && content.data.count > 512 * 1024 {
-                status = "512 KiB 초과 이미지는 iOS LAN/P2P 승격 구현 후 고속 전송합니다."
+                status = fastLinkAvailable
+                    ? "이미지가 커서 BLE 대신 P2P 고속 연결이 필요합니다."
+                    : "512 KiB 초과 이미지는 P2P 고속 연결 후 전송해 주세요."
                 return
             }
 
@@ -73,6 +95,138 @@ final class ClipboardBridge: NSObject, ObservableObject {
         } catch {
             status = "클립보드 전송 준비 실패: \(error.localizedDescription)"
         }
+    }
+
+    func connectFastLink() {
+        guard let config = directConfig else {
+            status = "Windows P2P 고속 링크 정보가 아직 없습니다."
+            return
+        }
+
+        let hotspot = NEHotspotConfiguration(
+            ssid: config.ssid,
+            passphrase: config.passphrase,
+            isWEP: false
+        )
+        hotspot.joinOnce = true
+        status = "P2P Wi-Fi 연결 승인 대기"
+
+        NEHotspotConfigurationManager.shared.apply(hotspot) { [weak self] error in
+            DispatchQueue.main.async {
+                guard let self else { return }
+
+                if let error {
+                    let nsError = error as NSError
+                    if nsError.code != NEHotspotConfigurationError.alreadyAssociated.rawValue {
+                        self.status = "P2P Wi-Fi 연결 실패/거부: \(error.localizedDescription)"
+                        return
+                    }
+                }
+
+                self.status = "P2P Wi-Fi 연결됨 · Windows 주소 확인 중"
+                self.directHostRefreshAttempt = 0
+                self.refreshDirectHost()
+            }
+        }
+    }
+
+    private func refreshDirectHost() {
+        guard directHostRefreshAttempt < 8 else {
+            status = "P2P Windows 주소 확인 실패 · BLE fallback 유지"
+            return
+        }
+        directHostRefreshAttempt += 1
+
+        guard let peripheral, let characteristic = directLinkCharacteristic else {
+            status = "P2P 설정 BLE 연결이 없습니다."
+            return
+        }
+
+        peripheral.readValue(for: characteristic)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { [weak self] in
+            guard let self, self.lan?.ready != true else { return }
+            if self.directConfig?.hostAddress == nil {
+                self.refreshDirectHost()
+            } else {
+                self.startLanFastPath()
+            }
+        }
+    }
+
+    private func startLanFastPath() {
+        guard lan?.ready != true,
+              let config = directConfig,
+              let host = config.hostAddress,
+              let credential,
+              credential.count == 64 else { return }
+
+        let deviceHash = credential.subdata(in: 0..<32)
+        let secret = credential.subdata(in: 32..<64)
+
+        lan?.close()
+        let channel = LanClipboardChannel(
+            host: host,
+            port: 47911,
+            deviceHash: deviceHash,
+            secret: secret,
+            onFrame: { [weak self] frame in
+                DispatchQueue.main.async {
+                    self?.receiveLan(frame)
+                }
+            },
+            onStatus: { [weak self] text in
+                DispatchQueue.main.async {
+                    self?.status = text
+                }
+            }
+        )
+        lan = channel
+        channel.start()
+    }
+
+    private func receiveLan(_ frame: Data) {
+        do {
+            let chunk = try ClipboardProtocol.decode(frame)
+            guard let content = try wireReassembler.add(chunk) else { return }
+            apply(content)
+        } catch {
+            status = "P2P Clipboard 수신 거부: \(error.localizedDescription)"
+        }
+    }
+
+    private func parseDirectConfig(_ value: Data) -> DirectConfig? {
+        guard value.count >= 4, value[0] == 2 else { return nil }
+        let ssidLength = Int(value[1])
+        let passLength = Int(value[2])
+        let hostLength = Int(value[3])
+        guard ssidLength >= 1, ssidLength <= 32,
+              passLength >= 8, passLength <= 63,
+              hostLength <= 45,
+              value.count == 4 + ssidLength + passLength + hostLength else {
+            return nil
+        }
+
+        let ssidStart = 4
+        let passStart = ssidStart + ssidLength
+        let hostStart = passStart + passLength
+        guard let ssid = String(
+                data: value.subdata(in: ssidStart..<passStart),
+                encoding: .utf8),
+              let passphrase = String(
+                data: value.subdata(in: passStart..<hostStart),
+                encoding: .utf8) else {
+            return nil
+        }
+
+        let host = hostLength == 0
+            ? nil
+            : String(data: value.subdata(in: hostStart..<value.count), encoding: .ascii)
+
+        return DirectConfig(
+            ssid: ssid,
+            passphrase: passphrase,
+            hostAddress: host
+        )
     }
 
     private func scan() {
@@ -181,7 +335,12 @@ extension ClipboardBridge: CBCentralManagerDelegate {
     ) {
         tx = nil
         rx = nil
-        credential = nil
+        directLinkCharacteristic = nil
+        if lan?.ready != true {
+            credential = nil
+            directConfig = nil
+            fastLinkAvailable = false
+        }
         writeQueue.removeAll()
         writeInFlight = false
         status = "PC 연결 끊김 · 재검색"
@@ -207,7 +366,7 @@ extension ClipboardBridge: CBPeripheralDelegate {
             status = "Clipboard BLE 서비스 없음"
             return
         }
-        peripheral.discoverCharacteristics([txUUID, rxUUID, secretUUID], for: service)
+        peripheral.discoverCharacteristics([txUUID, rxUUID, secretUUID, directLinkUUID], for: service)
     }
 
     func peripheral(
@@ -229,6 +388,8 @@ extension ClipboardBridge: CBPeripheralDelegate {
                 rx = characteristic
             case secretUUID:
                 peripheral.readValue(for: characteristic)
+            case directLinkUUID:
+                directLinkCharacteristic = characteristic
             default:
                 break
             }
@@ -249,6 +410,8 @@ extension ClipboardBridge: CBPeripheralDelegate {
                     guard let self, let peripheral else { return }
                     peripheral.readValue(for: characteristic)
                 }
+            } else if characteristic.uuid == directLinkUUID {
+                status = "P2P 설정 읽기 실패 · BLE fallback 유지"
             } else {
                 status = "BLE 읽기 실패: \(error.localizedDescription)"
             }
@@ -261,6 +424,22 @@ extension ClipboardBridge: CBPeripheralDelegate {
             if value.count == 64 {
                 credential = value
                 status = "BLE Clipboard 연결됨 · 동일 Wi-Fi 불필요"
+                if let directLinkCharacteristic {
+                    peripheral.readValue(for: directLinkCharacteristic)
+                }
+            }
+            return
+        }
+
+        if characteristic.uuid == directLinkUUID {
+            if let config = parseDirectConfig(value) {
+                directConfig = config
+                fastLinkAvailable = true
+                if config.hostAddress != nil && directHostRefreshAttempt > 0 {
+                    startLanFastPath()
+                } else {
+                    status = "P2P 고속 연결 사용 가능 · 필요하면 버튼으로 연결"
+                }
             }
             return
         }
