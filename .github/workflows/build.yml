@@ -12,7 +12,7 @@ jobs:
     defaults:
       run:
         shell: pwsh
-        working-directory: 'C:\\'
+        working-directory: 'C:\'
     steps:
       # CON.anything is a reserved Windows path. Keep the GitHub repository name,
       # but download the exact commit to a safe directory outside GITHUB_WORKSPACE.
