@@ -868,7 +868,7 @@ public sealed class MainForm : Form
                 await _clipboardSync.StartAsync();
 
             Log("Bluetooth HID 검색 신호를 시작했습니다.");
-            Log("0.2.1은 잠금용 System Control Report가 추가되어 LOCK:0이면 휴대폰에서 기존 PC 등록을 삭제하고 다시 페어링해 주세요.");
+            Log("HID 프로필이 바뀌었습니다. LOCK/MEDIA가 0이면 휴대폰에서 기존 PC 등록을 삭제하고 한 번 다시 페어링해 주세요.");
         });
     }
 
