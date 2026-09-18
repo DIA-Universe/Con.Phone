@@ -7,6 +7,7 @@ public sealed class ClipboardSyncCoordinator : IAsyncDisposable
     private readonly Func<string?> _approvedDeviceId;
     private readonly Func<bool> _enabled;
     private readonly Func<bool> _interactiveInput;
+    private readonly Func<bool> _pointerBusy;
     private readonly DirectClipboardLink _direct;
     private readonly BleClipboardService _ble;
     private readonly P2PClipboardServer _p2p;
@@ -21,11 +22,13 @@ public sealed class ClipboardSyncCoordinator : IAsyncDisposable
         Func<string, bool> trustedDevice,
         Func<bool> enabled,
         Func<bool> interactiveInput,
+        Func<bool> pointerBusy,
         Func<string> p2pLinkName)
     {
         _approvedDeviceId = approvedDeviceId;
         _enabled = enabled;
         _interactiveInput = interactiveInput;
+        _pointerBusy = pointerBusy;
         _direct = new DirectClipboardLink(p2pLinkName);
         _ble = new BleClipboardService(
             approvedDeviceId,
@@ -148,22 +151,24 @@ public sealed class ClipboardSyncCoordinator : IAsyncDisposable
                 !isImage ||
                 content.Data.Length <= bleImageLimitBytes;
 
-            // Bulk image transfer over the same Bluetooth radio can degrade relative
-            // mouse reports. While HID input is live, wait briefly for P2P instead.
-            var protectInteractiveHid = isImage && _interactiveInput();
-            var shouldWaitForP2P =
-                !_p2p.HasClient(id) &&
-                (protectInteractiveHid || !bleAllowed);
-
-            if (shouldWaitForP2P)
+            // Images prefer the direct P2P path even when they are small enough for BLE.
+            // If P2P is unavailable, small images may still use BLE, but BLE bulk chunks
+            // pause whenever recent pointer movement is detected.
+            if (isImage && !_p2p.HasClient(id))
             {
                 _ = GetDirectLinkConfig();
-                Status?.Invoke(
-                    protectInteractiveHid
-                        ? "입력 품질 보호 · 이미지 BLE 전송 대신 P2P 연결을 기다립니다."
-                        : "큰 이미지 전송을 위해 P2P 고속 링크 연결을 기다립니다.");
 
-                var deadline = DateTimeOffset.UtcNow + TimeSpan.FromSeconds(7);
+                var interactive = _interactiveInput();
+                Status?.Invoke(
+                    interactive
+                        ? "입력 품질 보호 · 이미지 P2P 연결을 우선 확인합니다."
+                        : "이미지 전송 · P2P 고속 링크를 우선 확인합니다.");
+
+                var wait = interactive
+                    ? TimeSpan.FromSeconds(4)
+                    : TimeSpan.FromSeconds(2);
+                var deadline = DateTimeOffset.UtcNow + wait;
+
                 while (!_p2p.HasClient(id) && DateTimeOffset.UtcNow < deadline)
                 {
                     token.ThrowIfCancellationRequested();
@@ -180,23 +185,22 @@ public sealed class ClipboardSyncCoordinator : IAsyncDisposable
                     }
                     catch (Exception ex)
                     {
-                        Status?.Invoke($"P2P 이미지 전송 실패: {ex.Message}");
+                        Status?.Invoke($"P2P 이미지 전송 실패, BLE fallback 확인: {ex.Message}");
                     }
                 }
-            }
-
-            if (protectInteractiveHid && !_p2p.HasClient(id))
-            {
-                Status?.Invoke(
-                    "P2P가 준비되지 않아 이미지 BLE 전송을 보류했습니다. 마우스/키보드 입력은 계속 유지합니다.");
-                return false;
             }
 
             if (bleAllowed && _ble.HasSubscriber(id))
             {
                 try
                 {
-                    await _ble.SendAsync(id, content, token).ConfigureAwait(false);
+                    await _ble.SendAsync(
+                        id,
+                        content,
+                        token,
+                        isImage && _interactiveInput()
+                            ? _pointerBusy
+                            : null).ConfigureAwait(false);
                     Status?.Invoke($"Clipboard 전송 완료 · BLE · {Describe(content)}");
                     return true;
                 }
