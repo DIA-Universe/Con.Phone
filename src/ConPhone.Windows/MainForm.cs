@@ -528,7 +528,7 @@ public sealed class MainForm : Form
             })));
         flow.Controls.Add(history);
 
-        var options = Section(290);
+        var options = Section(350);
         options.Controls.Add(SectionTitle("클립보드 · 동기화 설정"));
         options.Controls.Add(Row(_captureClipboardText, _captureClipboardImages));
         options.Controls.Add(Row(_clipboardSyncEnabled, _clipboardSyncText, _clipboardSyncImages));
