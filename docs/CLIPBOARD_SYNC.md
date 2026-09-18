@@ -21,8 +21,8 @@ Con.Phone의 키보드/마우스 경로와 클립보드 데이터 경로를 분�
 
 Windows는 다음 순서로 자동 선택한다.
 
-1. **LAN / P2P IP 링크** — UDP discovery 후 TCP 연결, AES-256-GCM
-2. **Bluetooth LE fallback** — 동일 Wi-Fi가 없어도 동작
+1. **Direct Wi-Fi / P2P 링크** — Windows가 전용 링크를 만들고 Companion이 직접 연결, TCP + AES-256-GCM
+2. **Bluetooth LE fallback** — P2P를 사용할 수 없을 때 텍스트/작은 이미지 전송
 
 Wi-Fi Direct/Wi-Fi Aware 등으로 IP 링크가 이미 만들어진 경우에도 1번 프로토콜을 그대로 사용할 수 있다. 현재 앱이 직접 P2P 그룹을 생성하는 기능은 별도 검증 대상이다.
 
@@ -38,8 +38,8 @@ Windows에서 사용자가 HID 대상 휴대폰을 승인하면:
 - Companion은 승인된 동일 BLE peer에서만 암호화된 custom GATT characteristic을 읽을 수 있다.
 - characteristic은 deviceHash(32) + secret(32)을 반환한다.
 - BLE characteristic 접근에는 GATT encryption을 요구한다.
-- LAN 연결은 secret 기반 HMAC challenge/response 후 시작한다.
-- 각 LAN clipboard frame은 AES-256-GCM으로 암호화하고 device hash를 AAD에 포함한다.
+- P2P 연결은 secret 기반 HMAC challenge/response 후 시작한다.
+- 각 P2P clipboard frame은 AES-256-GCM으로 암호화하고 device hash를 AAD에 포함한다.
 
 진단 로그에는 클립보드 본문과 pairing secret을 기록하지 않는다.
 
@@ -74,11 +74,11 @@ companion/android
 - Android 12(API 31)+
 - foreground BLE connection
 - encrypted custom GATT service 연결
-- BLE credential로 LAN/P2P 고속 채널 자동 승격 시도
+- BLE credential로 Windows Direct Wi-Fi/P2P 고속 채널 자동 승격
 - PC → Android text: ClipboardManager
 - PC → Android image: app cache의 content URI를 clipboard에 등록
 - Android → PC: Companion 화면의 명시적 보내기 버튼
-- LAN이 없으면 BLE fallback
+- P2P 연결이 불가능하면 BLE fallback
 - Android가 Windows P2P 링크를 사용할 수 있으면 시스템 승인 후 local-only Wi-Fi로 승격
 
 이미지 paste 성공 여부는 붙여넣기 대상 Android 앱이 image/content URI clipboard를 지원하는지에 따라 달라진다.
@@ -110,7 +110,7 @@ CI만으로 검증할 수 없는 항목:
 
 - 특정 Galaxy/iPhone의 HID + custom GATT 동시 연결
 - Bluetooth MTU/속도
-- Windows 방화벽 환경의 UDP/TCP LAN discovery
+- Windows 방화벽 환경의 P2P TCP 연결
 - 모바일 앱별 image paste 지원
 - 절전/재부팅 후 장시간 reconnect
 
