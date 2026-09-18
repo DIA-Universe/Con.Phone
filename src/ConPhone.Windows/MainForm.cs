@@ -6,6 +6,8 @@ namespace ConPhone.Windows;
 
 public sealed class MainForm : Form
 {
+    private const int PointerFrameMilliseconds = 6;
+
     private static readonly Color Bg = ColorTranslator.FromHtml("#F7F8F9");
     private static readonly Color Surface = Color.White;
     private static readonly Color Border = ColorTranslator.FromHtml("#DCDEE3");
@@ -89,6 +91,7 @@ public sealed class MainForm : Form
     private readonly TextBox _toggleHotkeyBox = HotkeyBox();
     private readonly TextBox _emergencyHotkeyBox = HotkeyBox();
     private readonly TextBox _lockHotkeyBox = HotkeyBox();
+    private readonly Label _connectionShortcutSummary = Help("");
 
     private readonly ListBox _clipboardList = new()
     {
@@ -148,7 +151,7 @@ public sealed class MainForm : Form
     public MainForm(bool previewMode = false)
     {
         _previewMode = previewMode;
-        Text = "Con.Phone 0.2.1 · Bluetooth 입력 허브";
+        Text = "Con.Phone 0.2.2 · Bluetooth 입력 허브";
         Width = 980;
         Height = 800;
         MinimumSize = new Size(880, 700);
@@ -309,8 +312,8 @@ public sealed class MainForm : Form
 
         var quick = Section(150);
         quick.Controls.Add(SectionTitle("빠른 동작"));
-        quick.Controls.Add(Help(
-            $"전환 {HotkeyCatalog.Display(_settings.ToggleHotkey)} · 복귀 {HotkeyCatalog.Display(_settings.EmergencyHotkey)} · 잠금+복귀 {HotkeyCatalog.Display(_settings.LockAndReturnHotkey)}"));
+        RefreshConnectionShortcutSummary();
+        quick.Controls.Add(_connectionShortcutSummary);
         quick.Controls.Add(Row(
             ActionButton("휴대폰으로 전환", ToggleAsync, primary: true),
             ActionButton("노트북으로 복귀", ReturnLocalAsync),
@@ -318,6 +321,14 @@ public sealed class MainForm : Form
         flow.Controls.Add(quick);
 
         return tab;
+    }
+
+    private void RefreshConnectionShortcutSummary()
+    {
+        _connectionShortcutSummary.Text =
+            $"전환 {HotkeyCatalog.Display(_settings.ToggleHotkey)} · " +
+            $"복귀 {HotkeyCatalog.Display(_settings.EmergencyHotkey)} · " +
+            $"잠금+복귀 {HotkeyCatalog.Display(_settings.LockAndReturnHotkey)}";
     }
 
     private TabPage BuildInputTab()
@@ -762,6 +773,7 @@ public sealed class MainForm : Form
 
         _mouseSpeedValue.Text = $"{_mouseSpeed.Value}%";
         _scrollSpeedValue.Text = $"{_scrollSpeed.Value}%";
+        RefreshConnectionShortcutSummary();
 
         if (save)
         {
@@ -1163,7 +1175,9 @@ public sealed class MainForm : Form
         {
             try
             {
-                var envelope = await _outbox.TakeAsync(_lifetime.Token);
+                var envelope = await _outbox.TakePointerFrameAsync(
+                    _lifetime.Token,
+                    PointerFrameMilliseconds);
 
                 foreach (var report in Hid.Encode(envelope.Packet))
                 {
@@ -1208,7 +1222,7 @@ public sealed class MainForm : Form
 
         var report = new
         {
-            Version = "0.2.1",
+            Version = "0.2.2",
             OS = Environment.OSVersion.Version.ToString(),
             Runtime = Environment.Version.ToString(),
             Bluetooth = await BleHidServer.DiagnoseAsync(),
@@ -1220,6 +1234,7 @@ public sealed class MainForm : Form
             ApprovedAndSubscribed = _ble.Ready,
             SendOperations = Interlocked.Read(ref _sent),
             Pending = _outbox.Count,
+            PointerFrameMilliseconds,
             LastError = _lastError,
             MouseSpeedPercent = _settings.MouseSpeedPercent,
             ScrollSpeedPercent = _settings.ScrollSpeedPercent,
