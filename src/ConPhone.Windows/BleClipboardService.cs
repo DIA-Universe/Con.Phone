@@ -70,10 +70,12 @@ public sealed class BleClipboardService : IDisposable
     public static readonly Guid SecretUuid = Guid.Parse("67A7F004-7E5B-4A2E-9B8B-1C9A5B6D1001");
     public static readonly Guid CapabilitiesUuid = Guid.Parse("67A7F005-7E5B-4A2E-9B8B-1C9A5B6D1001");
     public static readonly Guid DirectLinkUuid = Guid.Parse("67A7F006-7E5B-4A2E-9B8B-1C9A5B6D1001");
+    public static readonly Guid RelayConfigUuid = Guid.Parse("67A7F007-7E5B-4A2E-9B8B-1C9A5B6D1001");
 
     private readonly Func<string?> _approvedDeviceId;
     private readonly Func<bool> _enabled;
     private readonly Func<DirectLinkConfig?> _directLinkConfig;
+    private readonly Func<string?> _relayEndpoint;
     private readonly SemaphoreSlim _sendGate = new(1, 1);
     private readonly ConcurrentDictionary<string, BleFragmentReassembler> _bleReassemblers = new();
     private readonly ConcurrentDictionary<string, ClipboardReassembler> _clipboardReassemblers = new();
@@ -84,6 +86,7 @@ public sealed class BleClipboardService : IDisposable
     private GattLocalCharacteristic? _secret;
     private GattLocalCharacteristic? _capabilities;
     private GattLocalCharacteristic? _directLink;
+    private GattLocalCharacteristic? _relayConfig;
     private bool _disposed;
 
     public event Action<string, ClipboardContent>? Received;
@@ -92,11 +95,13 @@ public sealed class BleClipboardService : IDisposable
     public BleClipboardService(
         Func<string?> approvedDeviceId,
         Func<bool> enabled,
-        Func<DirectLinkConfig?> directLinkConfig)
+        Func<DirectLinkConfig?> directLinkConfig,
+        Func<string?> relayEndpoint)
     {
         _approvedDeviceId = approvedDeviceId;
         _enabled = enabled;
         _directLinkConfig = directLinkConfig;
+        _relayEndpoint = relayEndpoint;
     }
 
     public bool Running => _provider?.AdvertisementStatus is
@@ -149,6 +154,12 @@ public sealed class BleClipboardService : IDisposable
             GattProtectionLevel.EncryptionRequired,
             GattProtectionLevel.EncryptionRequired);
 
+        _relayConfig = await CreateCharacteristicAsync(
+            RelayConfigUuid,
+            GattCharacteristicProperties.Read,
+            GattProtectionLevel.EncryptionRequired,
+            GattProtectionLevel.EncryptionRequired);
+
         _tx.SubscribedClientsChanged += (_, _) =>
             Status?.Invoke($"Clipboard BLE 구독: {Subscribers}");
 
@@ -156,6 +167,7 @@ public sealed class BleClipboardService : IDisposable
         _secret.ReadRequested += SecretReadRequested;
         _capabilities.ReadRequested += CapabilitiesReadRequested;
         _directLink.ReadRequested += DirectLinkReadRequested;
+        _relayConfig.ReadRequested += RelayConfigReadRequested;
     }
 
     public async Task StartAsync()
@@ -279,6 +291,54 @@ public sealed class BleClipboardService : IDisposable
         catch (Exception ex)
         {
             Status?.Invoke($"Clipboard P2P 설정 읽기 실패: {ex.Message}");
+        }
+        finally
+        {
+            deferral.Complete();
+        }
+    }
+
+    private async void RelayConfigReadRequested(
+        GattLocalCharacteristic sender,
+        GattReadRequestedEventArgs args)
+    {
+        var deferral = args.GetDeferral();
+        try
+        {
+            var request = await args.GetRequestAsync();
+            if (request is null) return;
+
+            if (!IsApproved(args.Session.DeviceId.Id))
+            {
+                request.RespondWithProtocolError(0x05);
+                return;
+            }
+
+            var endpoint = _relayEndpoint()?.Trim();
+            if (string.IsNullOrWhiteSpace(endpoint))
+            {
+                request.RespondWithValue(new byte[] { 1, 0, 0, 0 }.AsBuffer());
+                return;
+            }
+
+            var bytes = System.Text.Encoding.UTF8.GetBytes(endpoint);
+            if (bytes.Length > 1024)
+            {
+                request.RespondWithProtocolError(0x0D);
+                return;
+            }
+
+            var response = new byte[4 + bytes.Length];
+            response[0] = 1;
+            response[1] = 1;
+            response[2] = (byte)(bytes.Length & 0xFF);
+            response[3] = (byte)((bytes.Length >> 8) & 0xFF);
+            bytes.CopyTo(response, 4);
+            request.RespondWithValue(response.AsBuffer());
+        }
+        catch (Exception ex)
+        {
+            Status?.Invoke($"Clipboard Relay 설정 읽기 실패: {ex.Message}");
         }
         finally
         {
