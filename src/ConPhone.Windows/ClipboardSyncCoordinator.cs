@@ -137,7 +137,7 @@ public sealed class ClipboardSyncCoordinator : IAsyncDisposable
             else if (!bleAllowed)
             {
                 Status?.Invoke(
-                    $"이미지 {content.Data.Length / 1024:N0} KiB는 BLE 제한을 초과했습니다. LAN/P2P 또는 Relay를 확인합니다.");
+                    $"이미지 {content.Data.Length / 1024:N0} KiB는 BLE 제한을 초과했습니다. LAN/P2P 연결을 확인합니다.");
             }
 
             return false;
