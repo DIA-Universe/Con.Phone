@@ -1354,8 +1354,6 @@ public sealed class MainForm : Form
         if (epoch != Volatile.Read(ref _epoch) || !_ble.Ready)
             return;
 
-        await SyncLatestClipboardToPhoneAsync();
-
         _pointerScaler.Reset();
         _ble.SetInteractiveMode(true);
         _input.Activate();
@@ -1363,6 +1361,34 @@ public sealed class MainForm : Form
         Log(
             $"휴대폰 입력 시작 · 마우스 pacing {_ble.MousePacingIntervalMs}ms · " +
             $"{HotkeyCatalog.Display(_settings.EmergencyHotkey)}로 즉시 복귀");
+
+        // Clipboard data transfer must never block or cancel HID input switching.
+        _ = SyncLatestClipboardToPhoneSafeAsync(
+            Volatile.Read(ref _epoch),
+            _ble.ApprovedId);
+    }
+
+    private async Task SyncLatestClipboardToPhoneSafeAsync(
+        long epoch,
+        string? targetId)
+    {
+        try
+        {
+            await SyncLatestClipboardToPhoneAsync();
+
+            if (epoch != Volatile.Read(ref _epoch) ||
+                !string.Equals(targetId, _ble.ApprovedId, StringComparison.Ordinal))
+                return;
+        }
+        catch (OperationCanceledException)
+        {
+            Post(() => Log("클립보드 동기화 시간이 초과됐습니다. HID 입력은 계속 유지합니다."));
+        }
+        catch (Exception ex)
+        {
+            _lastError = $"ClipboardSend:{ex.GetType().Name}:0x{ex.HResult:X8}";
+            Post(() => Log($"클립보드 동기화 실패 · HID 입력은 유지합니다. ({ex.Message})"));
+        }
     }
 
     private async Task SyncLatestClipboardToPhoneAsync()
