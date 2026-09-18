@@ -253,7 +253,6 @@ final class ClipboardWireReassembler {
             result.append(part)
         }
         pending.removeValue(forKey: chunk.transferId)
-        completed[chunk.transferId] = Date()
 
         guard result.count == state.total,
               Data(SHA256.hash(data: result)) == state.hash else {
@@ -261,7 +260,9 @@ final class ClipboardWireReassembler {
         }
 
         try ClipboardProtocol.validate(state.kind, result)
-        return ClipboardContent(kind: state.kind, data: result)
+        let content = ClipboardContent(kind: state.kind, data: result)
+        completed[chunk.transferId] = Date()
+        return content
     }
 
     private func cleanup() {
