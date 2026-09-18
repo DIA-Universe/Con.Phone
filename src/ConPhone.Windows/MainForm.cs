@@ -17,7 +17,8 @@ public sealed class MainForm : Form
     private readonly TextBox _events = new() { Multiline = true, ReadOnly = true, ScrollBars = ScrollBars.Vertical, Width = 810, Height = 100 };
     private readonly ComboBox _profile = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 240 };
     private readonly NotifyIcon _tray = new() { Text = "Con.Phone · 로컬 입력", Icon = SystemIcons.Application, Visible = true };
-    private readonly System.Windows.Forms.Timer _timer = new() { Interval = 400 };\n    private readonly System.Windows.Forms.Timer _peerTimer = new() { Interval = 1500 };
+    private readonly System.Windows.Forms.Timer _timer = new() { Interval = 400 };
+    private readonly System.Windows.Forms.Timer _peerTimer = new() { Interval = 1500 };
     private Task? _pump;
     private long _epoch, _sent;
     private bool _closing, _closed;
