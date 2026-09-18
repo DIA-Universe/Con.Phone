@@ -179,6 +179,7 @@ public sealed class InputCapture : IDisposable
         {
             _remote = false;
             _keys.Clear();
+            _activeSpecialKeys.Clear();
             _buttons = 0;
             _wheel = 0;
             _pan = 0;
