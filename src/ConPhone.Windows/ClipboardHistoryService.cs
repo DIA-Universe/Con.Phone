@@ -2,6 +2,7 @@ using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using ConPhone.Core;
 
 namespace ConPhone.Windows;
 
@@ -48,6 +49,7 @@ public sealed class ClipboardHistoryService : IDisposable
 
     public event Action? Changed;
     public event Action<string>? Status;
+    public event Action<ClipboardContent>? ContentCaptured;
 
     public ClipboardHistoryService(int limit, bool captureText, bool captureImages)
     {
@@ -116,7 +118,7 @@ public sealed class ClipboardHistoryService : IDisposable
             {
                 var text = Clipboard.GetText(TextDataFormat.UnicodeText);
                 _retryTimer.Stop();
-                if (!string.IsNullOrEmpty(text)) AddText(text);
+                if (!string.IsNullOrEmpty(text)) AddText(text, publish: true);
                 return;
             }
 
@@ -124,7 +126,7 @@ public sealed class ClipboardHistoryService : IDisposable
             {
                 using var image = Clipboard.GetImage();
                 _retryTimer.Stop();
-                if (image is not null) AddImage(image);
+                if (image is not null) AddImage(image, publish: true);
                 return;
             }
 
@@ -148,7 +150,7 @@ public sealed class ClipboardHistoryService : IDisposable
         }
     }
 
-    private void AddText(string text)
+    private void AddText(string text, bool publish)
     {
         var hash = Convert.ToHexString(
             SHA256.HashData(Encoding.UTF8.GetBytes("text\0" + text)));
@@ -182,9 +184,11 @@ public sealed class ClipboardHistoryService : IDisposable
 
         Status?.Invoke("텍스트 클립보드를 기록했습니다.");
         Changed?.Invoke();
+        if (publish)
+            ContentCaptured?.Invoke(ClipboardContent.FromText(text));
     }
 
-    private void AddImage(Image image)
+    private void AddImage(Image image, bool publish)
     {
         using var ms = new MemoryStream();
         image.Save(ms, System.Drawing.Imaging.ImageFormat.Png);
@@ -220,6 +224,87 @@ public sealed class ClipboardHistoryService : IDisposable
 
         Status?.Invoke("이미지/캡처 클립보드를 기록했습니다.");
         Changed?.Invoke();
+        if (publish)
+            ContentCaptured?.Invoke(ClipboardContent.FromImage(ClipboardContentKind.Png, bytes));
+    }
+
+    public bool TryGetContent(string id, out ClipboardContent? content)
+    {
+        ClipboardEntry? entry;
+        lock (_gate)
+        {
+            var found = _entries.FirstOrDefault(x => x.Id == id);
+            entry = found is null ? null : Clone(found);
+        }
+
+        content = null;
+        if (entry is null) return false;
+
+        if (entry.Kind == ClipboardEntryKind.Text && entry.Text is not null)
+        {
+            content = ClipboardContent.FromText(entry.Text);
+            return true;
+        }
+
+        if (entry.Kind == ClipboardEntryKind.Image &&
+            TryResolveImage(entry.ImageFileName, out var path))
+        {
+            content = ClipboardContent.FromImage(ClipboardContentKind.Png, File.ReadAllBytes(path));
+            return true;
+        }
+
+        return false;
+    }
+
+    public bool TryGetLatestContent(out ClipboardContent? content)
+    {
+        string? id;
+        lock (_gate)
+            id = _entries.FirstOrDefault()?.Id;
+
+        return id is not null && TryGetContent(id, out content);
+    }
+
+    public bool ApplyRemote(ClipboardContent content)
+    {
+        ArgumentNullException.ThrowIfNull(content);
+
+        try
+        {
+            _selfWrite = true;
+            _retryTimer.Stop();
+
+            if (content.Kind == ClipboardContentKind.TextUtf8)
+            {
+                var text = content.GetText();
+                Clipboard.SetText(text, TextDataFormat.UnicodeText);
+                AddText(text, publish: false);
+                Status?.Invoke("휴대폰에서 받은 텍스트를 Windows 클립보드에 적용했습니다.");
+                return true;
+            }
+
+            using var stream = new MemoryStream(content.Data, writable: false);
+            using var source = Image.FromStream(stream, useEmbeddedColorManagement: true, validateImageData: true);
+            using var copy = new Bitmap(source);
+            Clipboard.SetImage(copy);
+            AddImage(copy, publish: false);
+            Status?.Invoke("휴대폰에서 받은 이미지를 Windows 클립보드에 적용했습니다.");
+            return true;
+        }
+        catch (ExternalException)
+        {
+            Status?.Invoke("다른 프로그램이 클립보드를 사용 중이라 휴대폰 내용을 적용하지 못했습니다.");
+        }
+        catch (Exception ex)
+        {
+            Status?.Invoke($"휴대폰 클립보드 적용 실패: {ex.Message}");
+        }
+        finally
+        {
+            _selfWrite = false;
+        }
+
+        return false;
     }
 
     public bool Restore(string id)
