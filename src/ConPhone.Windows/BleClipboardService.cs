@@ -28,8 +28,9 @@ public static class ClipboardPairingSecretStore
             var decoded = Convert.FromBase64String(existing.Password);
             if (decoded.Length == 32) return decoded;
         }
-        catch (Exception ex) when (ex is COMException or FormatException)
+        catch (Exception)
         {
+            // No credential yet (or an invalid stale value): generate a new device secret below.
         }
 
         var secret = RandomNumberGenerator.GetBytes(32);
