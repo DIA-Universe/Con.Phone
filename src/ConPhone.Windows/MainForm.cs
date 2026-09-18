@@ -139,13 +139,15 @@ public sealed class MainForm : Form
     private readonly System.Windows.Forms.Timer _timer = new() { Interval = 750 };
     private readonly System.Windows.Forms.Timer _peerTimer = new() { Interval = 5000 };
 
+    private readonly bool _previewMode;
     private Task? _pump;
     private long _epoch, _sent;
     private bool _closing, _closed, _exitRequested;
     private string _lastError = "None";
 
-    public MainForm()
+    public MainForm(bool previewMode = false)
     {
+        _previewMode = previewMode;
         Text = "Con.Phone 0.2.1 · Bluetooth 입력 허브";
         Width = 980;
         Height = 800;
@@ -159,14 +161,33 @@ public sealed class MainForm : Form
         LoadSettingsToUi();
         ApplyInputSettings(save: false);
         BuildUi();
-        ConfigureTray();
-        ConfigureRuntimeEvents();
 
-        _pump = Task.Run(PumpAsync);
+        if (_previewMode)
+        {
+            _tray.Visible = false;
+            _state.Text = "노트북 조작 중 · 광고:Started · K:1 M:1 LOCK:1 · 승인:준비됨";
+            _peers.Items.Add(new Peer(
+                "preview-device",
+                "Galaxy / Android",
+                "A1B2C3D4",
+                Keyboard: true,
+                Mouse: true,
+                SystemControl: true,
+                Paired: true,
+                Connected: true));
+            _peers.SelectedIndex = 0;
+            _diagnosis.Text = "Bluetooth LE: True\r\nPeripheral 역할: True\r\n무선 상태: On";
+        }
+        else
+        {
+            ConfigureTray();
+            ConfigureRuntimeEvents();
+            _pump = Task.Run(PumpAsync);
 
-        SystemEvents.PowerModeChanged += PowerChanged;
-        SystemEvents.SessionSwitch += SessionChanged;
-        FormClosing += ClosingAsync;
+            SystemEvents.PowerModeChanged += PowerChanged;
+            SystemEvents.SessionSwitch += SessionChanged;
+            FormClosing += ClosingAsync;
+        }
     }
 
     private static TextBox HotkeyBox() => new()
