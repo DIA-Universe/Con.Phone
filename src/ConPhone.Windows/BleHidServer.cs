@@ -23,12 +23,14 @@ public sealed class BleHidServer
     private readonly ConcurrentDictionary<string, GattSession> _sessions = new();
     private readonly SemaphoreSlim _send = new(1, 1);
     private volatile string? _approved;
+    private volatile string _lastOperation = "Idle";
     private volatile bool _running;
     private bool _configured;
     private byte[] _keyboardValue = new byte[8], _mouseValue = new byte[5];
     public event Action? Changed;
     public event Action<string>? Status;
     public string Advertisement => _provider?.AdvertisementStatus.ToString() ?? "NotStarted";
+    public string LastOperation => _lastOperation;
     public string? ApprovedId => _approved;
     public bool Ready => _running && _approved is { } id && IsReady(id);
     private static Guid Uuid(ushort n) => new($"0000{n:x4}-0000-1000-8000-00805f9b34fb");
@@ -47,15 +49,30 @@ public sealed class BleHidServer
 
     public async Task StartAsync()
     {
+        _lastOperation = "BluetoothAdapter.GetDefaultAsync";
         var adapter = await BluetoothAdapter.GetDefaultAsync();
         if (adapter is null || !adapter.IsLowEnergySupported || !adapter.IsPeripheralRoleSupported)
             throw new NotSupportedException("내장 Bluetooth의 LE Peripheral 역할이 지원되지 않습니다. 동글 우회는 제공하지 않습니다.");
+
+        _lastOperation = "BluetoothAdapter.GetRadioAsync";
         var radio = await adapter.GetRadioAsync();
         if (radio?.State != RadioState.On) throw new InvalidOperationException("Windows Bluetooth를 먼저 켜 주세요.");
+
         if (_provider is not null && !_configured)
             throw new InvalidOperationException("이전 서비스 구성이 실패했습니다. 앱을 종료하고 다시 실행하세요.");
+
+        if (_provider is not null && IsAdvertising(_provider.AdvertisementStatus))
+        {
+            _running = true;
+            _lastOperation = $"Advertising:{_provider.AdvertisementStatus}";
+            Status?.Invoke($"Bluetooth 광고가 이미 실행 중입니다: {_provider.AdvertisementStatus}");
+            Changed?.Invoke();
+            return;
+        }
+
         if (_provider is null)
         {
+            _lastOperation = "GattServiceProvider.CreateAsync";
             var result = await GattServiceProvider.CreateAsync(Uuid(0x1812));
             if (result.Error != BluetoothError.Success)
                 throw new InvalidOperationException($"HID 서비스 생성 실패: {result.Error}. Windows 정책/권한/드라이버를 확인하세요.");
@@ -63,7 +80,7 @@ public sealed class BleHidServer
             _provider.AdvertisementStatusChanged += (_, args) =>
             {
                 Status?.Invoke($"광고 상태: {args.Status}; 결과: {args.Error}");
-                if (args.Status.ToString() == "Aborted") { _running = false; _approved = null; }
+                if (args.Status == GattServiceProviderAdvertisementStatus.Aborted) { _running = false; _approved = null; }
                 Changed?.Invoke();
             };
             await Characteristic(0x2A4A, GattCharacteristicProperties.Read, [0x11, 0x01, 0x00, 0x02]);
@@ -96,14 +113,27 @@ public sealed class BleHidServer
             });
             _configured = true;
         }
+
         _approved = null;
         _running = true;
-        _provider.StartAdvertising(new GattServiceProviderAdvertisingParameters { IsConnectable = true, IsDiscoverable = true });
+        _lastOperation = "GattServiceProvider.StartAdvertising";
+        try
+        {
+            _provider.StartAdvertising(new GattServiceProviderAdvertisingParameters { IsConnectable = true, IsDiscoverable = true });
+            _lastOperation = $"AdvertisingRequested:{_provider.AdvertisementStatus}";
+        }
+        catch (InvalidOperationException ex) when (IsIllegalState(ex))
+        {
+            _running = false;
+            throw new InvalidOperationException(
+                $"Windows Bluetooth가 현재 GATT 광고를 시작할 수 없는 상태입니다. 광고:{Advertisement}, 단계:{_lastOperation}. Bluetooth를 껐다 켠 뒤 다시 시도해 주세요.", ex);
+        }
         Changed?.Invoke();
     }
 
     private async Task<GattLocalCharacteristic> Characteristic(ushort uuid, GattCharacteristicProperties properties, byte[]? value = null)
     {
+        _lastOperation = $"CreateCharacteristic:0x{uuid:X4}";
         var p = new GattLocalCharacteristicParameters
         {
             CharacteristicProperties = properties,
@@ -128,30 +158,35 @@ public sealed class BleHidServer
         });
         c.SubscribedClientsChanged += (_, _) =>
         {
-            foreach (var client in c.SubscribedClients)
+            try
             {
-                var session = client.Session;
-                var id = session.DeviceId.Id;
-                if (_sessions.TryAdd(id, session))
-                    session.SessionStatusChanged += (sender, args) =>
-                    {
-                        if (args.Status == GattSessionStatus.Closed)
+                foreach (var client in c.SubscribedClients)
+                {
+                    if (!TryActiveSession(client, out var session, out var id) || session is null) continue;
+                    if (_sessions.TryAdd(id, session))
+                        session.SessionStatusChanged += (sender, args) =>
                         {
-                            if (_approved == id) _approved = null;
-                            _protocol.TryRemove(id, out _);
-                            _suspended.TryRemove(id, out _);
-                            _sessions.TryRemove(id, out _);
-                        }
-                        Changed?.Invoke();
-                    };
+                            if (args.Status == GattSessionStatus.Closed)
+                            {
+                                if (_approved == id) _approved = null;
+                                _protocol.TryRemove(id, out _);
+                                _suspended.TryRemove(id, out _);
+                                _sessions.TryRemove(id, out _);
+                            }
+                            Changed?.Invoke();
+                        };
+                }
             }
+            catch (InvalidOperationException ex) when (IsIllegalState(ex)) { }
+            catch (ObjectDisposedException) { }
             Changed?.Invoke();
         };
         return c;
     }
 
-    private static async Task Reference(GattLocalCharacteristic c, byte id, byte type)
+    private async Task Reference(GattLocalCharacteristic c, byte id, byte type)
     {
+        _lastOperation = $"CreateReportReference:{id}:{type}";
         var r = await c.CreateDescriptorAsync(Uuid(0x2908), new GattLocalDescriptorParameters
         { StaticValue = new byte[] { id, type }.AsBuffer(), ReadProtectionLevel = GattProtectionLevel.EncryptionRequired });
         if (r.Error != BluetoothError.Success) throw new InvalidOperationException($"Report Reference: {r.Error}");
@@ -200,25 +235,81 @@ public sealed class BleHidServer
         bool boot = _protocol.GetValueOrDefault(id, (byte)1) == 0;
         return keyboard ? (boot ? _bootKeyboard : _keyboard) : (boot ? _bootMouse : _mouse);
     }
-    private static GattSubscribedClient? Client(GattLocalCharacteristic? c, string id) =>
-        c?.SubscribedClients.FirstOrDefault(x => x.Session.DeviceId.Id == id && x.Session.SessionStatus == GattSessionStatus.Active);
+
+    private static bool IsAdvertising(GattServiceProviderAdvertisementStatus status) =>
+        status is GattServiceProviderAdvertisementStatus.Started or
+            GattServiceProviderAdvertisementStatus.StartedWithoutAllAdvertisementData;
+
+    private static bool IsIllegalState(Exception ex) =>
+        ex is InvalidOperationException && ex.HResult == unchecked((int)0x8000000E);
+
+    private static bool TryActiveSession(GattSubscribedClient client, out GattSession? session, out string id)
+    {
+        session = null; id = "";
+        try
+        {
+            session = client.Session;
+            if (session.SessionStatus != GattSessionStatus.Active) return false;
+            id = session.DeviceId.Id;
+            return !string.IsNullOrWhiteSpace(id);
+        }
+        catch (InvalidOperationException ex) when (IsIllegalState(ex)) { return false; }
+        catch (ObjectDisposedException) { return false; }
+    }
+
+    private static GattSubscribedClient? Client(GattLocalCharacteristic? c, string id)
+    {
+        if (c is null) return null;
+        try
+        {
+            foreach (var client in c.SubscribedClients)
+                if (TryActiveSession(client, out _, out var clientId) && clientId == id)
+                    return client;
+        }
+        catch (InvalidOperationException ex) when (IsIllegalState(ex)) { }
+        catch (ObjectDisposedException) { }
+        return null;
+    }
+
     private bool IsReady(string id) => !_suspended.GetValueOrDefault(id) &&
         Client(Input(id, true), id) is not null && Client(Input(id, false), id) is not null;
 
     public async Task<IReadOnlyList<Peer>> GetPeersAsync()
     {
-        var chars = new[] { _keyboard, _mouse, _bootKeyboard, _bootMouse };
-        var ids = chars.Where(c => c is not null).SelectMany(c => c!.SubscribedClients)
-            .Where(c => c.Session.SessionStatus == GattSessionStatus.Active).Select(c => c.Session.DeviceId.Id).Distinct().ToArray();
+        _lastOperation = "EnumerateSubscribedClients";
+        var ids = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var c in new[] { _keyboard, _mouse, _bootKeyboard, _bootMouse })
+        {
+            if (c is null) continue;
+            try
+            {
+                foreach (var client in c.SubscribedClients)
+                    if (TryActiveSession(client, out _, out var id))
+                        ids.Add(id);
+            }
+            catch (InvalidOperationException ex) when (IsIllegalState(ex)) { }
+            catch (ObjectDisposedException) { }
+        }
+
         var peers = new List<Peer>();
         foreach (var id in ids)
         {
-            using var device = await BluetoothLEDevice.FromIdAsync(id);
-            var fingerprint = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(id)))[..8];
-            peers.Add(new(id, device?.Name ?? "이름 확인 불가", fingerprint,
-                Client(Input(id, true), id) is not null, Client(Input(id, false), id) is not null,
-                device?.DeviceInformation.Pairing.IsPaired == true));
+            try
+            {
+                _lastOperation = "BluetoothLEDevice.FromIdAsync";
+                using var device = await BluetoothLEDevice.FromIdAsync(id);
+                var fingerprint = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(id)))[..8];
+                peers.Add(new(id, device?.Name ?? "이름 확인 불가", fingerprint,
+                    Client(Input(id, true), id) is not null, Client(Input(id, false), id) is not null,
+                    device?.DeviceInformation.Pairing.IsPaired == true));
+            }
+            catch (InvalidOperationException ex) when (IsIllegalState(ex))
+            {
+                // A just-disconnected WinRT session may remain in SubscribedClients briefly.
+            }
+            catch (ObjectDisposedException) { }
         }
+        _lastOperation = "PeerRefreshComplete";
         return peers;
     }
     public async Task ApproveAsync(string id)
@@ -242,7 +333,8 @@ public sealed class BleHidServer
             var id = _approved;
             if (id is null || !_running || !IsReady(id)) throw new InvalidOperationException("승인된 입력 연결이 사라졌습니다.");
             var characteristic = Input(id, report.Keyboard)!;
-            var client = Client(characteristic, id)!;
+            var client = Client(characteristic, id);
+            if (client is null) throw new InvalidOperationException("승인된 입력 연결이 사라졌습니다.");
             var bytes = report.Data;
             if (!report.Keyboard && _protocol.GetValueOrDefault(id, (byte)1) == 0)
                 bytes = [(byte)(bytes[0] & 7), bytes[1], bytes[2]];
@@ -258,7 +350,20 @@ public sealed class BleHidServer
     {
         _running = false; _approved = null;
         _keyboardValue = new byte[8]; _mouseValue = new byte[5];
-        _provider?.StopAdvertising();
+        if (_provider is not null)
+        {
+            try
+            {
+                var status = _provider.AdvertisementStatus;
+                if (IsAdvertising(status) || status == GattServiceProviderAdvertisementStatus.Aborted)
+                    _provider.StopAdvertising();
+            }
+            catch (InvalidOperationException ex) when (IsIllegalState(ex))
+            {
+                Status?.Invoke("Bluetooth 서비스가 이미 중지/전환 중이어서 중지 요청을 생략했습니다.");
+            }
+        }
+        _lastOperation = "Stopped";
         Changed?.Invoke();
     }
 }

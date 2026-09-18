@@ -26,7 +26,7 @@ public sealed class MainForm : Form
 
     public MainForm()
     {
-        Text = "Con.Phone 0.1.2 · 동글 없는 무선 입력";
+        Text = "Con.Phone 0.1.3 · 동글 없는 무선 입력";
         Width = 880; Height = 820; MinimumSize = new Size(780, 660);
         StartPosition = FormStartPosition.CenterScreen;
         Font = new Font("Segoe UI", 10);
@@ -122,7 +122,15 @@ public sealed class MainForm : Form
     {
         if (!await _actions.WaitAsync(0)) return;
         try { if (!_closing) await action(); }
-        catch (Exception ex) { ImmediateLocal(); _lastError = $"{ex.GetType().Name}:0x{ex.HResult:X8}"; Log($"{ex.Message} ({_lastError})"); }
+        catch (Exception ex)
+        {
+            ImmediateLocal();
+            _lastError = $"{ex.GetType().Name}:0x{ex.HResult:X8}";
+            var ble = ex.HResult == unchecked((int)0x8000000E)
+                ? $" · BLE:{_ble.LastOperation} · 광고:{_ble.Advertisement}"
+                : "";
+            Log($"{ex.Message} ({_lastError}{ble})");
+        }
         finally { _actions.Release(); }
     });
     private void Log(string text)
@@ -228,9 +236,9 @@ public sealed class MainForm : Form
         if (dialog.ShowDialog(this) != DialogResult.OK) return;
         var report = new
         {
-            Version = "0.1.2", OS = Environment.OSVersion.Version.ToString(), Runtime = Environment.Version.ToString(),
+            Version = "0.1.3", OS = Environment.OSVersion.Version.ToString(), Runtime = Environment.Version.ToString(),
             TargetProfile = _profile.SelectedIndex == 0 ? "Android" : "iPhone", Bluetooth = await BleHidServer.DiagnoseAsync(),
-            Advertisement = _ble.Advertisement, ApprovedAndSubscribed = _ble.Ready,
+            Advertisement = _ble.Advertisement, BleLastOperation = _ble.LastOperation, ApprovedAndSubscribed = _ble.Ready,
             SendOperations = Interlocked.Read(ref _sent), Pending = _outbox.Count, LastError = _lastError,
             AndroidHardwareTest = "Not performed by build environment", IPhoneHardwareTest = "Not performed",
             Privacy = "No text, keys, pairing codes, device names or Bluetooth addresses are exported."
