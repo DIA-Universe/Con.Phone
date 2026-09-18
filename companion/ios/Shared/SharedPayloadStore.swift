@@ -18,7 +18,7 @@ enum SharedPayloadStore {
     private static let defaultsKey = "pending-share-v1"
     private static let directoryName = "SharedPayloads"
     private static let maxTextBytes = 1024 * 1024
-    private static let maxImageBytes = 40 * 1024 * 1024
+    private static let maxImageBytes = 32 * 1024 * 1024
 
     static func saveText(_ text: String) throws {
         let bytes = Data(text.utf8)
