@@ -26,7 +26,7 @@ final class ClipboardBridge: NSObject, ObservableObject {
     private var directLinkCharacteristic: CBCharacteristic?
     private var credential: Data?
     private var directConfig: DirectConfig?
-    private var lan: LanClipboardChannel?
+    private var p2p: P2PClipboardChannel?
     private var directHostRefreshAttempt = 0
     private var directConfigReadAttempt = 0
 
@@ -63,8 +63,8 @@ final class ClipboardBridge: NSObject, ObservableObject {
                 return
             }
 
-            if let lan, lan.ready {
-                lan.send(frames: try ClipboardProtocol.encode(content))
+            if let p2p, p2p.ready {
+                p2p.send(frames: try ClipboardProtocol.encode(content))
                 return
             }
 
@@ -143,7 +143,7 @@ final class ClipboardBridge: NSObject, ObservableObject {
 
         peripheral.readValue(for: characteristic)
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { [weak self] in
-            guard let self, self.lan?.ready != true else { return }
+            guard let self, self.p2p?.ready != true else { return }
             if self.directConfig?.hostAddress == nil {
                 self.refreshDirectHost()
             } else {
@@ -153,7 +153,7 @@ final class ClipboardBridge: NSObject, ObservableObject {
     }
 
     private func startLanFastPath() {
-        guard lan?.ready != true,
+        guard p2p?.ready != true,
               let config = directConfig,
               let host = config.hostAddress,
               let credential,
@@ -162,8 +162,8 @@ final class ClipboardBridge: NSObject, ObservableObject {
         let deviceHash = credential.subdata(in: 0..<32)
         let secret = credential.subdata(in: 32..<64)
 
-        lan?.close()
-        let channel = LanClipboardChannel(
+        p2p?.close()
+        let channel = P2PClipboardChannel(
             host: host,
             port: 47911,
             deviceHash: deviceHash,
@@ -179,7 +179,7 @@ final class ClipboardBridge: NSObject, ObservableObject {
                 }
             }
         )
-        lan = channel
+        p2p = channel
         channel.start()
     }
 
@@ -347,7 +347,7 @@ extension ClipboardBridge: CBCentralManagerDelegate {
         rx = nil
         directLinkCharacteristic = nil
 
-        let dataPlaneAlive = lan?.ready == true
+        let dataPlaneAlive = p2p?.ready == true
         writeQueue.removeAll()
         writeInFlight = false
         status = dataPlaneAlive
