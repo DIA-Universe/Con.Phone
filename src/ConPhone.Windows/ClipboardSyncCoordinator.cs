@@ -18,11 +18,12 @@ public sealed class ClipboardSyncCoordinator : IAsyncDisposable
     public ClipboardSyncCoordinator(
         Func<string?> approvedDeviceId,
         Func<string, bool> trustedDevice,
-        Func<bool> enabled)
+        Func<bool> enabled,
+        Func<string> p2pLinkName)
     {
         _approvedDeviceId = approvedDeviceId;
         _enabled = enabled;
-        _direct = new DirectClipboardLink();
+        _direct = new DirectClipboardLink(p2pLinkName);
         _ble = new BleClipboardService(
             approvedDeviceId,
             trustedDevice,
