@@ -18,8 +18,20 @@ final class RelayClipboardChannel: NSObject {
     private var task: URLSessionWebSocketTask?
     private let queue = DispatchQueue(label: "ConPhone.RelayClipboard")
     private var receiveTask: Task<Void, Never>?
+    private let stateLock = NSLock()
+    private var _ready = false
 
-    @MainActor private(set) var ready = false
+    var ready: Bool {
+        stateLock.lock()
+        defer { stateLock.unlock() }
+        return _ready
+    }
+
+    private func setReady(_ value: Bool) {
+        stateLock.lock()
+        _ready = value
+        stateLock.unlock()
+    }
 
     init(
         endpoint: String,
@@ -78,7 +90,7 @@ final class RelayClipboardChannel: NSObject {
         task?.cancel(with: .normalClosure, reason: Data("disabled".utf8))
         task = nil
         session.invalidateAndCancel()
-        Task { @MainActor in self.ready = false }
+        setReady(false)
     }
 
     private func beginReceiveLoop(_ socket: URLSessionWebSocketTask) {
@@ -203,7 +215,7 @@ extension RelayClipboardChannel: URLSessionWebSocketDelegate {
         webSocketTask: URLSessionWebSocketTask,
         didOpenWithProtocol protocol: String?
     ) {
-        Task { @MainActor in self.ready = true }
+        setReady(true)
         onStatus("Clipboard 인터넷 Relay 연결됨 · 서버는 암호문만 중계")
         beginReceiveLoop(webSocketTask)
     }
@@ -214,7 +226,7 @@ extension RelayClipboardChannel: URLSessionWebSocketDelegate {
         didCloseWith closeCode: URLSessionWebSocketTask.CloseCode,
         reason: Data?
     ) {
-        Task { @MainActor in self.ready = false }
+        setReady(false)
         task = nil
         onClosed()
     }
