@@ -145,8 +145,16 @@ public static class ClipboardWireCodec
         var hash = frame.Slice(34, 32).ToArray();
         var payloadLength = BinaryPrimitives.ReadInt32LittleEndian(frame.Slice(66, 4));
 
-        if (count <= 0 || index < 0 || index >= count || total <= 0 ||
-            payloadLength < 0 || payloadLength > MaxChunkSize ||
+        var maxTotal = kind == ClipboardContentKind.TextUtf8
+            ? ClipboardContent.MaxTextBytes
+            : ClipboardContent.MaxImageBytes;
+        var maxCount = (maxTotal + 255) / 256;
+
+        if (count <= 0 || count > maxCount ||
+            index < 0 || index >= count ||
+            total <= 0 || total > maxTotal ||
+            payloadLength <= 0 || payloadLength > MaxChunkSize ||
+            payloadLength > total ||
             frame.Length != HeaderSize + payloadLength)
             throw new InvalidDataException("Invalid clipboard frame metadata.");
 
@@ -163,6 +171,7 @@ public sealed class ClipboardReassembler
         public required int TotalLength;
         public required byte[] Hash;
         public required DateTimeOffset Created;
+        public int Bytes;
         public Dictionary<int, byte[]> Chunks { get; } = [];
     }
 
@@ -200,7 +209,19 @@ public sealed class ClipboardReassembler
             throw new InvalidDataException("Clipboard transfer metadata changed mid-transfer.");
         }
 
-        pending.Chunks.TryAdd(chunk.Index, chunk.Payload.ToArray());
+        if (!pending.Chunks.ContainsKey(chunk.Index))
+        {
+            if ((long)pending.Bytes + chunk.Payload.Length > pending.TotalLength)
+            {
+                _pending.Remove(chunk.TransferId);
+                throw new InvalidDataException("Clipboard transfer exceeds declared total length.");
+            }
+
+            var copy = chunk.Payload.ToArray();
+            pending.Chunks.Add(chunk.Index, copy);
+            pending.Bytes += copy.Length;
+        }
+
         if (pending.Chunks.Count != pending.Count) return null;
 
         using var output = new MemoryStream(pending.TotalLength);
