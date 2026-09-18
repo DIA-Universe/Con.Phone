@@ -20,6 +20,7 @@ public sealed class InputCapture : IDisposable
     private HotkeyBinding _toggleHotkey = SettingsStore.DefaultToggle();
     private HotkeyBinding _emergencyHotkey = SettingsStore.DefaultEmergency();
     private HotkeyBinding _lockAndReturnHotkey = SettingsStore.DefaultLockAndReturn();
+    private HangulKeyMode _hangulKeyMode = HangulKeyMode.RightAlt;
 
     private Action<HotkeyBinding>? _captureCallback;
     private readonly HashSet<int> _downKeys = [];
@@ -63,6 +64,12 @@ public sealed class InputCapture : IDisposable
             _emergencyHotkey = emergency.Clone();
             _lockAndReturnHotkey = lockAndReturn.Clone();
         }
+    }
+
+    public void ConfigureKeyboard(HangulKeyMode hangulKeyMode)
+    {
+        lock (_gate)
+            _hangulKeyMode = hangulKeyMode;
     }
 
     // Capturing is performed inside the low-level hook, not in a TextBox. This prevents the
@@ -262,6 +269,44 @@ public sealed class InputCapture : IDisposable
             lock (_gate)
             {
                 if (!_remote) return CallNextHookEx(0, code, message, data);
+
+                var isHangulKey =
+                    key == 0x15 ||
+                    ((int)k.Scan & 0xFF) == 0xF2;
+
+                if (isHangulKey)
+                {
+                    switch (_hangulKeyMode)
+                    {
+                        case HangulKeyMode.CtrlSpace:
+                        case HangulKeyMode.ShiftSpace:
+                            if (!up && firstDown)
+                            {
+                                var modifier = _hangulKeyMode == HangulKeyMode.CtrlSpace
+                                    ? (byte)0xE0
+                                    : (byte)0xE1;
+                                Packet?.Invoke(new KeyboardPacket(_keys.SnapshotWith(modifier, 0x2C)));
+                                Packet?.Invoke(new KeyboardPacket(_keys.Snapshot()));
+                            }
+                            return 1;
+
+                        case HangulKeyMode.RightAlt:
+                        {
+                            var rightAlt = _keys.Update(0xE6, !up);
+                            if (rightAlt is not null)
+                                Packet?.Invoke(new KeyboardPacket(rightAlt));
+                            return 1;
+                        }
+
+                        default:
+                        {
+                            var lang1 = _keys.Update(0x90, !up);
+                            if (lang1 is not null)
+                                Packet?.Invoke(new KeyboardPacket(lang1));
+                            return 1;
+                        }
+                    }
+                }
 
                 var report = _keys.Update(
                     Hid.Usage(key, (int)k.Scan, (k.Flags & 1) != 0),
