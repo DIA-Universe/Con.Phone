@@ -47,7 +47,7 @@ public sealed class ClipboardSyncCoordinator : IAsyncDisposable
             }
             catch (Exception ex)
             {
-                Status?.Invoke($"Clipboard LAN/P2P 시작 실패; BLE fallback 유지: {ex.Message}");
+                Status?.Invoke($"Clipboard P2P 서버 시작 실패; BLE fallback 유지: {ex.Message}");
             }
         }
 
@@ -115,12 +115,12 @@ public sealed class ClipboardSyncCoordinator : IAsyncDisposable
                 try
                 {
                     await _lan.SendAsync(id, content, token).ConfigureAwait(false);
-                    Status?.Invoke($"Clipboard 전송 완료 · LAN/P2P · {Describe(content)}");
+                    Status?.Invoke($"Clipboard 전송 완료 · P2P · {Describe(content)}");
                     return true;
                 }
                 catch (Exception ex)
                 {
-                    Status?.Invoke($"LAN/P2P 전송 실패, BLE fallback 확인: {ex.Message}");
+                    Status?.Invoke($"P2P 전송 실패, BLE fallback 확인: {ex.Message}");
                 }
             }
 
