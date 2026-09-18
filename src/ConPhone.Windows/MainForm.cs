@@ -86,6 +86,12 @@ public sealed class MainForm : Form
     private readonly Label _scrollSpeedValue = new() { AutoSize = true, Width = 70, ForeColor = Secondary };
     private readonly CheckBox _invertScroll = new() { Text = "스크롤 방향 반전", AutoSize = true, ForeColor = TextColor };
 
+    private readonly ComboBox _hangulMode = new()
+    {
+        DropDownStyle = ComboBoxStyle.DropDownList,
+        Width = 240
+    };
+
     private readonly TextBox _toggleHotkeyBox = HotkeyBox();
     private readonly TextBox _emergencyHotkeyBox = HotkeyBox();
     private readonly TextBox _lockHotkeyBox = HotkeyBox();
@@ -190,6 +196,14 @@ public sealed class MainForm : Form
         BackColor = Bg;
         ForeColor = TextColor;
         AutoScaleMode = AutoScaleMode.Dpi;
+
+        _hangulMode.Items.AddRange(
+        [
+            "Right Alt (Galaxy 권장)",
+            "HID LANG1",
+            "Ctrl+Space",
+            "Shift+Space"
+        ]);
 
         LoadSettingsToUi();
         ApplyInputSettings(save: false);
@@ -388,6 +402,25 @@ public sealed class MainForm : Form
                 return Task.CompletedTask;
             })));
         flow.Controls.Add(pointer);
+
+        var keyboard = Section(185);
+        keyboard.Controls.Add(SectionTitle("키보드 / 한영키"));
+        keyboard.Controls.Add(Help(
+            "Galaxy 기본값은 Right Alt입니다. 기기에서 한영 전환이 안 되면 LANG1, Ctrl+Space, Shift+Space 순서로 바꿔 테스트할 수 있습니다."));
+        keyboard.Controls.Add(LabeledRow("한영키 전송 방식", _hangulMode));
+        keyboard.Controls.Add(Row(
+            ActionButton("키보드 설정 저장", () =>
+            {
+                ApplyInputSettings(save: true);
+                return Task.CompletedTask;
+            }, primary: true),
+            ActionButton("Galaxy 권장값", () =>
+            {
+                _hangulMode.SelectedIndex = 0;
+                ApplyInputSettings(save: true);
+                return Task.CompletedTask;
+            })));
+        flow.Controls.Add(keyboard);
 
         var hotkeys = Section(305);
         hotkeys.Controls.Add(SectionTitle("단축키"));
@@ -826,6 +859,14 @@ public sealed class MainForm : Form
         _mouseSpeed.Value = _settings.MouseSpeedPercent;
         _scrollSpeed.Value = _settings.ScrollSpeedPercent;
         _invertScroll.Checked = _settings.InvertScroll;
+        _hangulMode.SelectedIndex = _settings.HangulKeyMode switch
+        {
+            HangulKeyMode.RightAlt => 0,
+            HangulKeyMode.Lang1 => 1,
+            HangulKeyMode.CtrlSpace => 2,
+            HangulKeyMode.ShiftSpace => 3,
+            _ => 0
+        };
 
         _toggleHotkeyBox.Text = HotkeyCatalog.Display(_settings.ToggleHotkey);
         _emergencyHotkeyBox.Text = HotkeyCatalog.Display(_settings.EmergencyHotkey);
@@ -848,6 +889,13 @@ public sealed class MainForm : Form
         _settings.MouseSpeedPercent = _mouseSpeed.Value;
         _settings.ScrollSpeedPercent = _scrollSpeed.Value;
         _settings.InvertScroll = _invertScroll.Checked;
+        _settings.HangulKeyMode = _hangulMode.SelectedIndex switch
+        {
+            1 => HangulKeyMode.Lang1,
+            2 => HangulKeyMode.CtrlSpace,
+            3 => HangulKeyMode.ShiftSpace,
+            _ => HangulKeyMode.RightAlt
+        };
 
         _pointerScaler.Configure(
             _settings.MouseSpeedPercent,
@@ -858,6 +906,7 @@ public sealed class MainForm : Form
             _settings.ToggleHotkey,
             _settings.EmergencyHotkey,
             _settings.LockAndReturnHotkey);
+        _input.ConfigureKeyboard(_settings.HangulKeyMode);
 
         _mouseSpeedValue.Text = $"{_mouseSpeed.Value}%";
         _scrollSpeedValue.Text = $"{_scrollSpeed.Value}%";
@@ -865,7 +914,9 @@ public sealed class MainForm : Form
         if (save)
         {
             SettingsStore.Save(_settings);
-            Log($"입력 설정 저장 · 마우스 {_settings.MouseSpeedPercent}% · 스크롤 {_settings.ScrollSpeedPercent}%");
+            Log(
+                $"입력 설정 저장 · 마우스 {_settings.MouseSpeedPercent}% · " +
+                $"스크롤 {_settings.ScrollSpeedPercent}% · 한영키 {_settings.HangulKeyMode}");
         }
     }
 
@@ -1454,6 +1505,7 @@ public sealed class MainForm : Form
             MouseSpeedPercent = _settings.MouseSpeedPercent,
             ScrollSpeedPercent = _settings.ScrollSpeedPercent,
             MousePacingIntervalMs = _ble.MousePacingIntervalMs,
+            HangulKeyMode = _settings.HangulKeyMode.ToString(),
             ToggleHotkey = HotkeyCatalog.Display(_settings.ToggleHotkey),
             EmergencyHotkey = HotkeyCatalog.Display(_settings.EmergencyHotkey),
             LockAndReturnHotkey = HotkeyCatalog.Display(_settings.LockAndReturnHotkey),
