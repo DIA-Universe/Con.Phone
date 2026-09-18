@@ -13,9 +13,6 @@ final class ClipboardBridge: NSObject, ObservableObject {
     private let rxUUID = CBUUID(string: "67A7F003-7E5B-4A2E-9B8B-1C9A5B6D1001")
     private let secretUUID = CBUUID(string: "67A7F004-7E5B-4A2E-9B8B-1C9A5B6D1001")
     private let directLinkUUID = CBUUID(string: "67A7F006-7E5B-4A2E-9B8B-1C9A5B6D1001")
-    private let relayConfigUUID = CBUUID(string: "67A7F007-7E5B-4A2E-9B8B-1C9A5B6D1001")
-
-    private let credentialStore = SecureCredentialStore()
 
     private lazy var central = CBCentralManager(
         delegate: self,
@@ -27,16 +24,11 @@ final class ClipboardBridge: NSObject, ObservableObject {
     private var tx: CBCharacteristic?
     private var rx: CBCharacteristic?
     private var directLinkCharacteristic: CBCharacteristic?
-    private var relayConfigCharacteristic: CBCharacteristic?
     private var credential: Data?
     private var directConfig: DirectConfig?
-    private var relayEndpoint: String?
-    private var relay: RelayClipboardChannel?
-    private var relayGeneration: UUID?
     private var lan: LanClipboardChannel?
     private var directHostRefreshAttempt = 0
     private var directConfigReadAttempt = 0
-    private var relayRefreshScheduled = false
 
     private struct DirectConfig {
         let ssid: String
@@ -50,23 +42,11 @@ final class ClipboardBridge: NSObject, ObservableObject {
     private var writeInFlight = false
 
     func start() {
-        if credential == nil {
-            credential = credentialStore.loadCredential()
-        }
-        if relayEndpoint == nil {
-            relayEndpoint = credentialStore.loadRelayEndpoint()
-        }
-        if let endpoint = relayEndpoint, credential?.count == 64 {
-            startRelay(endpoint)
-        }
-
         _ = central
         if central.state == .poweredOn {
             scan()
         } else {
-            status = relay?.ready == true
-                ? "Relay 연결 유지 · Bluetooth 준비 대기"
-                : "Bluetooth 준비 대기"
+            status = "Bluetooth 준비 대기"
         }
     }
 
@@ -88,30 +68,29 @@ final class ClipboardBridge: NSObject, ObservableObject {
                 return
             }
 
-            let bleAllowed = content.kind == .text || content.data.count <= 512 * 1024
-            if bleAllowed, let peripheral, rx != nil {
-                let maxWrite = peripheral.maximumWriteValueLength(for: .withResponse)
-                let frames = try ClipboardProtocol.encode(content, chunkSize: 16 * 1024)
-                for frame in frames {
-                    let transferId = UInt32.random(in: UInt32.min...UInt32.max)
-                    writeQueue.append(contentsOf: try ClipboardProtocol.splitBle(
-                        frame,
-                        maxGattValue: maxWrite,
-                        transferId: transferId
-                    ))
-                }
-                writeNext()
+            guard let peripheral, rx != nil else {
+                status = "PC Clipboard BLE 연결이 없습니다."
                 return
             }
 
-            if let relay, relay.ready {
-                relay.send(frames: try ClipboardProtocol.encode(content))
+            if content.kind != .text && content.data.count > 512 * 1024 {
+                status = fastLinkAvailable
+                    ? "이미지가 커서 P2P 고속 연결이 필요합니다."
+                    : "512 KiB 초과 이미지는 P2P 고속 연결 후 전송해 주세요."
                 return
             }
 
-            status = bleAllowed
-                ? "현재 사용 가능한 Clipboard 전송 경로가 없습니다."
-                : "큰 이미지를 보낼 P2P/Relay 경로가 없습니다."
+            let maxWrite = peripheral.maximumWriteValueLength(for: .withResponse)
+            let frames = try ClipboardProtocol.encode(content, chunkSize: 16 * 1024)
+            for frame in frames {
+                let transferId = UInt32.random(in: UInt32.min...UInt32.max)
+                writeQueue.append(contentsOf: try ClipboardProtocol.splitBle(
+                    frame,
+                    maxGattValue: maxWrite,
+                    transferId: transferId
+                ))
+            }
+            writeNext()
         } catch {
             status = "클립보드 전송 준비 실패: \(error.localizedDescription)"
         }
@@ -223,79 +202,6 @@ final class ClipboardBridge: NSObject, ObservableObject {
             guard let self, let peripheral else { return }
             peripheral.readValue(for: characteristic)
         }
-    }
-
-    private func readRelayConfig(_ peripheral: CBPeripheral? = nil) {
-        guard let characteristic = relayConfigCharacteristic else { return }
-        (peripheral ?? self.peripheral)?.readValue(for: characteristic)
-    }
-
-    private func scheduleRelayRefresh() {
-        guard !relayRefreshScheduled else { return }
-        relayRefreshScheduled = true
-        DispatchQueue.main.asyncAfter(deadline: .now() + 15) { [weak self] in
-            guard let self else { return }
-            self.relayRefreshScheduled = false
-            if self.peripheral != nil {
-                self.readRelayConfig()
-            }
-        }
-    }
-
-    private func parseRelayEndpoint(_ value: Data) -> String? {
-        guard value.count >= 4, value[0] == 1, value[1] == 1 else { return nil }
-        let length = Int(value[2]) | (Int(value[3]) << 8)
-        guard length > 0, length <= 1024, value.count == 4 + length,
-              let endpoint = String(data: value.subdata(in: 4..<value.count), encoding: .utf8) else {
-            return nil
-        }
-
-        let trimmed = endpoint.trimmingCharacters(in: .whitespacesAndNewlines)
-        return trimmed.lowercased().hasPrefix("https://") || trimmed.lowercased().hasPrefix("wss://")
-            ? trimmed
-            : nil
-    }
-
-    private func startRelay(_ endpoint: String) {
-        guard let credential, credential.count == 64 else { return }
-        if relay?.ready == true { return }
-
-        let deviceHash = credential.subdata(in: 0..<32)
-        let secret = credential.subdata(in: 32..<64)
-        relay?.close()
-
-        let generation = UUID()
-        relayGeneration = generation
-        let channel = RelayClipboardChannel(
-            endpoint: endpoint,
-            deviceHash: deviceHash,
-            secret: secret,
-            onFrame: { [weak self] frame in
-                DispatchQueue.main.async {
-                    self?.receiveLan(frame)
-                }
-            },
-            onStatus: { [weak self] text in
-                DispatchQueue.main.async {
-                    self?.status = text
-                }
-            },
-            onClosed: { [weak self] in
-                DispatchQueue.main.async {
-                    guard let self, self.relayGeneration == generation else { return }
-                    self.relay = nil
-                    self.relayGeneration = nil
-                    if self.relayEndpoint == endpoint {
-                        DispatchQueue.main.asyncAfter(deadline: .now() + 3) { [weak self] in
-                            guard let self, self.relay == nil else { return }
-                            self.startRelay(endpoint)
-                        }
-                    }
-                }
-            }
-        )
-        relay = channel
-        channel.start()
     }
 
     private func parseDirectConfig(_ value: Data) -> DirectConfig? {
@@ -440,14 +346,13 @@ extension ClipboardBridge: CBCentralManagerDelegate {
         tx = nil
         rx = nil
         directLinkCharacteristic = nil
-        relayConfigCharacteristic = nil
 
-        let dataPlaneAlive = lan?.ready == true || relay?.ready == true
+        let dataPlaneAlive = lan?.ready == true
         writeQueue.removeAll()
         writeInFlight = false
         status = dataPlaneAlive
-            ? "Bluetooth 연결 끊김 · 기존 Clipboard 데이터 채널 유지"
-            : "PC Bluetooth 연결 끊김 · Relay/P2P 복구 확인"
+            ? "Bluetooth 연결 끊김 · 기존 P2P Clipboard 채널 유지"
+            : "PC Bluetooth 연결 끊김 · 재검색"
         if !isReconnecting {
             self.peripheral = nil
             DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in self?.scan() }
@@ -470,7 +375,7 @@ extension ClipboardBridge: CBPeripheralDelegate {
             status = "Clipboard BLE 서비스 없음"
             return
         }
-        peripheral.discoverCharacteristics([txUUID, rxUUID, secretUUID, directLinkUUID, relayConfigUUID], for: service)
+        peripheral.discoverCharacteristics([txUUID, rxUUID, secretUUID, directLinkUUID], for: service)
     }
 
     func peripheral(
@@ -494,8 +399,6 @@ extension ClipboardBridge: CBPeripheralDelegate {
                 peripheral.readValue(for: characteristic)
             case directLinkUUID:
                 directLinkCharacteristic = characteristic
-            case relayConfigUUID:
-                relayConfigCharacteristic = characteristic
             default:
                 break
             }
@@ -511,46 +414,11 @@ extension ClipboardBridge: CBPeripheralDelegate {
     ) {
         if let error {
             if characteristic.uuid == secretUUID {
-                status = "Windows에서 기기 승인 대기"
-                DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self, weak peripheral] in
-                    guard let self, let peripheral else { return }
-                    peripheral.readValue(for: characteristic)
-                }
-            } else if characteristic.uuid == directLinkUUID {
-                status = "P2P 설정 읽기 실패 · BLE fallback 유지"
-                readRelayConfig(peripheral)
-            } else if characteristic.uuid == relayConfigUUID {
-                status = "Relay 설정 읽기 실패 · 로컬 경로 유지"
-                scheduleRelayRefresh()
-            } else {
-                status = "BLE 읽기 실패: \(error.localizedDescription)"
-            }
-            return
-        }
-
-        guard let value = characteristic.value else { return }
-
-        if characteristic.uuid == secretUUID {
             if value.count == 64 {
-                let changed = credential != value
-                if changed {
-                    relayGeneration = nil
-                    relay?.close()
-                    relay = nil
-                }
-
                 credential = value
-                credentialStore.saveCredential(value)
                 status = "BLE Clipboard 연결됨 · 동일 Wi-Fi 불필요"
-
-                if let endpoint = relayEndpoint {
-                    startRelay(endpoint)
-                }
-
                 if let directLinkCharacteristic {
                     peripheral.readValue(for: directLinkCharacteristic)
-                } else {
-                    readRelayConfig(peripheral)
                 }
             }
             return
@@ -569,23 +437,6 @@ extension ClipboardBridge: CBPeripheralDelegate {
             } else {
                 retryDirectConfigRead(peripheral)
             }
-            readRelayConfig(peripheral)
-            return
-        }
-
-        if characteristic.uuid == relayConfigUUID {
-            let endpoint = parseRelayEndpoint(value)
-            relayEndpoint = endpoint
-            credentialStore.saveRelayEndpoint(endpoint)
-
-            if let endpoint {
-                startRelay(endpoint)
-            } else {
-                relayGeneration = nil
-                relay?.close()
-                relay = nil
-            }
-            scheduleRelayRefresh()
             return
         }
 
