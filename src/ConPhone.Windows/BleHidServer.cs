@@ -497,7 +497,6 @@ public sealed class BleHidServer : IDisposable
 
     private bool IsReady(string id) =>
         !_suspended.GetValueOrDefault(id) &&
-        IsConnected(id) &&
         Client(_keyboard, id) is not null &&
         Client(_mouse, id) is not null;
 
