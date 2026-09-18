@@ -565,14 +565,7 @@ class ClipboardBridgeService : Service() {
         if (uri != null) {
             executor.execute {
                 runCatching {
-                    contentResolver.openInputStream(uri).use { input ->
-                        val bitmap = BitmapFactory.decodeStream(input)
-                            ?: error("이미지를 읽을 수 없습니다.")
-                        val out = ByteArrayOutputStream()
-                        bitmap.compress(Bitmap.CompressFormat.PNG, 100, out)
-                        bitmap.recycle()
-                        ClipboardProtocol.image(ClipboardKind.PNG, out.toByteArray())
-                    }
+                    decodeClipboardUriToPng(uri)
                 }.onSuccess(::sendContent)
                     .onFailure { toast("이미지 전송 준비 실패: ${it.message}") }
             }
@@ -653,6 +646,45 @@ class ClipboardBridgeService : Service() {
         }
     }
 
+    private fun ensureSafeImageDimensions(bytes: ByteArray) {
+        val options = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        BitmapFactory.decodeByteArray(bytes, 0, bytes.size, options)
+
+        val width = options.outWidth
+        val height = options.outHeight
+        require(width > 0 && height > 0 &&
+            width.toLong() * height.toLong() <= 40_000_000L) {
+            "이미지 해상도가 안전 한도(40MP)를 초과합니다: ${width}x${height}"
+        }
+    }
+
+    private fun decodeClipboardUriToPng(uri: android.net.Uri): ClipboardContent {
+        val options = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        contentResolver.openInputStream(uri).use { input ->
+            BitmapFactory.decodeStream(input, null, options)
+        }
+
+        val width = options.outWidth
+        val height = options.outHeight
+        require(width > 0 && height > 0 &&
+            width.toLong() * height.toLong() <= 40_000_000L) {
+            "이미지 해상도가 안전 한도(40MP)를 초과합니다: ${width}x${height}"
+        }
+
+        val bitmap = contentResolver.openInputStream(uri).use { input ->
+            BitmapFactory.decodeStream(input)
+                ?: error("이미지를 읽을 수 없습니다.")
+        }
+
+        return try {
+            val out = ByteArrayOutputStream()
+            bitmap.compress(Bitmap.CompressFormat.PNG, 100, out)
+            ClipboardProtocol.image(ClipboardKind.PNG, out.toByteArray())
+        } finally {
+            bitmap.recycle()
+        }
+    }
+
     private fun applyRemoteClipboard(content: ClipboardContent) {
         main.post {
             val clipboard = getSystemService(android.content.ClipboardManager::class.java)
@@ -664,6 +696,7 @@ class ClipboardBridgeService : Service() {
                 }
                 else -> {
                     runCatching {
+                        ensureSafeImageDimensions(content.data)
                         val bitmap = BitmapFactory.decodeByteArray(content.data, 0, content.data.size)
                             ?: error("수신 이미지를 해석할 수 없습니다.")
                         FileOutputStream(File(cacheDir, ClipboardImageProvider.FILE_NAME)).use { out ->
