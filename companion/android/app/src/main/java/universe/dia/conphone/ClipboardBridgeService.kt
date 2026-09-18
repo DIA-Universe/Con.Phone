@@ -421,13 +421,14 @@ class ClipboardBridgeService : Service() {
             ::onLanFrame,
             ::showStatus
         ) {
-            if (relayGeneration != generation) return@RelayChannel
-            relay = null
-            if (!destroyed && relayEndpoint == endpoint) {
-                main.postDelayed({
-                    if (!destroyed && relay == null && relayGeneration == generation)
-                        startRelay(endpoint)
-                }, 3000)
+            if (relayGeneration == generation) {
+                relay = null
+                if (!destroyed && relayEndpoint == endpoint) {
+                    main.postDelayed({
+                        if (!destroyed && relay == null && relayGeneration == generation)
+                            startRelay(endpoint)
+                    }, 3000)
+                }
             }
         }
         relay = channel
