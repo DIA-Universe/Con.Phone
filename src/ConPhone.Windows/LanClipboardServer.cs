@@ -68,7 +68,7 @@ public sealed class LanClipboardServer : IAsyncDisposable
             try
             {
                 var result = await _discovery!.ReceiveAsync(token).ConfigureAwait(false);
-                if (result.Buffer.AsSpan().SequenceEqual(expected))
+                if (_enabled() && result.Buffer.AsSpan().SequenceEqual(expected))
                     await _discovery.SendAsync(response, result.RemoteEndPoint, token).ConfigureAwait(false);
             }
             catch (OperationCanceledException) when (token.IsCancellationRequested)
@@ -206,6 +206,19 @@ public sealed class LanClipboardServer : IAsyncDisposable
 
         foreach (var frame in ClipboardWireCodec.Encode(content))
             await client.WriteEncryptedAsync(frame, token).ConfigureAwait(false);
+    }
+
+    public void Deactivate()
+    {
+        ClientConnection? client;
+        lock (_clientGate)
+        {
+            client = _client;
+            _client = null;
+        }
+
+        client?.Close();
+        Status?.Invoke("Clipboard LAN/P2P 연결 종료.");
     }
 
     private static async Task<bool> ReadExactAsync(Stream stream, Memory<byte> buffer, CancellationToken token)
