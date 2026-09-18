@@ -161,6 +161,36 @@ catch (InvalidDataException)
     oversizedWireFrameRejected = true;
 }
 Check("oversized clipboard wire frame rejected", oversizedWireFrameRejected);
+bool zeroPayloadFrameRejected = false;
+try
+{
+    var validFrame = ClipboardWireCodec.Encode(clipText, 4096).Single().ToArray();
+    // payloadLength at byte 66; force 0 and trim to header-only.
+    Array.Clear(validFrame, 66, 4);
+    ClipboardWireCodec.Decode(validFrame[..ClipboardWireCodec.HeaderSize]);
+}
+catch (InvalidDataException)
+{
+    zeroPayloadFrameRejected = true;
+}
+Check("zero payload clipboard frame rejected", zeroPayloadFrameRejected);
+
+bool oversizedDeclaredTotalRejected = false;
+try
+{
+    var invalidTotal = ClipboardWireCodec.Encode(clipText, 4096).Single().ToArray();
+    var tooLarge = ClipboardContent.MaxTextBytes + 1;
+    invalidTotal[30] = (byte)(tooLarge & 0xFF);
+    invalidTotal[31] = (byte)((tooLarge >> 8) & 0xFF);
+    invalidTotal[32] = (byte)((tooLarge >> 16) & 0xFF);
+    invalidTotal[33] = (byte)((tooLarge >> 24) & 0xFF);
+    ClipboardWireCodec.Decode(invalidTotal);
+}
+catch (InvalidDataException)
+{
+    oversizedDeclaredTotalRejected = true;
+}
+Check("oversized declared clipboard total rejected", oversizedDeclaredTotalRejected);
 
 var wholeFrame = ClipboardWireCodec.Encode(clipText, 4096).Single();
 var bleParts = BleFragmentCodec.Split(wholeFrame, 20, 42);
