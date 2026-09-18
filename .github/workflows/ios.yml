@@ -1,0 +1,36 @@
+name: iOS companion build
+on:
+  push:
+    paths:
+      - 'companion/ios/**'
+      - '.github/workflows/ios.yml'
+  pull_request:
+    paths:
+      - 'companion/ios/**'
+      - '.github/workflows/ios.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: macos-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install XcodeGen
+        run: brew install xcodegen
+      - name: Generate Xcode project
+        working-directory: companion/ios
+        run: xcodegen generate
+      - name: Build iOS Companion
+        working-directory: companion/ios
+        run: |
+          xcodebuild \
+            -project ConPhoneCompanion.xcodeproj \
+            -scheme ConPhoneCompanion \
+            -configuration Debug \
+            -sdk iphonesimulator \
+            CODE_SIGNING_ALLOWED=NO \
+            build
