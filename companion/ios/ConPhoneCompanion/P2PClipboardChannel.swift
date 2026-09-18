@@ -178,7 +178,7 @@ final class P2PClipboardChannel {
             case .success(let prefix):
                 let length = Int(prefix.int32LE(at: 0))
                 guard length >= 28,
-                      length <= ClipboardProtocol.maxImage + 1024 * 1024 else {
+                      length <= 1024 * 1024 + 70 + 28 else {
                     self.ready = false
                     self.onStatus("P2P 수신 길이 오류")
                     self.connection.cancel()
