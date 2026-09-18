@@ -242,7 +242,20 @@ extension ClipboardBridge: CBPeripheralDelegate {
         didUpdateValueFor characteristic: CBCharacteristic,
         error: Error?
     ) {
-        guard error == nil, let value = characteristic.value else { return }
+        if let error {
+            if characteristic.uuid == secretUUID {
+                status = "Windows에서 기기 승인 대기"
+                DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self, weak peripheral] in
+                    guard let self, let peripheral else { return }
+                    peripheral.readValue(for: characteristic)
+                }
+            } else {
+                status = "BLE 읽기 실패: \(error.localizedDescription)"
+            }
+            return
+        }
+
+        guard let value = characteristic.value else { return }
 
         if characteristic.uuid == secretUUID {
             if value.count == 64 {
