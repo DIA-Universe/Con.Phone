@@ -29,6 +29,7 @@ final class ClipboardBridge: NSObject, ObservableObject {
     private var p2p: P2PClipboardChannel?
     private var directHostRefreshAttempt = 0
     private var directConfigReadAttempt = 0
+    private var pendingFastLinkConnect = false
 
     private struct DirectConfig {
         let ssid: String
@@ -97,6 +98,17 @@ final class ClipboardBridge: NSObject, ObservableObject {
     }
 
     func connectFastLink() {
+        if let peripheral, let characteristic = directLinkCharacteristic {
+            pendingFastLinkConnect = true
+            status = "P2P 최신 설정 확인 중"
+            peripheral.readValue(for: characteristic)
+            return
+        }
+
+        applyFastLinkConfiguration()
+    }
+
+    private func applyFastLinkConfiguration() {
         guard let config = directConfig else {
             status = "Windows P2P 고속 링크 정보가 아직 없습니다."
             return
@@ -458,6 +470,9 @@ extension ClipboardBridge: CBPeripheralDelegate {
                 fastLinkAvailable = true
                 if config.hostAddress != nil && directHostRefreshAttempt > 0 {
                     startLanFastPath()
+                } else if pendingFastLinkConnect {
+                    pendingFastLinkConnect = false
+                    applyFastLinkConfiguration()
                 } else {
                     status = "P2P 고속 연결 사용 가능 · 필요하면 버튼으로 연결"
                 }
