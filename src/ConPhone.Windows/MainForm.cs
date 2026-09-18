@@ -26,7 +26,7 @@ public sealed class MainForm : Form
 
     public MainForm()
     {
-        Text = "Con.Phone 0.1.4 · 동글 없는 무선 입력";
+        Text = "Con.Phone 0.1.5 · 동글 없는 무선 입력";
         Width = 880; Height = 820; MinimumSize = new Size(780, 660);
         StartPosition = FormStartPosition.CenterScreen;
         Font = new Font("Segoe UI", 10);
@@ -81,7 +81,7 @@ public sealed class MainForm : Form
         _timer.Tick += (_, _) =>
         {
             if (_input.IsRemote && !_ble.Ready) ImmediateLocal();
-            _state.Text = _input.IsRemote ? "휴대폰 조작 중 · F9로 즉시 복귀" : $"노트북 조작 중 · 광고:{_ble.Advertisement} · 승인:{(_ble.Ready ? "준비됨" : "대기")}";
+            _state.Text = _input.IsRemote ? "휴대폰 조작 중 · F9로 즉시 복귀" : $"노트북 조작 중 · 광고:{_ble.Advertisement} · HID구독 K:{_ble.KeyboardSubscribers} M:{_ble.MouseSubscribers} · 승인:{(_ble.Ready ? "준비됨" : "대기")}";
             _tray.Text = _input.IsRemote ? "Con.Phone · 휴대폰 입력 / F9 복귀" : "Con.Phone · 노트북 입력";
         };
         _timer.Start();
@@ -152,7 +152,7 @@ public sealed class MainForm : Form
         try
         {
             await _ble.SendAsync(new(true, new byte[8]), () => epoch == Volatile.Read(ref _epoch), timeout.Token);
-            await _ble.SendAsync(new(false, new byte[5]), () => epoch == Volatile.Read(ref _epoch), timeout.Token);
+            await _ble.SendAsync(new(false, new byte[Hid.MouseReportLength]), () => epoch == Volatile.Read(ref _epoch), timeout.Token);
         }
         catch (Exception ex)
         {
@@ -236,9 +236,9 @@ public sealed class MainForm : Form
         if (dialog.ShowDialog(this) != DialogResult.OK) return;
         var report = new
         {
-            Version = "0.1.4", OS = Environment.OSVersion.Version.ToString(), Runtime = Environment.Version.ToString(),
+            Version = "0.1.5", OS = Environment.OSVersion.Version.ToString(), Runtime = Environment.Version.ToString(),
             TargetProfile = _profile.SelectedIndex == 0 ? "Android" : "iPhone", Bluetooth = await BleHidServer.DiagnoseAsync(),
-            Advertisement = _ble.Advertisement, BleLastOperation = _ble.LastOperation, ApprovedAndSubscribed = _ble.Ready,
+            Advertisement = _ble.Advertisement, BleLastOperation = _ble.LastOperation, KeyboardSubscribers = _ble.KeyboardSubscribers, MouseSubscribers = _ble.MouseSubscribers, ApprovedAndSubscribed = _ble.Ready,
             SendOperations = Interlocked.Read(ref _sent), Pending = _outbox.Count, LastError = _lastError,
             AndroidHardwareTest = "Not performed by build environment", IPhoneHardwareTest = "Not performed",
             Privacy = "No text, keys, pairing codes, device names or Bluetooth addresses are exported."
