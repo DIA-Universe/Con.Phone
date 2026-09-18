@@ -14,6 +14,8 @@ final class P2PClipboardChannel {
 
     private var pendingWrites: [Data] = []
     private var writing = false
+    private var sendSequence: UInt64 = 0
+    private var receiveSequence: UInt64 = 0
     private(set) var ready = false
 
     init(
@@ -130,13 +132,17 @@ final class P2PClipboardChannel {
         let plaintext = pendingWrites.removeFirst()
 
         do {
+            sendSequence = try nextSequence(sendSequence)
+            var sequenceData = Data()
+            sequenceData.appendUInt64LE(sendSequence)
+
             let sealed = try AES.GCM.seal(
                 plaintext,
                 using: SymmetricKey(data: secret),
-                authenticating: aad
+                authenticating: aad + sequenceData
             )
             let nonce = Data(sealed.nonce)
-            let body = nonce + sealed.ciphertext + sealed.tag
+            let body = nonce + sequenceData + sealed.ciphertext + sealed.tag
             var prefix = Data()
             prefix.appendInt32LE(Int32(body.count))
             let packet = prefix + body
@@ -177,8 +183,8 @@ final class P2PClipboardChannel {
                 self.connection.cancel()
             case .success(let prefix):
                 let length = Int(prefix.int32LE(at: 0))
-                guard length >= 28,
-                      length <= 1024 * 1024 + 70 + 28 else {
+                guard length >= 36,
+                      length <= 1024 * 1024 + 70 + 36 else {
                     self.ready = false
                     self.onStatus("P2P 수신 길이 오류")
                     self.connection.cancel()
@@ -194,7 +200,13 @@ final class P2PClipboardChannel {
                     case .success(let body):
                         do {
                             let nonceData = body.subdata(in: 0..<12)
-                            let ciphertext = body.subdata(in: 12..<(body.count - 16))
+                            let sequenceData = body.subdata(in: 12..<20)
+                            let sequence = sequenceData.uint64LE(at: 0)
+                            guard sequence == self.receiveSequence + 1 else {
+                                throw ChannelError.sequence
+                            }
+
+                            let ciphertext = body.subdata(in: 20..<(body.count - 16))
                             let tag = body.suffix(16)
                             let nonce = try AES.GCM.Nonce(data: nonceData)
                             let box = try AES.GCM.SealedBox(
@@ -205,8 +217,9 @@ final class P2PClipboardChannel {
                             let plaintext = try AES.GCM.open(
                                 box,
                                 using: SymmetricKey(data: self.secret),
-                                authenticating: self.aad
+                                authenticating: self.aad + sequenceData
                             )
+                            self.receiveSequence = sequence
                             self.onFrame(plaintext)
                             self.readEncryptedLoop()
                         } catch {
@@ -253,6 +266,11 @@ final class P2PClipboardChannel {
         }
     }
 
+    private func nextSequence(_ current: UInt64) throws -> UInt64 {
+        guard current < UInt64.max else { throw ChannelError.sequence }
+        return current + 1
+    }
+
     private func hmac(_ data: Data) -> Data {
         let code = HMAC<SHA256>.authenticationCode(
             for: data,
@@ -263,5 +281,6 @@ final class P2PClipboardChannel {
 
     private enum ChannelError: Error {
         case closed
+        case sequence
     }
 }
