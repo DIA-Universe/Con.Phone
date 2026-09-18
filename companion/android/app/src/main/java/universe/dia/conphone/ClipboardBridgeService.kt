@@ -321,8 +321,6 @@ class ClipboardBridgeService : Service() {
                 )
                 showStatus("BLE Clipboard 연결됨 · LAN/P2P 승격 확인")
                 startLanDiscovery()
-                if (checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT) == PackageManager.PERMISSION_GRANTED)
-                    directLinkCharacteristic?.let { gatt?.readCharacteristic(it) }
             }
             DIRECT_LINK_UUID -> {
                 directConfig = parseDirectConfig(value)
@@ -396,8 +394,13 @@ class ClipboardBridgeService : Service() {
                     runCatching { discoverAndConnectLan(null) }
                     if (lan != null) break
 
-                    if (attempts >= 2 && directConfig != null) {
-                        main.post { requestDirectNetwork() }
+                    if (attempts >= 2) {
+                        main.post {
+                            if (directConfig != null)
+                                requestDirectNetwork()
+                            else
+                                retryDirectLinkRead()
+                        }
                         break
                     }
                     Thread.sleep(1600)
