@@ -61,3 +61,13 @@ dotnet publish src/ConPhone.Windows -c Release -r win-x64 --self-contained true 
 ```
 
 기술 구조와 검증 범위는 `docs/ARCHITECTURE.md`, 실기기 시험표는 `docs/TESTING.md`를 확인하세요.
+
+
+## Android 연결 복구
+
+Con.Phone은 Windows의 `GattServiceProvider`로 BLE HID 서비스를 제공합니다. 앱을 완전히 종료하거나 Windows를 재시작하면 Android에 저장된 기존 HID/GATT 상태와 새 provider 상태가 어긋날 수 있습니다.
+
+- 휴대폰에서 기존 PC 항목을 눌렀을 때 **연결할 수 없음**이 나오면 해당 PC 등록을 해제합니다.
+- Con.Phone을 실행해 **광고: Started** 상태를 유지한 다음 휴대폰에서 새 기기로 다시 페어링합니다.
+- Con.Phone 0.1.3부터 창의 X는 프로그램을 종료하지 않고 트레이로 숨겨 provider 재시작을 줄입니다.
+- **Bluetooth 광고 확인/시작**은 이미 광고 중이면 중복 `StartAdvertising`을 호출하지 않습니다.
