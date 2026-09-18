@@ -178,6 +178,15 @@ public sealed class MainForm : Form
         Width = 90
     };
 
+    private readonly TextBox _p2pLinkName = new()
+    {
+        Width = 220,
+        MaxLength = 18,
+        BackColor = Color.White,
+        ForeColor = TextColor,
+        BorderStyle = BorderStyle.FixedSingle
+    };
+
     private ClipboardHistoryService? _clipboard;
     private ClipboardSyncCoordinator? _clipboardSync;
     private ClipboardContent? _latestLocalClipboard;
@@ -253,7 +262,8 @@ public sealed class MainForm : Form
             _clipboardSync = new ClipboardSyncCoordinator(
                 () => _ble.ApprovedId,
                 id => _ble.IsTrustedDevice(id),
-                () => _settings.ClipboardSyncEnabled);
+                () => _settings.ClipboardSyncEnabled,
+                () => _settings.P2PLinkName);
             ConfigureTray();
             ConfigureRuntimeEvents();
             _pump = Task.Run(PumpAsync);
@@ -352,6 +362,9 @@ public sealed class MainForm : Form
         connect.Controls.Add(SectionTitle("Bluetooth 연결"));
         connect.Controls.Add(Help(
             "HID 프로필에 잠금 및 미디어키 Report가 포함됩니다. 이전 프로필로 페어링했던 기기는 새 기능 테스트 전 한 번 재페어링하는 것을 권장합니다."));
+        connect.Controls.Add(Help(
+            "Windows 내장 BLE에서는 앱별 Bluetooth 페어링 이름을 바꾸지 않습니다. Bluetooth 이름은 Windows 시스템 이름을 따르고, Con.Phone P2P 링크 이름은 클립보드 탭에서 변경할 수 있습니다.",
+            Secondary));
         connect.Controls.Add(Row(
             ActionButton("Bluetooth 다시 검사", async () => _diagnosis.Text = await BleHidServer.DiagnoseAsync()),
             ActionButton("Bluetooth 검색 신호 확인 / 시작", async () =>
@@ -515,12 +528,13 @@ public sealed class MainForm : Form
             })));
         flow.Controls.Add(history);
 
-        var options = Section(245);
+        var options = Section(290);
         options.Controls.Add(SectionTitle("클립보드 · 동기화 설정"));
         options.Controls.Add(Row(_captureClipboardText, _captureClipboardImages));
         options.Controls.Add(Row(_clipboardSyncEnabled, _clipboardSyncText, _clipboardSyncImages));
         options.Controls.Add(LabeledRow("최대 저장 개수", _clipboardLimit));
         options.Controls.Add(LabeledRow("BLE 이미지 한도 (KiB)", _clipboardBleImageLimit));
+        options.Controls.Add(LabeledRow("P2P 링크 이름", _p2pLinkName));
         options.Controls.Add(ActionButton("클립보드 설정 저장", () =>
         {
             ApplyClipboardSettings(save: true);
@@ -964,6 +978,7 @@ public sealed class MainForm : Form
         _clipboardSyncText.Checked = _settings.ClipboardAutoSendText;
         _clipboardSyncImages.Checked = _settings.ClipboardAutoSendImages;
         _clipboardBleImageLimit.Value = _settings.ClipboardBleImageLimitKb;
+        _p2pLinkName.Text = _settings.P2PLinkName;
 
         _mouseSpeedValue.Text = $"{_mouseSpeed.Value}%";
         _scrollSpeedValue.Text = $"{_scrollSpeed.Value}%";
@@ -1118,6 +1133,8 @@ public sealed class MainForm : Form
 
     private void ApplyClipboardSettings(bool save)
     {
+        var previousP2PLinkName = _settings.P2PLinkName;
+
         _settings.ClipboardHistoryLimit = (int)_clipboardLimit.Value;
         _settings.CaptureClipboardText = _captureClipboardText.Checked;
         _settings.CaptureClipboardImages = _captureClipboardImages.Checked;
@@ -1125,6 +1142,7 @@ public sealed class MainForm : Form
         _settings.ClipboardAutoSendText = _clipboardSyncText.Checked;
         _settings.ClipboardAutoSendImages = _clipboardSyncImages.Checked;
         _settings.ClipboardBleImageLimitKb = (int)_clipboardBleImageLimit.Value;
+        _settings.P2PLinkName = _p2pLinkName.Text;
         _clipboard?.Configure(
             _settings.ClipboardHistoryLimit,
             _settings.CaptureClipboardText,
@@ -1133,6 +1151,17 @@ public sealed class MainForm : Form
         if (save)
         {
             SettingsStore.Save(_settings);
+            _p2pLinkName.Text = _settings.P2PLinkName;
+
+            if (!string.Equals(
+                    previousP2PLinkName,
+                    _settings.P2PLinkName,
+                    StringComparison.Ordinal))
+            {
+                _clipboardSync?.TargetChanged();
+                Log($"P2P 링크 이름 변경 · DIRECT-CP-{_settings.P2PLinkName}");
+            }
+
             Log($"클립보드 설정 저장 · 최대 {_settings.ClipboardHistoryLimit}개 · 동기화:{_settings.ClipboardSyncEnabled} · BLE 이미지 {_settings.ClipboardBleImageLimitKb} KiB");
 
             if (_clipboardSync is not null)
