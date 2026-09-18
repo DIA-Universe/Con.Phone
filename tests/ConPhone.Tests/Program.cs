@@ -44,6 +44,10 @@ Check("release emitted without motion", Hid.Encode(new PointerPacket(0)).Single(
 Check("keyboard no embedded report id", Hid.Encode(new KeyboardPacket(new byte[8])).Single().Data.Length == 8);
 Check("system lock report down", Hid.SystemReport(true).SequenceEqual(new byte[] { 0x02 }));
 Check("system lock report up", Hid.SystemReport(false).SequenceEqual(new byte[] { 0x00 }));
+Check("consumer mute down", Hid.ConsumerReport(ConsumerAction.Mute, true).SequenceEqual(new byte[] { 0x01 }));
+Check("consumer volume up down", Hid.ConsumerReport(ConsumerAction.VolumeUp, true).SequenceEqual(new byte[] { 0x02 }));
+Check("consumer play pause down", Hid.ConsumerReport(ConsumerAction.PlayPause, true).SequenceEqual(new byte[] { 0x08 }));
+Check("consumer release", Hid.ConsumerReport(ConsumerAction.NextTrack, false).SequenceEqual(new byte[] { 0x00 }));
 var scaler = new PointerScaler();
 scaler.Configure(50, 100, false);
 Check("50 percent pointer keeps fractional first step", scaler.Apply(new PointerPacket(0, 1)).X == 0);
@@ -100,6 +104,7 @@ Check("descriptor keyboard input 64 bits", bits[(1, 0x80)] == 64);
 Check("descriptor has no output reports", !bits.ContainsKey((1, 0x90)));
 Check("descriptor pointer input 48 bits", bits[(2, 0x80)] == 48);
 Check("descriptor system-control input 8 bits", bits[(3, 0x80)] == 8);
+Check("descriptor consumer-control input 8 bits", bits[(4, 0x80)] == 8);
 
 Check("pointer pacing fallback 16ms", PointerPacing.FromBleConnectionInterval(0) == 16);
 Check("pointer pacing 12 units = 15ms", PointerPacing.FromBleConnectionInterval(12) == 15);
