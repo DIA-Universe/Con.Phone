@@ -358,7 +358,7 @@ public sealed class BleHidServer
         _approvedKeyboardClient = Client(_keyboard, id);
         _approvedMouseClient = Client(_mouse, id);
         _approvedSystemClient = Client(_systemControl, id);
-        if (_approvedKeyboardClient is null || _approvedMouseClient is null) ClearApproval();
+        if (_approvedKeyboardClient is null || _approvedMouseClient is null) ClearApproval(preserveTrusted: true);
     }
 
     private void ClearApproval(bool preserveTrusted = false)
