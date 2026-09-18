@@ -25,6 +25,7 @@ public sealed class BleHidServer
     private readonly ConcurrentDictionary<string, GattSession> _sessions = new();
     private readonly SemaphoreSlim _send = new(1, 1);
     private volatile string? _approved;
+    private string? _trustedReconnectId;
     private volatile string _lastOperation = "Idle";
     private volatile bool _running;
     private bool _everAdvertised;
@@ -99,7 +100,7 @@ public sealed class BleHidServer
                     if (_everAdvertised)
                     {
                         _running = false;
-                        _approved = null;
+                        ClearApproval(preserveTrusted: true);
                         Status?.Invoke($"광고 중단: {args.Status}; 결과: {args.Error}");
                     }
                     else
@@ -188,6 +189,7 @@ public sealed class BleHidServer
         {
             TrackSubscribedSessions(c);
             RefreshApprovedClientCache();
+            TryRestoreTrustedApproval();
             Status?.Invoke($"HID 구독 상태 · 키보드:{LiveClientCount(_keyboard)} 마우스:{LiveClientCount(_mouse)} 시스템:{LiveClientCount(_systemControl)}");
             Changed?.Invoke();
         };
@@ -203,6 +205,7 @@ public sealed class BleHidServer
         {
             TrackSubscribedSessions(c);
             RefreshApprovedClientCache();
+            TryRestoreTrustedApproval();
             Status?.Invoke($"HID 구독 상태 · 키보드:{LiveClientCount(_keyboard)} 마우스:{LiveClientCount(_mouse)} 시스템:{LiveClientCount(_systemControl)}");
             Changed?.Invoke();
         };
@@ -221,7 +224,7 @@ public sealed class BleHidServer
                     {
                         if (args.Status == GattSessionStatus.Closed)
                         {
-                            if (_approved == id) ClearApproval();
+                            if (_approved == id) ClearApproval(preserveTrusted: true);
                             _protocol.TryRemove(id, out _);
                             _suspended.TryRemove(id, out _);
                             _sessions.TryRemove(id, out _);
@@ -358,7 +361,7 @@ public sealed class BleHidServer
         if (_approvedKeyboardClient is null || _approvedMouseClient is null) ClearApproval();
     }
 
-    private void ClearApproval()
+    private void ClearApproval(bool preserveTrusted = false)
     {
         _approved = null;
         _approvedKeyboardClient = null;
@@ -367,6 +370,21 @@ public sealed class BleHidServer
         _keyboardValue = new byte[Hid.KeyboardReportLength];
         _mouseValue = new byte[Hid.MouseReportLength];
         _systemControlValue = new byte[Hid.SystemControlReportLength];
+        if (!preserveTrusted) _trustedReconnectId = null;
+    }
+
+    private void TryRestoreTrustedApproval()
+    {
+        if (_approved is not null || !_running || _trustedReconnectId is not { } id) return;
+        if (!IsReady(id)) return;
+
+        _approved = id;
+        _trustedReconnectId = id;
+        _approvedKeyboardClient = Client(_keyboard, id);
+        _approvedMouseClient = Client(_mouse, id);
+        _approvedSystemClient = Client(_systemControl, id);
+        Status?.Invoke("승인했던 휴대폰의 HID 구독이 복구되어 자동 재연결했습니다.");
+        Changed?.Invoke();
     }
 
     public async Task<IReadOnlyList<Peer>> GetPeersAsync()
@@ -438,7 +456,7 @@ public sealed class BleHidServer
         Status?.Invoke($"키보드/마우스 HID 구독 확인 · 시스템 제어:{(_approvedSystemClient is null ? "미지원" : "준비됨")}");
         Changed?.Invoke();
     }
-    public void Revoke() { ClearApproval(); Changed?.Invoke(); }
+    public void Revoke() { ClearApproval(preserveTrusted: false); Changed?.Invoke(); }
 
     public async Task SendSystemPowerAsync(CancellationToken token)
     {
@@ -489,7 +507,7 @@ public sealed class BleHidServer
     }
     public void Stop()
     {
-        _running = false; ClearApproval();
+        _running = false; ClearApproval(preserveTrusted: false);
         if (_provider is not null)
         {
             try
