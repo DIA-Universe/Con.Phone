@@ -392,7 +392,7 @@ class ClipboardBridgeService : Service() {
         val connectivity = getSystemService(ConnectivityManager::class.java)
 
         var host: String? = null
-        repeat(12) {
+        for (attempt in 0 until 12) {
             val links = connectivity.getLinkProperties(network)
             host = links?.routes
                 ?.asSequence()
@@ -400,7 +400,7 @@ class ClipboardBridgeService : Service() {
                 ?.firstOrNull { it.contains('.') }
                 ?: config.hostAddress
 
-            if (!host.isNullOrBlank()) return@repeat
+            if (!host.isNullOrBlank()) break
             Thread.sleep(250)
         }
 
@@ -686,7 +686,7 @@ class ClipboardBridgeService : Service() {
         @Volatile private var closed = false
         val ready: Boolean get() = !closed && socket.isConnected
 
-        private val aad = "ConPhone-Clipboard-LAN-v1".toByteArray(Charsets.US_ASCII) + credential.deviceHash
+        private val aad = "ConPhone-Clipboard-P2P-v1".toByteArray(Charsets.US_ASCII) + credential.deviceHash
 
         fun handshake() {
             val hello = "CPHELLO1".toByteArray(Charsets.US_ASCII)
