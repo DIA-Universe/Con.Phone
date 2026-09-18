@@ -152,4 +152,22 @@ var largeRoutes = ClipboardTransportPolicy.Candidates(
     relayEnabled: true);
 Check("large image skips ble and uses relay", largeRoutes.SequenceEqual(new[] { ClipboardTransportKind.Relay }));
 
+
+var relaySecret = Enumerable.Range(0, 32).Select(i => (byte)i).ToArray();
+var relayDevice = Enumerable.Range(32, 32).Select(i => (byte)i).ToArray();
+var relayIdentity1 = ClipboardRelayCrypto.DeriveIdentity(relaySecret, relayDevice);
+var relayIdentity2 = ClipboardRelayCrypto.DeriveIdentity(relaySecret, relayDevice);
+Check("relay identity deterministic", relayIdentity1 == relayIdentity2);
+Check("relay room is url safe", relayIdentity1.Room.All(ch => char.IsLetterOrDigit(ch) || ch is '-' or '_'));
+var relayPlain = ClipboardWireCodec.Encode(clipText, 4096).Single();
+var relayEnvelope = ClipboardRelayCrypto.EncryptFrame(relaySecret, relayDevice, relayPlain);
+Check("relay envelope hides plaintext", !relayEnvelope.AsSpan().SequenceEqual(relayPlain));
+Check("relay encrypted roundtrip", ClipboardRelayCrypto.DecryptFrame(relaySecret, relayDevice, relayEnvelope).SequenceEqual(relayPlain));
+var relayTampered = relayEnvelope.ToArray();
+relayTampered[^1] ^= 0x01;
+bool relayTamperRejected = false;
+try { _ = ClipboardRelayCrypto.DecryptFrame(relaySecret, relayDevice, relayTampered); }
+catch (InvalidDataException) { relayTamperRejected = true; }
+Check("relay tamper rejected", relayTamperRejected);
+
 Console.WriteLine($"{passed} checks passed. No Windows/Bluetooth/phone hardware has been tested by these checks.");
