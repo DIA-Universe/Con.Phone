@@ -43,6 +43,7 @@ final class ClipboardBridge: NSObject, ObservableObject {
     private var writeQueue: [Data] = []
     private var writeInFlight = false
     private var pendingContent: ClipboardContent?
+    private var pendingGeneration = 0
 
     func start() {
         _ = central
@@ -132,7 +133,7 @@ final class ClipboardBridge: NSObject, ObservableObject {
             return
         }
 
-        pendingContent = content
+        setPendingContent(content)
 
         if !bleAllowed {
             status = "큰 이미지 전송을 위해 P2P 고속 연결이 필요합니다."
@@ -157,7 +158,7 @@ final class ClipboardBridge: NSObject, ObservableObject {
 
         do {
             if let p2p, p2p.ready {
-                pendingContent = nil
+                clearPendingContent()
                 p2p.send(frames: try ClipboardProtocol.encode(content))
                 return
             }
@@ -170,12 +171,33 @@ final class ClipboardBridge: NSObject, ObservableObject {
                let peripheral,
                rx != nil,
                credential != nil {
-                pendingContent = nil
+                clearPendingContent()
                 try enqueueBle(content, peripheral: peripheral)
             }
         } catch {
             status = "대기 중 Clipboard 전송 실패: \(error.localizedDescription)"
         }
+    }
+
+    private func setPendingContent(_ content: ClipboardContent) {
+        pendingContent = content
+        pendingGeneration += 1
+        let generation = pendingGeneration
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + 120) { [weak self] in
+            guard let self,
+                  self.pendingGeneration == generation,
+                  self.pendingContent != nil else { return }
+
+            self.pendingContent = nil
+            self.pendingGeneration += 1
+            self.status = "Clipboard 전송 대기 시간이 만료됐습니다."
+        }
+    }
+
+    private func clearPendingContent() {
+        pendingContent = nil
+        pendingGeneration += 1
     }
 
     private func enqueueBle(
