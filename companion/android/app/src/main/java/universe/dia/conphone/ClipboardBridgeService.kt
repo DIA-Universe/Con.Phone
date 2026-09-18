@@ -350,12 +350,16 @@ class ClipboardBridgeService : Service() {
     }
 
     private fun retryDirectLinkRead() {
-        if (directConfigReadAttempts >= 8) return
         directConfigReadAttempts++
+        val delay = if (directConfigReadAttempts <= 8) 1200L else 5000L
+
         main.postDelayed({
-            if (checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT) == PackageManager.PERMISSION_GRANTED)
+            if (gatt != null &&
+                p2p?.ready != true &&
+                checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT) == PackageManager.PERMISSION_GRANTED) {
                 directLinkCharacteristic?.let { gatt?.readCharacteristic(it) }
-        }, 1200)
+            }
+        }, delay)
     }
 
     private fun parseDirectConfig(value: ByteArray): DirectConfig? {
