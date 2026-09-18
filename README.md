@@ -53,10 +53,10 @@
 
 - Windows → 휴대폰: Windows에서 복사 후 휴대폰 입력으로 전환하면 최신 텍스트/이미지를 Companion으로 동기화합니다.
 - 휴대폰 → Windows: 모바일 OS의 클립보드 개인정보 보호 정책을 지키기 위해 Companion의 **현재 텍스트/이미지를 PC로 보내기** 동작을 사용합니다.
-- 전송 우선순위: LAN/P2P 암호화 채널 → BLE fallback → 사용자가 켠 경우 E2E 인터넷 Relay.
+- 전송 우선순위: LAN/P2P 암호화 채널 → BLE fallback.
 - 파일/폴더는 전송하지 않습니다.
 
-Android 프로젝트는 companion/android, iOS 프로젝트 소스는 companion/ios에 있습니다. Relay는 기본 OFF이며, 켜도 서버는 E2E 암호문만 중계합니다. 세부 프로토콜·보안·제약은 docs/CLIPBOARD_SYNC.md를 참고하세요.
+Android 프로젝트는 companion/android, iOS 프로젝트 소스는 companion/ios에 있습니다. 세부 프로토콜·보안·제약은 docs/CLIPBOARD_SYNC.md를 참고하세요.
 
 ## 개발
 
