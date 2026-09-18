@@ -76,6 +76,7 @@ class ClipboardBridgeService : Service() {
     @Volatile private var bleWriting = false
     @Volatile private var credential: Credential? = null
     @Volatile private var directConfig: DirectConfig? = null
+    @Volatile private var activeTarget = false
     @Volatile private var p2p: P2PChannel? = null
     @Volatile private var pendingContent: ClipboardContent? = null
     @Volatile private var pendingGeneration = 0
@@ -186,6 +187,7 @@ class ClipboardBridgeService : Service() {
                 tx = null
                 rx = null
                 secretCharacteristic = null
+                activeTarget = false
                 directLinkCharacteristic = null
                 val dataPlaneAlive = p2p?.ready == true
                 if (!dataPlaneAlive) {
@@ -269,6 +271,7 @@ class ClipboardBridgeService : Service() {
             else if (characteristic.uuid == SECRET_UUID)
                 retrySecretRead(g)
             else if (characteristic.uuid == DIRECT_LINK_UUID) {
+                activeTarget = false
                 directConfig = null
                 p2p?.close()
                 p2p = null
@@ -290,6 +293,7 @@ class ClipboardBridgeService : Service() {
             else if (characteristic.uuid == SECRET_UUID)
                 retrySecretRead(g)
             else if (characteristic.uuid == DIRECT_LINK_UUID) {
+                activeTarget = false
                 directConfig = null
                 p2p?.close()
                 p2p = null
@@ -352,7 +356,9 @@ class ClipboardBridgeService : Service() {
             DIRECT_LINK_UUID -> {
                 directConfig = parseDirectConfig(value)
                 if (directConfig != null) {
+                    activeTarget = true
                     directConfigReadAttempts = 0
+                    flushPendingContent()
                     val direct = p2pNetwork
                     if (direct != null && p2p?.ready != true) {
                         executor.execute {
@@ -713,7 +719,11 @@ class ClipboardBridgeService : Service() {
             content.kind == ClipboardKind.TEXT ||
             content.data.size <= 512 * 1024
 
-        if (bleAllowed && gatt != null && rx != null && credential != null) {
+        if (bleAllowed &&
+            activeTarget &&
+            gatt != null &&
+            rx != null &&
+            credential != null) {
             enqueueBle(content)
             return
         }
@@ -738,6 +748,7 @@ class ClipboardBridgeService : Service() {
 
         val canP2P = p2p?.ready == true
         val canBle =
+            activeTarget &&
             (content.kind == ClipboardKind.TEXT || content.data.size <= 512 * 1024) &&
             gatt != null && rx != null && credential != null
 
