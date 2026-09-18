@@ -14,6 +14,10 @@ struct ContentView: View {
                     Button("현재 텍스트/이미지를 PC로 보내기") {
                         bridge.sendPasteboard()
                     }
+                    Button("P2P 고속 연결") {
+                        bridge.connectFastLink()
+                    }
+                    .disabled(!bridge.fastLinkAvailable)
                 }
 
                 Section("동작") {
@@ -22,7 +26,7 @@ struct ContentView: View {
                 }
 
                 Section("전송 경로") {
-                    Text("BLE는 동일 Wi-Fi 없이 동작합니다. LAN/P2P 고속 승격용 인증 credential도 BLE에서 승인된 기기에만 수신합니다.")
+                    Text("BLE는 동일 Wi-Fi 없이 동작합니다. 큰 이미지는 P2P 고속 연결을 누르면 iOS 시스템 승인 후 Windows 전용 Wi-Fi 링크와 AES-GCM 채널로 전송합니다.")
                 }
             }
             .navigationTitle("Con.Phone")
