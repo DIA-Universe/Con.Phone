@@ -27,6 +27,7 @@ final class ClipboardBridge: NSObject, ObservableObject {
     private var directLinkCharacteristic: CBCharacteristic?
     private var credential: Data?
     private var directConfig: DirectConfig?
+    private var activeTarget = false
     private var p2p: P2PClipboardChannel?
     private var directHostRefreshAttempt = 0
     private var directConfigReadAttempt = 0
@@ -145,6 +146,7 @@ final class ClipboardBridge: NSObject, ObservableObject {
             content.data.count <= 512 * 1024
 
         if bleAllowed,
+           activeTarget,
            let peripheral,
            rx != nil,
            credential != nil {
@@ -193,6 +195,7 @@ final class ClipboardBridge: NSObject, ObservableObject {
                 content.data.count <= 512 * 1024
 
             if bleAllowed,
+               activeTarget,
                let peripheral,
                rx != nil,
                credential != nil {
@@ -566,6 +569,7 @@ extension ClipboardBridge: CBCentralManagerDelegate {
         tx = nil
         rx = nil
         directLinkCharacteristic = nil
+        activeTarget = false
 
         let dataPlaneAlive = p2p?.ready == true
         writeQueue.removeAll()
@@ -640,6 +644,7 @@ extension ClipboardBridge: CBPeripheralDelegate {
                     peripheral.readValue(for: characteristic)
                 }
             } else if characteristic.uuid == directLinkUUID {
+                activeTarget = false
                 if let config = directConfig {
                     NEHotspotConfigurationManager.shared.removeConfiguration(
                         forSSID: config.ssid)
@@ -672,9 +677,11 @@ extension ClipboardBridge: CBPeripheralDelegate {
 
         if characteristic.uuid == directLinkUUID {
             if let config = parseDirectConfig(value) {
+                activeTarget = true
                 directConfigReadAttempt = 0
                 directConfig = config
                 fastLinkAvailable = true
+                flushPendingContent()
                 if config.hostAddress != nil && directHostRefreshAttempt > 0 {
                     startP2PFastPath()
                 } else if pendingFastLinkConnect {
