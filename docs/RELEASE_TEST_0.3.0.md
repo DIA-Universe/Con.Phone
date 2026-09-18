@@ -25,7 +25,10 @@
 10. 작은 PNG 이미지 BLE fallback 확인
 11. 큰 이미지에서 Direct Wi-Fi/P2P 승인 -> TCP/AES-GCM 전송 확인
 12. Android -> PC 현재 클립보드 보내기 확인
-13. P2P 연결 중 Bluetooth 순간 단절 시 데이터 채널 유지/복구 확인
+13. 다른 Android 앱에서 텍스트 공유 -> Con.Phone -> PC 자동 대기/전송 확인
+14. 다른 Android 앱에서 이미지 공유 -> Con.Phone -> PC 자동 대기/전송 확인
+15. 공유 직후 PC 연결이 없어도 연결 후 pending payload가 자동 전송되는지 확인
+16. P2P 연결 중 Bluetooth 순간 단절 시 데이터 채널 유지/복구 확인
 
 ## iPhone / iPad
 
@@ -35,8 +38,11 @@
 4. "P2P 고속 연결" 버튼 -> iOS Wi-Fi 승인 -> P2P TCP 연결 확인
 5. 큰 이미지 전송 후 대상 앱 붙여넣기 확인
 6. iOS -> PC 사용자 버튼 전송 확인
-7. 앱 background/foreground 전환 후 BLE 재연결 확인
-8. iPad/Mac 프로필에서 Ctrl <-> Command 매핑 확인
+7. 다른 iOS 앱에서 텍스트 공유 -> Con.Phone Share Extension -> 앱 실행 -> PC 자동 전송 확인
+8. 다른 iOS 앱에서 이미지 공유 -> App Group staging -> 앱 실행 -> PC 자동 전송 확인
+9. PC 연결이 120초 안에 준비되지 않으면 App Group payload가 유지되어 다음 실행에 재시도되는지 확인
+10. 앱 background/foreground 전환 후 BLE 재연결 확인
+11. iPad/Mac 프로필에서 Ctrl <-> Command 매핑 확인
 
 ## 다중기기
 
