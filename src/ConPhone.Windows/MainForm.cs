@@ -164,12 +164,39 @@ public sealed class MainForm : Form
         _input.Activate();
         Log("휴대폰 입력 시작. F9로 비상 복귀할 수 있습니다.");
     }
-    private async Task RefreshPeersAsync()
+    private async Task RefreshPeersAsync(bool silent = false)
     {
+        var selectedId = (_peers.SelectedItem as Peer)?.Id;
         var peers = await _ble.GetPeersAsync();
-        _peers.Items.Clear(); foreach (var peer in peers) _peers.Items.Add(peer);
-        if (peers.Count == 1 && _peers.SelectedIndex < 0) _peers.SelectedIndex = 0;
-        if (peers.Count == 0) Log("HID 구독 기기가 없습니다. Bluetooth 페어링만 됐거나 휴대폰이 HID로 인식하지 못했을 수 있습니다.");
+
+        _peers.BeginUpdate();
+        try
+        {
+            _peers.Items.Clear();
+            foreach (var peer in peers) _peers.Items.Add(peer);
+
+            if (selectedId is not null)
+            {
+                for (var i = 0; i < _peers.Items.Count; i++)
+                {
+                    if (_peers.Items[i] is Peer peer && peer.Id == selectedId)
+                    {
+                        _peers.SelectedIndex = i;
+                        break;
+                    }
+                }
+            }
+
+            if (_peers.SelectedIndex < 0 && peers.Count == 1)
+                _peers.SelectedIndex = 0;
+        }
+        finally
+        {
+            _peers.EndUpdate();
+        }
+
+        if (!silent && peers.Count == 0)
+            Log("HID 구독 기기가 없습니다. Bluetooth 페어링만 됐거나 휴대폰이 HID로 인식하지 못했을 수 있습니다.");
     }
     private async Task PumpAsync()
     {
