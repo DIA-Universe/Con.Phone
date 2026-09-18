@@ -121,7 +121,7 @@ public static class SettingsStore
     {
         var text = string.IsNullOrWhiteSpace(value) ? "ConPhone" : value.Trim();
         var safe = new string(text
-            .Where(ch => char.IsLetterOrDigit(ch) || ch is '-' or '_' or '.')
+            .Where(ch => (ch is >= 'A' and <= 'Z') || (ch is >= 'a' and <= 'z') || (ch is >= '0' and <= '9') || ch is '-' or '_' or '.')
             .Take(18)
             .ToArray());
         return string.IsNullOrWhiteSpace(safe) ? "ConPhone" : safe;
