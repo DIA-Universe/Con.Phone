@@ -30,6 +30,8 @@ public sealed class ClipboardSyncCoordinator : IAsyncDisposable
 
     public int BleSubscribers => _ble.Subscribers;
 
+    public Task PrepareBleAsync() => _ble.PrepareAsync();
+
     public async Task StartAsync()
     {
         if (_started) return;
