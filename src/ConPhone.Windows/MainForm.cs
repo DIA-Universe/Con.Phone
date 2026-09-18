@@ -1440,7 +1440,7 @@ public sealed class MainForm : Form
         using var timeout = new CancellationTokenSource(
             content.Kind == ClipboardContentKind.TextUtf8
                 ? TimeSpan.FromSeconds(5)
-                : TimeSpan.FromSeconds(20));
+                : TimeSpan.FromSeconds(45));
 
         if (await _clipboardSync.SendAsync(
                 content,
@@ -1463,7 +1463,7 @@ public sealed class MainForm : Form
         using var timeout = new CancellationTokenSource(
             content.Kind == ClipboardContentKind.TextUtf8
                 ? TimeSpan.FromSeconds(5)
-                : TimeSpan.FromSeconds(20));
+                : TimeSpan.FromSeconds(45));
 
         if (!await _clipboardSync.SendAsync(
                 content,
