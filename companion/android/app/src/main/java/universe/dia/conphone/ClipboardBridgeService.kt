@@ -810,7 +810,7 @@ class ClipboardBridgeService : Service() {
                     val prefix = ByteArray(4)
                     input.readFully(prefix)
                     val length = ByteBuffer.wrap(prefix).order(ByteOrder.LITTLE_ENDIAN).int
-                    require(length in 28..(ClipboardProtocol.MAX_IMAGE + 1024 * 1024))
+                    require(length in 28..(1024 * 1024 + 70 + 28))
                     val body = ByteArray(length)
                     input.readFully(body)
                     val nonce = body.copyOfRange(0, 12)
