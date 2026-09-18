@@ -1,3 +1,4 @@
+using System.ComponentModel;
 using System.Runtime.InteropServices;
 
 namespace ConPhone.Windows;
@@ -12,6 +13,8 @@ public sealed class HotkeyCaptureBox : TextBox
 
     public event Action<HotkeyBinding>? BindingChanged;
 
+    [Browsable(false)]
+    [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
     public HotkeyBinding Binding
     {
         get => _binding.Clone();
