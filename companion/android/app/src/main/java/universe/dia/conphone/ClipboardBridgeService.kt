@@ -757,6 +757,8 @@ class ClipboardBridgeService : Service() {
         private val input = DataInputStream(BufferedInputStream(socket.getInputStream()))
         private val output = BufferedOutputStream(socket.getOutputStream())
         private val sendLock = Any()
+        private var sendSequence = 0L
+        private var receiveSequence = 0L
         @Volatile private var closed = false
         val ready: Boolean get() = !closed && socket.isConnected
 
@@ -785,6 +787,12 @@ class ClipboardBridgeService : Service() {
         fun sendFrame(plaintext: ByteArray) {
             synchronized(sendLock) {
                 check(!closed)
+                sendSequence = Math.addExact(sendSequence, 1L)
+                val sequenceBytes = ByteBuffer.allocate(8)
+                    .order(ByteOrder.LITTLE_ENDIAN)
+                    .putLong(sendSequence)
+                    .array()
+
                 val nonce = ByteArray(12).also(SecureRandom()::nextBytes)
                 val cipher = Cipher.getInstance("AES/GCM/NoPadding")
                 cipher.init(
@@ -792,13 +800,14 @@ class ClipboardBridgeService : Service() {
                     SecretKeySpec(credential.secret, "AES"),
                     GCMParameterSpec(128, nonce)
                 )
-                cipher.updateAAD(aad)
+                cipher.updateAAD(aad + sequenceBytes)
                 val encrypted = cipher.doFinal(plaintext)
-                val length = 12 + encrypted.size
+                val length = 12 + 8 + encrypted.size
 
                 val prefix = ByteBuffer.allocate(4).order(ByteOrder.LITTLE_ENDIAN).putInt(length).array()
                 output.write(prefix)
                 output.write(nonce)
+                output.write(sequenceBytes)
                 output.write(encrypted)
                 output.flush()
             }
@@ -810,11 +819,20 @@ class ClipboardBridgeService : Service() {
                     val prefix = ByteArray(4)
                     input.readFully(prefix)
                     val length = ByteBuffer.wrap(prefix).order(ByteOrder.LITTLE_ENDIAN).int
-                    require(length in 28..(1024 * 1024 + 70 + 28))
+                    require(length in 36..(1024 * 1024 + 70 + 36))
                     val body = ByteArray(length)
                     input.readFully(body)
                     val nonce = body.copyOfRange(0, 12)
-                    val encrypted = body.copyOfRange(12, body.size)
+                    val sequenceBytes = body.copyOfRange(12, 20)
+                    val sequence = ByteBuffer.wrap(sequenceBytes)
+                        .order(ByteOrder.LITTLE_ENDIAN)
+                        .long
+
+                    require(sequence == receiveSequence + 1) {
+                        "P2P frame sequence rejected."
+                    }
+
+                    val encrypted = body.copyOfRange(20, body.size)
 
                     val cipher = Cipher.getInstance("AES/GCM/NoPadding")
                     cipher.init(
@@ -822,8 +840,9 @@ class ClipboardBridgeService : Service() {
                         SecretKeySpec(credential.secret, "AES"),
                         GCMParameterSpec(128, nonce)
                     )
-                    cipher.updateAAD(aad)
+                    cipher.updateAAD(aad + sequenceBytes)
                     onFrame(cipher.doFinal(encrypted))
+                    receiveSequence = sequence
                 }
             } catch (_: Exception) {
             } finally {
