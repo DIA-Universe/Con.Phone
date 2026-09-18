@@ -35,12 +35,6 @@ struct ContentView: View {
                 bridge.start()
                 bridge.sendPendingShareIfPresent()
             }
-            .onOpenURL { url in
-                if url.scheme == "conphone" {
-                    bridge.start()
-                    bridge.sendPendingShareIfPresent()
-                }
-            }
             .onChange(of: scenePhase) { _, phase in
                 if phase == .active {
                     bridge.start()
