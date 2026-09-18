@@ -149,7 +149,7 @@ public sealed class ClipboardSyncCoordinator : IAsyncDisposable
                 _ = GetDirectLinkConfig();
                 Status?.Invoke("큰 이미지 전송을 위해 P2P 고속 링크 연결을 기다립니다.");
 
-                var deadline = DateTimeOffset.UtcNow + TimeSpan.FromSeconds(8);
+                var deadline = DateTimeOffset.UtcNow + TimeSpan.FromSeconds(20);
                 while (!_p2p.HasClient(id) && DateTimeOffset.UtcNow < deadline)
                 {
                     token.ThrowIfCancellationRequested();
