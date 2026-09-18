@@ -258,6 +258,7 @@ public sealed class ClipboardHistoryService : IDisposable
 
     public bool TryGetLatestContent(out ClipboardContent? content)
     {
+        content = null;
         string? id;
         lock (_gate)
             id = _entries.FirstOrDefault()?.Id;
