@@ -39,6 +39,9 @@ enum ClipboardProtocol {
     static let maxText = 1024 * 1024
     static let maxImage = 32 * 1024 * 1024
     static let bleHeader = 10
+    static let wireHeader = 70
+    static let maxChunk = 1024 * 1024
+    static let maxWireFrame = wireHeader + maxChunk
     private static let magic = Data("CPH1".utf8)
 
     static func text(_ value: String) throws -> ClipboardContent {
@@ -86,7 +89,7 @@ enum ClipboardProtocol {
     }
 
     static func encode(_ content: ClipboardContent, chunkSize: Int = 64 * 1024) throws -> [Data] {
-        guard (256...(1024 * 1024)).contains(chunkSize) else {
+        guard (256...maxChunk).contains(chunkSize) else {
             throw ProtocolError.invalidFrame
         }
         try validate(content.kind, content.data)
@@ -122,7 +125,7 @@ enum ClipboardProtocol {
     }
 
     static func decode(_ frame: Data) throws -> ClipboardWireChunk {
-        guard frame.count >= 70,
+        guard (wireHeader...maxWireFrame).contains(frame.count),
               frame.prefix(4) == magic,
               frame[4] == 1 else {
             throw ProtocolError.invalidFrame
@@ -143,7 +146,8 @@ enum ClipboardProtocol {
               index < count,
               total > 0,
               payloadLength >= 0,
-              frame.count == 70 + payloadLength else {
+              payloadLength <= maxChunk,
+              frame.count == wireHeader + payloadLength else {
             throw ProtocolError.invalidFrame
         }
 
@@ -277,6 +281,7 @@ final class BleReassembler {
         let count: Int
         let created = Date()
         var parts: [Int: Data] = [:]
+        var bytes = 0
     }
 
     private var pending: [UInt32: Pending] = [:]
@@ -298,7 +303,12 @@ final class BleReassembler {
         }
 
         if state.parts[fragment.index] == nil {
+            guard state.bytes + fragment.payload.count <= ClipboardProtocol.maxWireFrame else {
+                pending.removeValue(forKey: fragment.transferId)
+                throw ClipboardProtocol.ProtocolError.tooLarge
+            }
             state.parts[fragment.index] = fragment.payload
+            state.bytes += fragment.payload.count
         }
         pending[fragment.transferId] = state
         guard state.parts.count == state.count else { return nil }
