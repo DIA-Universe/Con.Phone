@@ -69,7 +69,7 @@ class ClipboardBridgeService : Service() {
     @Volatile private var bleWriting = false
     @Volatile private var credential: Credential? = null
     @Volatile private var directConfig: DirectConfig? = null
-    @Volatile private var lan: LanChannel? = null
+    @Volatile private var p2p: P2PChannel? = null
     @Volatile private var scanning = false
     @Volatile private var p2pNetwork: Network? = null
     @Volatile private var directNetworkCallback: ConnectivityManager.NetworkCallback? = null
@@ -173,7 +173,7 @@ class ClipboardBridgeService : Service() {
                 rx = null
                 secretCharacteristic = null
                 directLinkCharacteristic = null
-                val dataPlaneAlive = lan?.ready == true
+                val dataPlaneAlive = p2p?.ready == true
                 if (!dataPlaneAlive) {
                     credential = null
                     directConfig = null
@@ -331,7 +331,7 @@ class ClipboardBridgeService : Service() {
                 if (directConfig != null) {
                     directConfigReadAttempts = 0
                     val direct = p2pNetwork
-                    if (direct != null && lan?.ready != true) {
+                    if (direct != null && p2p?.ready != true) {
                         executor.execute {
                             runCatching { connectDirectChannel(direct) }
                                 .onFailure { showStatus("P2P TCP 연결 재시도 실패 · BLE fallback 유지") }
@@ -339,7 +339,7 @@ class ClipboardBridgeService : Service() {
                     } else {
                         showStatus("P2P 고속 링크 준비됨 · 직접 연결 요청")
                         main.postDelayed({
-                            if (lan?.ready != true) requestDirectNetwork()
+                            if (p2p?.ready != true) requestDirectNetwork()
                         }, 300)
                     }
                 } else {
@@ -424,20 +424,20 @@ class ClipboardBridgeService : Service() {
         socket.tcpNoDelay = true
         socket.soTimeout = 0
 
-        val channel = LanChannel(
+        val channel = P2PChannel(
             socket,
             cred,
             ::onLanFrame,
             ::onLanClosed
         )
         channel.handshake()
-        lan = channel
+        p2p = channel
         showStatus("Clipboard P2P 고속 채널 연결됨 · $target")
         executor.execute { channel.readLoop() }
     }
 
     private fun requestDirectNetwork() {
-        if (lan != null || p2pNetwork != null || directNetworkCallback != null) return
+        if (p2p != null || p2pNetwork != null || directNetworkCallback != null) return
         val config = directConfig ?: return
 
         val hasPermission =
@@ -478,8 +478,8 @@ class ClipboardBridgeService : Service() {
 
             override fun onLost(network: Network) {
                 if (p2pNetwork == network) p2pNetwork = null
-                lan?.close()
-                lan = null
+                p2p?.close()
+                p2p = null
 
                 if (directNetworkCallback === this) {
                     directNetworkCallback = null
@@ -523,7 +523,7 @@ class ClipboardBridgeService : Service() {
     }
 
     private fun onLanClosed() {
-        lan = null
+        p2p = null
         showStatus("P2P 채널 종료 · BLE fallback 유지")
         val direct = p2pNetwork
         if (direct != null)
@@ -569,7 +569,7 @@ class ClipboardBridgeService : Service() {
     }
 
     private fun sendContent(content: ClipboardContent) {
-        val fast = lan
+        val fast = p2p
         if (fast?.ready == true) {
             executor.execute {
                 runCatching {
@@ -578,7 +578,7 @@ class ClipboardBridgeService : Service() {
                     showStatus("Clipboard 전송 완료 · P2P")
                 }.onFailure {
                     fast.close()
-                    if (lan === fast) lan = null
+                    if (p2p === fast) p2p = null
                     enqueueBle(content)
                 }
             }
@@ -691,8 +691,8 @@ class ClipboardBridgeService : Service() {
 
     override fun onDestroy() {
         scanning = false
-        lan?.close()
-        lan = null
+        p2p?.close()
+        p2p = null
         releaseDirectNetwork()
         if (checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT) == PackageManager.PERMISSION_GRANTED)
             runCatching { gatt?.close() }
@@ -701,7 +701,7 @@ class ClipboardBridgeService : Service() {
         super.onDestroy()
     }
 
-    private class LanChannel(
+    private class P2PChannel(
         private val socket: Socket,
         private val credential: Credential,
         private val onFrame: (ByteArray) -> Unit,
