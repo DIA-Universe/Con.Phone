@@ -95,6 +95,11 @@ Check("descriptor has no output reports", !bits.ContainsKey((1, 0x90)));
 Check("descriptor pointer input 48 bits", bits[(2, 0x80)] == 48);
 Check("descriptor system-control input 8 bits", bits[(3, 0x80)] == 8);
 
+Check("pointer pacing fallback 16ms", PointerPacing.FromBleConnectionInterval(0) == 16);
+Check("pointer pacing 12 units = 15ms", PointerPacing.FromBleConnectionInterval(12) == 15);
+Check("pointer pacing 24 units = 30ms", PointerPacing.FromBleConnectionInterval(24) == 30);
+Check("pointer pacing lower clamp", PointerPacing.FromBleConnectionInterval(6) == 8);
+
 // Clipboard text/image sync protocol.
 var clipText = ClipboardContent.FromText(string.Concat(Enumerable.Repeat("한글🙂abc", 120)));
 Check("clipboard text utf8 roundtrip", clipText.GetText() == string.Concat(Enumerable.Repeat("한글🙂abc", 120)));
