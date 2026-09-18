@@ -121,6 +121,7 @@ public sealed class BleHidServer
         {
             _provider.StartAdvertising(new GattServiceProviderAdvertisingParameters { IsConnectable = true, IsDiscoverable = true });
             _lastOperation = $"AdvertisingRequested:{_provider.AdvertisementStatus}";
+            Status?.Invoke("Bluetooth HID 광고 요청 완료. 휴대폰의 기존 PC 등록이 연결되지 않으면 등록 해제 후 새 기기로 다시 페어링하세요.");
         }
         catch (InvalidOperationException ex) when (IsIllegalState(ex))
         {

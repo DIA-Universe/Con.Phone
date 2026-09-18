@@ -21,12 +21,12 @@ public sealed class MainForm : Form
     private readonly System.Windows.Forms.Timer _peerTimer = new() { Interval = 1500 };
     private Task? _pump;
     private long _epoch, _sent;
-    private bool _closing, _closed;
+    private bool _closing, _closed, _exitRequested;
     private string _lastError = "None";
 
     public MainForm()
     {
-        Text = "Con.Phone 0.1.3 · 동글 없는 무선 입력";
+        Text = "Con.Phone 0.1.4 · 동글 없는 무선 입력";
         Width = 880; Height = 820; MinimumSize = new Size(780, 660);
         StartPosition = FormStartPosition.CenterScreen;
         Font = new Font("Segoe UI", 10);
@@ -35,16 +35,16 @@ public sealed class MainForm : Form
         Controls.Add(layout);
         layout.Controls.Add(new Label { Text = "Con.Phone", Font = new Font("Segoe UI", 25, FontStyle.Bold), AutoSize = true });
         layout.Controls.Add(new Label { Text = "내장 Bluetooth → 갤럭시 / iPhone · 추가 동글 / 서버 / 계정 없음", AutoSize = true });
-        layout.Controls.Add(new Label { Text = "실행하면 Bluetooth 검색을 자동 시작합니다. Android·iPhone 모두 실기기 검증 전이며 연결 성공과 입력 성공은 별개입니다.", AutoSize = true, ForeColor = Color.DarkRed, Margin = new Padding(3, 10, 3, 10) });
+        layout.Controls.Add(new Label { Text = "실행하면 Bluetooth HID 광고를 자동 시작합니다. 휴대폰의 기존 PC 항목이 \'연결할 수 없음\'이면 그 등록을 삭제한 뒤, Con.Phone을 켜 둔 상태에서 새로 페어링하세요. 창의 X는 종료가 아니라 트레이로 숨깁니다.", AutoSize = true, ForeColor = Color.DarkRed, MaximumSize = new Size(810, 0), Margin = new Padding(3, 10, 3, 10) });
         _profile.Items.AddRange(["갤럭시 / Android", "iPhone (실기기 검증 전)"]); _profile.SelectedIndex = 0;
         layout.Controls.Add(_profile);
         layout.Controls.Add(_state);
         layout.Controls.Add(Row(
             Button("Bluetooth 다시 검사", async () => _diagnosis.Text = await BleHidServer.DiagnoseAsync()),
-            Button("Bluetooth 검색 다시 시작", async () => { await _ble.StartAsync(); Log("휴대폰 Bluetooth 설정에서 이 PC를 검색하고 양쪽 페어링을 확인하세요."); }),
+            Button("Bluetooth 광고 확인/시작", async () => { await _ble.StartAsync(); Log("광고 상태 확인 완료. 기존 등록 기기가 연결되지 않으면 휴대폰에서 삭제 후 새로 페어링하세요."); }),
             Button("서비스 중지", async () => { await ReturnLocalAsync(); _ble.Stop(); })));
         layout.Controls.Add(_diagnosis);
-        layout.Controls.Add(new Label { Text = "휴대폰에서 페어링 → 대상 확인 → 승인", AutoSize = true, Margin = new Padding(3, 12, 3, 3) });
+        layout.Controls.Add(new Label { Text = "휴대폰: 기존 PC 등록이 실패하면 삭제 → 새 기기 검색 → 이 PC 페어링 → 아래 대상 승인", AutoSize = true, MaximumSize = new Size(810, 0), Margin = new Padding(3, 12, 3, 3) });
         layout.Controls.Add(_peers);
         layout.Controls.Add(Row(
             Button("연결 목록 갱신", () => RefreshPeersAsync(false)),
@@ -62,7 +62,7 @@ public sealed class MainForm : Form
         var menu = new ContextMenuStrip();
         menu.Items.Add("창 열기", null, (_, _) => { Show(); WindowState = FormWindowState.Normal; Activate(); });
         menu.Items.Add("노트북 복귀", null, (_, _) => Dispatch(ReturnLocalAsync));
-        menu.Items.Add("종료", null, (_, _) => Close());
+        menu.Items.Add("종료", null, (_, _) => { _exitRequested = true; Close(); });
         _tray.ContextMenuStrip = menu;
         _tray.DoubleClick += (_, _) => { Show(); WindowState = FormWindowState.Normal; Activate(); };
         _input.Packet += packet =>
@@ -96,7 +96,7 @@ public sealed class MainForm : Form
             await _input.Started;
             _diagnosis.Text = await BleHidServer.DiagnoseAsync();
             await _ble.StartAsync();
-            Log("Bluetooth 검색을 자동 시작했습니다. 휴대폰 Bluetooth 설정에서 이 PC를 찾아 페어링하세요.");
+            Log("Bluetooth HID 광고를 자동 시작했습니다. 이전 등록이 연결 실패하면 휴대폰에서 삭제 후 이 PC를 새로 검색해 페어링하세요.");
         });
         _pump = Task.Run(PumpAsync);
         SystemEvents.PowerModeChanged += PowerChanged;
@@ -236,7 +236,7 @@ public sealed class MainForm : Form
         if (dialog.ShowDialog(this) != DialogResult.OK) return;
         var report = new
         {
-            Version = "0.1.3", OS = Environment.OSVersion.Version.ToString(), Runtime = Environment.Version.ToString(),
+            Version = "0.1.4", OS = Environment.OSVersion.Version.ToString(), Runtime = Environment.Version.ToString(),
             TargetProfile = _profile.SelectedIndex == 0 ? "Android" : "iPhone", Bluetooth = await BleHidServer.DiagnoseAsync(),
             Advertisement = _ble.Advertisement, BleLastOperation = _ble.LastOperation, ApprovedAndSubscribed = _ble.Ready,
             SendOperations = Interlocked.Read(ref _sent), Pending = _outbox.Count, LastError = _lastError,
@@ -247,11 +247,46 @@ public sealed class MainForm : Form
         Log("진단 저장 완료. 입력 문자/키코드/기기 주소는 저장하지 않았습니다.");
     }
     private void PowerChanged(object? sender, PowerModeChangedEventArgs e)
-    { if (e.Mode == PowerModes.Suspend) { ImmediateLocal(); _ble.Stop(); } }
+    {
+        if (e.Mode == PowerModes.Suspend)
+        {
+            ImmediateLocal();
+            _ble.Revoke();
+            _ble.Stop();
+        }
+        else if (e.Mode == PowerModes.Resume)
+        {
+            Dispatch(async () =>
+            {
+                await _ble.StartAsync();
+                Log("절전 모드에서 복귀해 Bluetooth HID 광고를 다시 확인했습니다.");
+            });
+        }
+    }
     private void SessionChanged(object? sender, SessionSwitchEventArgs e)
-    { if (e.Reason is SessionSwitchReason.SessionLock or SessionSwitchReason.SessionLogoff) { ImmediateLocal(); _ble.Stop(); } }
+    {
+        if (e.Reason == SessionSwitchReason.SessionLock)
+        {
+            ImmediateLocal();
+            _ble.Revoke();
+            Log("Windows 잠금 감지 — 입력 대상 승인을 해제했지만 Bluetooth HID 광고는 유지합니다.");
+        }
+        else if (e.Reason == SessionSwitchReason.SessionLogoff)
+        {
+            ImmediateLocal();
+            _ble.Stop();
+        }
+    }
     private async void ClosingAsync(object? sender, FormClosingEventArgs e)
     {
+        if (!_exitRequested && e.CloseReason == CloseReason.UserClosing)
+        {
+            e.Cancel = true;
+            Hide();
+            _tray.ShowBalloonTip(2500, "Con.Phone 계속 실행 중", "Bluetooth HID 연결을 유지하려고 트레이에서 계속 실행합니다. 완전 종료는 트레이 메뉴의 '종료'를 사용하세요.", ToolTipIcon.Info);
+            return;
+        }
+
         if (_closed) return;
         e.Cancel = true;
         if (_closing) return;
