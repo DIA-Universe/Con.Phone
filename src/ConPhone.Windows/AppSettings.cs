@@ -45,7 +45,7 @@ public sealed class ConPhoneSettings
     public bool ClipboardAutoSendImages { get; set; } = true;
     public int ClipboardBleImageLimitKb { get; set; } = 512;
     public bool ClipboardRelayEnabled { get; set; } = false;
-    public string ClipboardRelayUrl { get; set; } = "";
+    public string ClipboardRelayUrl { get; set; } = "https://relay-runtime-production.up.railway.app";
 }
 
 public static class SettingsStore
