@@ -291,7 +291,15 @@ public static class BleFragmentCodec
 
 public sealed class BleFragmentReassembler
 {
-    private readonly Dictionary<uint, (ushort Count, DateTimeOffset Created, Dictionary<ushort, byte[]> Parts)> _pending = [];
+    private sealed class Pending
+    {
+        public required ushort Count;
+        public required DateTimeOffset Created;
+        public int Bytes;
+        public Dictionary<ushort, byte[]> Parts { get; } = [];
+    }
+
+    private readonly Dictionary<uint, Pending> _pending = [];
     private readonly Dictionary<uint, DateTimeOffset> _completed = [];
     private readonly TimeSpan _timeout;
 
@@ -311,7 +319,11 @@ public sealed class BleFragmentReassembler
 
         if (!_pending.TryGetValue(fragment.TransferId, out var state))
         {
-            state = (fragment.Count, at, []);
+            state = new Pending
+            {
+                Count = fragment.Count,
+                Created = at
+            };
             _pending[fragment.TransferId] = state;
         }
         else if (state.Count != fragment.Count)
@@ -320,11 +332,23 @@ public sealed class BleFragmentReassembler
             throw new InvalidDataException("BLE fragment count changed mid-transfer.");
         }
 
-        state.Parts.TryAdd(fragment.Index, fragment.Payload.ToArray());
-        _pending[fragment.TransferId] = state;
+        if (!state.Parts.ContainsKey(fragment.Index))
+        {
+            if ((long)state.Bytes + fragment.Payload.Length >
+                ClipboardWireCodec.MaxEncodedFrameBytes)
+            {
+                _pending.Remove(fragment.TransferId);
+                throw new InvalidDataException("BLE clipboard frame exceeds the wire-frame safety limit.");
+            }
+
+            var copy = fragment.Payload.ToArray();
+            state.Parts.Add(fragment.Index, copy);
+            state.Bytes += copy.Length;
+        }
+
         if (state.Parts.Count != state.Count) return null;
 
-        using var output = new MemoryStream();
+        using var output = new MemoryStream(state.Bytes);
         for (ushort i = 0; i < state.Count; i++)
         {
             if (!state.Parts.TryGetValue(i, out var bytes)) return null;
