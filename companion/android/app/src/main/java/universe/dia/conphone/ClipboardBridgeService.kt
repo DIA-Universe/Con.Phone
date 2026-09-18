@@ -22,7 +22,8 @@ import android.net.wifi.WifiNetworkSpecifier
 import android.os.*
 import android.widget.Toast
 import java.io.*
-import java.net.*
+import java.net.InetSocketAddress
+import java.net.Socket
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.security.MessageDigest
@@ -43,7 +44,6 @@ class ClipboardBridgeService : Service() {
 
         private const val CHANNEL = "conphone_bridge"
         private const val NOTIFICATION_ID = 7310
-        private const val DISCOVERY_PORT = 47910
 
         private val SERVICE_UUID = UUID.fromString("67A7F001-7E5B-4A2E-9B8B-1C9A5B6D1001")
         private val TX_UUID = UUID.fromString("67A7F002-7E5B-4A2E-9B8B-1C9A5B6D1001")
@@ -71,13 +71,12 @@ class ClipboardBridgeService : Service() {
     @Volatile private var directConfig: DirectConfig? = null
     @Volatile private var lan: LanChannel? = null
     @Volatile private var scanning = false
-    @Volatile private var lanDiscoveryRunning = false
     @Volatile private var p2pNetwork: Network? = null
     @Volatile private var directNetworkCallback: ConnectivityManager.NetworkCallback? = null
     @Volatile private var directConfigReadAttempts = 0
 
     private data class Credential(val deviceHash: ByteArray, val secret: ByteArray)
-    private data class DirectConfig(val ssid: String, val passphrase: String)
+    private data class DirectConfig(val ssid: String, val passphrase: String, val hostAddress: String?)
 
     override fun onCreate() {
         super.onCreate()
@@ -319,17 +318,18 @@ class ClipboardBridgeService : Service() {
                     value.copyOfRange(0, 32),
                     value.copyOfRange(32, 64)
                 )
-                showStatus("BLE Clipboard 연결됨 · LAN/P2P 승격 확인")
-                startLanDiscovery()
+                showStatus("BLE Clipboard 연결됨 · P2P 고속 링크 확인")
+                if (checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT) == PackageManager.PERMISSION_GRANTED)
+                    directLinkCharacteristic?.let { gatt?.readCharacteristic(it) }
             }
             DIRECT_LINK_UUID -> {
                 directConfig = parseDirectConfig(value)
                 if (directConfig != null) {
                     directConfigReadAttempts = 0
-                    showStatus("P2P 고속 링크 준비됨 · 현재 LAN 우선 확인")
+                    showStatus("P2P 고속 링크 준비됨 · 직접 연결 요청")
                     main.postDelayed({
                         if (lan?.ready != true) requestDirectNetwork()
-                    }, 3500)
+                    }, 300)
                 } else {
                     retryDirectLinkRead()
                 }
@@ -366,7 +366,10 @@ class ClipboardBridgeService : Service() {
         val passEnd = passStart + passLength
         val ssid = value.copyOfRange(ssidStart, passStart).toString(Charsets.UTF_8)
         val passphrase = value.copyOfRange(passStart, passEnd).toString(Charsets.UTF_8)
-        return DirectConfig(ssid, passphrase)
+        val hostAddress =
+            if (hostLength == 0) null
+            else value.copyOfRange(passEnd, value.size).toString(Charsets.US_ASCII)
+        return DirectConfig(ssid, passphrase, hostAddress)
     }
 
     private fun handleCharacteristicChanged(
@@ -383,69 +386,42 @@ class ClipboardBridgeService : Service() {
         }
     }
 
-    private fun startLanDiscovery() {
-        if (credential == null || lan != null || lanDiscoveryRunning) return
-        lanDiscoveryRunning = true
-        executor.execute {
-            try {
-                var attempts = 0
-                while (credential != null && lan == null && !Thread.currentThread().isInterrupted) {
-                    attempts++
-                    runCatching { discoverAndConnectLan(null) }
-                    if (lan != null) break
-
-                    if (attempts >= 2) {
-                        main.post {
-                            if (directConfig != null)
-                                requestDirectNetwork()
-                            else
-                                retryDirectLinkRead()
-                        }
-                        break
-                    }
-                    Thread.sleep(1600)
-                }
-            } finally {
-                lanDiscoveryRunning = false
-            }
-        }
-    }
-
-    private fun discoverAndConnectLan(network: Network?) {
+    private fun connectDirectChannel(network: Network) {
         val cred = credential ?: return
-        DatagramSocket().use { udp ->
-            network?.bindSocket(udp)
-            udp.broadcast = true
-            udp.soTimeout = 1600
-            val query = "CONPHONE_DISCOVER_V1".toByteArray(Charsets.US_ASCII)
-            udp.send(DatagramPacket(query, query.size, InetAddress.getByName("255.255.255.255"), DISCOVERY_PORT))
+        val config = directConfig ?: return
+        val connectivity = getSystemService(ConnectivityManager::class.java)
 
-            val buffer = ByteArray(128)
-            val response = DatagramPacket(buffer, buffer.size)
-            udp.receive(response)
-            val text = String(response.data, 0, response.length, Charsets.US_ASCII)
-            if (!text.startsWith("CONPHONE_HERE_V1:")) return
-            val port = text.substringAfterLast(':').toIntOrNull() ?: return
+        var host: String? = null
+        repeat(12) {
+            val links = connectivity.getLinkProperties(network)
+            host = links?.routes
+                ?.asSequence()
+                ?.mapNotNull { it.gateway?.hostAddress }
+                ?.firstOrNull { it.contains('.') }
+                ?: config.hostAddress
 
-            val socket = network?.socketFactory?.createSocket() ?: Socket()
-            socket.connect(InetSocketAddress(response.address, port), 2500)
-            socket.tcpNoDelay = true
-            socket.soTimeout = 0
-
-            val channel = LanChannel(
-                socket,
-                cred,
-                ::onLanFrame,
-                ::onLanClosed
-            )
-            channel.handshake()
-            lan = channel
-            showStatus(if (network == null)
-                "Clipboard LAN 고속 채널 연결됨"
-            else
-                "Clipboard P2P 고속 채널 연결됨")
-            executor.execute { channel.readLoop() }
+            if (!host.isNullOrBlank()) return@repeat
+            Thread.sleep(250)
         }
+
+        val target = host ?: config.hostAddress
+            ?: throw IOException("Windows P2P gateway 주소를 확인하지 못했습니다.")
+
+        val socket = network.socketFactory.createSocket()
+        socket.connect(InetSocketAddress(target, 47911), 3000)
+        socket.tcpNoDelay = true
+        socket.soTimeout = 0
+
+        val channel = LanChannel(
+            socket,
+            cred,
+            ::onLanFrame,
+            ::onLanClosed
+        )
+        channel.handshake()
+        lan = channel
+        showStatus("Clipboard P2P 고속 채널 연결됨 · $target")
+        executor.execute { channel.readLoop() }
     }
 
     private fun requestDirectNetwork() {
@@ -480,8 +456,8 @@ class ClipboardBridgeService : Service() {
                 p2pNetwork = network
                 showStatus("P2P Wi-Fi 링크 연결됨 · 보안 채널 승격 중")
                 executor.execute {
-                    runCatching { discoverAndConnectLan(network) }
-                        .onFailure { showStatus("P2P 데이터 채널 연결 실패 · BLE fallback 유지") }
+                    runCatching { connectDirectChannel(network) }
+                        .onFailure { showStatus("P2P 데이터 채널 연결 실패 · BLE fallback 유지: ${it.message}") }
                 }
             }
 
@@ -515,18 +491,18 @@ class ClipboardBridgeService : Service() {
             val content = wireReassembler.add(ClipboardProtocol.decode(frame)) ?: return
             applyRemoteClipboard(content)
         }.onFailure {
-            showStatus("LAN Clipboard 수신 거부: ${it.message}")
+            showStatus("P2P Clipboard 수신 거부: ${it.message}")
         }
     }
 
     private fun onLanClosed() {
         lan = null
-        showStatus("LAN/P2P 종료 · BLE fallback 유지")
+        showStatus("P2P 채널 종료 · BLE fallback 유지")
         val direct = p2pNetwork
         if (direct != null)
-            executor.execute { runCatching { discoverAndConnectLan(direct) } }
-        else
-            startLanDiscovery()
+            executor.execute {
+                runCatching { connectDirectChannel(direct) }
+            }
     }
 
     private fun sendCurrentClipboard() {
@@ -572,7 +548,7 @@ class ClipboardBridgeService : Service() {
                 runCatching {
                     ClipboardProtocol.encode(content).forEach(fast::sendFrame)
                 }.onSuccess {
-                    showStatus("Clipboard 전송 완료 · LAN/P2P")
+                    showStatus("Clipboard 전송 완료 · P2P")
                 }.onFailure {
                     fast.close()
                     if (lan === fast) lan = null
@@ -594,7 +570,7 @@ class ClipboardBridgeService : Service() {
         }
 
         if (content.kind != ClipboardKind.TEXT && content.data.size > 512 * 1024) {
-            toast("512 KiB 초과 이미지는 LAN/P2P 연결 후 전송해 주세요.")
+            toast("512 KiB 초과 이미지는 P2P 고속 연결 후 전송해 주세요.")
             return
         }
 
