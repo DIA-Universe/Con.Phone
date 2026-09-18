@@ -157,6 +157,25 @@ public sealed class DirectClipboardLink : IDisposable
 
     private string? FindDirectIpv4()
     {
+        var directAdapter = NetworkInterface.GetAllNetworkInterfaces()
+            .Where(nic =>
+                nic.OperationalStatus == OperationalStatus.Up &&
+                (nic.Name.Contains("Wi-Fi Direct", StringComparison.OrdinalIgnoreCase) ||
+                 nic.Description.Contains("Wi-Fi Direct", StringComparison.OrdinalIgnoreCase)))
+            .SelectMany(nic =>
+            {
+                try { return nic.GetIPProperties().UnicastAddresses; }
+                catch (NetworkInformationException) { return []; }
+            })
+            .Select(x => x.Address)
+            .FirstOrDefault(address =>
+                address.AddressFamily == AddressFamily.InterNetwork &&
+                !IPAddress.IsLoopback(address) &&
+                !address.ToString().StartsWith("169.254.", StringComparison.Ordinal));
+
+        if (directAdapter is not null)
+            return directAdapter.ToString();
+
         var current = CurrentIpv4();
         var created = current
             .Where(address => !_baselineIpv4.Contains(address))
