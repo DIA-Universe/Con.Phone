@@ -1,12 +1,113 @@
 namespace ConPhone.Windows;
+
 internal static class Program
 {
     [STAThread]
-    private static void Main()
+    private static void Main(string[] args)
     {
-        using var mutex = new Mutex(true, @"Local\DIAUniverse.ConPhone", out bool first);
-        if (!first) { MessageBox.Show("Con.Phone이 이미 실행 중입니다."); return; }
         ApplicationConfiguration.Initialize();
+
+        if (args.Length >= 2 && args[0].Equals("--snapshot", StringComparison.OrdinalIgnoreCase))
+        {
+            var directory = Path.GetFullPath(args[1]);
+            Directory.CreateDirectory(directory);
+
+            using var form = new MainForm(previewMode: true)
+            {
+                Size = new Size(980, 800),
+                StartPosition = FormStartPosition.Manual,
+                Location = new Point(-2000, -2000)
+            };
+
+            form.Show();
+            Application.DoEvents();
+            form.PerformLayout();
+            Application.DoEvents();
+
+            var tabs = FindFirst<TabControl>(form)
+                ?? throw new InvalidOperationException("Preview TabControl not found.");
+
+            for (var i = 0; i < tabs.TabPages.Count; i++)
+            {
+                tabs.SelectedIndex = i;
+                Application.DoEvents();
+                form.PerformLayout();
+                Application.DoEvents();
+
+                using var bitmap = new Bitmap(form.ClientSize.Width, form.ClientSize.Height);
+                form.DrawToBitmap(bitmap, new Rectangle(Point.Empty, form.ClientSize));
+                var safeName = new string(tabs.TabPages[i].Text.Select(ch =>
+                    Path.GetInvalidFileNameChars().Contains(ch) ? '_' : ch).ToArray());
+                bitmap.Save(
+                    Path.Combine(directory, $"{i + 1:00}-{safeName}.png"),
+                    System.Drawing.Imaging.ImageFormat.Png);
+            }
+
+            form.Close();
+            return;
+        }
+
+        if (args.Length >= 1 && args[0].Equals("--clipboard-selftest", StringComparison.OrdinalIgnoreCase))
+        {
+            RunClipboardSelfTest();
+            return;
+        }
+
+        using var mutex = new Mutex(true, @"Local\DIAUniverse.ConPhone", out bool first);
+        if (!first)
+        {
+            MessageBox.Show("Con.Phone이 이미 실행 중입니다.");
+            return;
+        }
+
         Application.Run(new MainForm());
+    }
+
+    private static T? FindFirst<T>(Control root) where T : Control
+    {
+        if (root is T found) return found;
+        foreach (Control child in root.Controls)
+        {
+            var nested = FindFirst<T>(child);
+            if (nested is not null) return nested;
+        }
+        return null;
+    }
+
+    private static void RunClipboardSelfTest()
+    {
+        var marker = $"Con.Phone clipboard self-test {Guid.NewGuid():N}";
+        Clipboard.SetText(marker, TextDataFormat.UnicodeText);
+
+        using var history = new ClipboardHistoryService(
+            limit: 10,
+            captureText: true,
+            captureImages: false);
+
+        history.CaptureNow();
+
+        var deadline = DateTime.UtcNow.AddSeconds(4);
+        ClipboardEntry? entry = null;
+
+        while (DateTime.UtcNow < deadline)
+        {
+            Application.DoEvents();
+            Thread.Sleep(40);
+            entry = history.Entries.FirstOrDefault(x => x.Text == marker);
+            if (entry is not null) break;
+        }
+
+        if (entry is null)
+            throw new InvalidOperationException("Clipboard history did not capture a real Windows text clipboard item.");
+
+        Clipboard.SetText("temporary replacement", TextDataFormat.UnicodeText);
+        if (!history.Restore(entry.Id))
+            throw new InvalidOperationException("Clipboard history could not restore the captured item.");
+
+        var restored = Clipboard.GetText(TextDataFormat.UnicodeText);
+        if (!string.Equals(restored, marker, StringComparison.Ordinal))
+            throw new InvalidOperationException("Restored Windows clipboard text did not match the original.");
+
+        history.Clear();
     }
 }

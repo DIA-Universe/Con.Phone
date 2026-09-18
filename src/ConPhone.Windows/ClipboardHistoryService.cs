@@ -5,7 +5,11 @@ using System.Text.Json;
 
 namespace ConPhone.Windows;
 
-public enum ClipboardEntryKind { Text, Image }
+public enum ClipboardEntryKind
+{
+    Text,
+    Image
+}
 
 public sealed class ClipboardEntry
 {
@@ -14,28 +18,31 @@ public sealed class ClipboardEntry
     public ClipboardEntryKind Kind { get; set; }
     public string Preview { get; set; } = "";
     public string? Text { get; set; }
-    public string? ImageFile { get; set; }
+    public string? ImageFileName { get; set; }
     public string Hash { get; set; } = "";
 
     public override string ToString() =>
-        $"{CapturedAt:HH:mm:ss}  {(Kind == ClipboardEntryKind.Text ? "텍스트" : "이미지")}  {Preview}";
+        $"{CapturedAt:MM-dd HH:mm:ss}  {(Kind == ClipboardEntryKind.Text ? "텍스트" : "이미지")}  {Preview}";
 }
 
 public sealed class ClipboardHistoryService : IDisposable
 {
+    private readonly object _gate = new();
+    private readonly List<ClipboardEntry> _entries = [];
     private readonly ClipboardSink _sink;
     private readonly System.Windows.Forms.Timer _retryTimer;
-    private readonly List<ClipboardEntry> _entries = [];
-    private readonly object _gate = new();
+
     private int _limit;
     private bool _captureText;
     private bool _captureImages;
+    private int _attempt;
+    private bool _selfWrite;
     private bool _disposed;
-    private int _remainingCaptureAttempts;
-    private DateTime _ignoreUpdatesUntilUtc;
 
     private static readonly string Root = Path.Combine(
-        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "ConPhone");
+        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+        "ConPhone");
+
     private static readonly string ImageRoot = Path.Combine(Root, "ClipboardImages");
     private static readonly string HistoryPath = Path.Combine(Root, "clipboard-history.json");
 
@@ -44,22 +51,29 @@ public sealed class ClipboardHistoryService : IDisposable
 
     public ClipboardHistoryService(int limit, bool captureText, bool captureImages)
     {
+        if (Application.OleRequired() != ApartmentState.STA)
+            throw new InvalidOperationException("클립보드 기록은 STA UI 스레드에서 시작해야 합니다.");
+
         _limit = Math.Clamp(limit, 10, 200);
         _captureText = captureText;
         _captureImages = captureImages;
+
+        Directory.CreateDirectory(Root);
+        Directory.CreateDirectory(ImageRoot);
         Load();
 
-        _retryTimer = new System.Windows.Forms.Timer { Interval = 90 };
-        _retryTimer.Tick += (_, _) => RetryCapture();
         _sink = new ClipboardSink(this);
-
-        // Pick up content that already existed before Con.Phone started.
-        ScheduleCapture(3);
+        _retryTimer = new System.Windows.Forms.Timer { Interval = 90 };
+        _retryTimer.Tick += (_, _) => TryCaptureClipboard();
     }
 
     public IReadOnlyList<ClipboardEntry> Entries
     {
-        get { lock (_gate) return _entries.Select(Clone).ToArray(); }
+        get
+        {
+            lock (_gate)
+                return _entries.Select(Clone).ToArray();
+        }
     }
 
     public void Configure(int limit, bool captureText, bool captureImages)
@@ -72,105 +86,86 @@ public sealed class ClipboardHistoryService : IDisposable
             TrimLocked();
             SaveLocked();
         }
+
         Changed?.Invoke();
     }
 
-    public bool CaptureCurrentNow()
-    {
-        if (_disposed) return false;
-        if (TryCaptureCurrent()) return true;
-        ScheduleCapture(6);
-        return false;
-    }
+    public void CaptureNow() => ScheduleCapture();
 
-    private void OnClipboardUpdate()
+    private void ScheduleCapture()
     {
-        if (_disposed || DateTime.UtcNow < _ignoreUpdatesUntilUtc) return;
-        ScheduleCapture(8);
-    }
-
-    private void ScheduleCapture(int attempts)
-    {
-        if (_disposed) return;
-        _remainingCaptureAttempts = Math.Max(_remainingCaptureAttempts, attempts);
+        if (_disposed || _selfWrite) return;
+        _attempt = 0;
         _retryTimer.Stop();
         _retryTimer.Start();
     }
 
-    private void RetryCapture()
+    private void TryCaptureClipboard()
     {
-        if (_disposed)
+        if (_disposed || _selfWrite)
         {
             _retryTimer.Stop();
             return;
         }
 
-        if (TryCaptureCurrent())
-        {
-            _remainingCaptureAttempts = 0;
-            _retryTimer.Stop();
-            return;
-        }
+        _attempt++;
 
-        if (--_remainingCaptureAttempts <= 0)
-        {
-            _retryTimer.Stop();
-            Status?.Invoke("클립보드가 다른 프로그램에 의해 잠겨 있어 이번 변경을 읽지 못했습니다.");
-        }
-    }
-
-    private bool TryCaptureCurrent()
-    {
         try
         {
             if (_captureText && Clipboard.ContainsText(TextDataFormat.UnicodeText))
             {
                 var text = Clipboard.GetText(TextDataFormat.UnicodeText);
-                if (!string.IsNullOrEmpty(text))
-                {
-                    AddText(text);
-                    return true;
-                }
+                _retryTimer.Stop();
+                if (!string.IsNullOrEmpty(text)) AddText(text);
+                return;
             }
 
             if (_captureImages && Clipboard.ContainsImage())
             {
                 using var image = Clipboard.GetImage();
-                if (image is not null)
-                {
-                    AddImage(image);
-                    return true;
-                }
+                _retryTimer.Stop();
+                if (image is not null) AddImage(image);
+                return;
             }
 
-            // Clipboard may contain unsupported formats; that is still a successful read.
-            return true;
+            // A supported clipboard item is not present. No retry is needed.
+            _retryTimer.Stop();
         }
         catch (ExternalException)
         {
-            return false;
-        }
-        catch (ThreadStateException)
-        {
-            Status?.Invoke("클립보드는 STA UI 스레드에서만 읽을 수 있습니다.");
-            return true;
+            // WM_CLIPBOARDUPDATE can arrive while the source application still owns the clipboard.
+            // Retry on the STA UI thread instead of silently losing the item.
+            if (_attempt >= 12)
+            {
+                _retryTimer.Stop();
+                Status?.Invoke("클립보드가 계속 사용 중이라 이번 항목을 읽지 못했습니다.");
+            }
         }
         catch (Exception ex)
         {
-            Status?.Invoke($"클립보드 읽기 오류: {ex.GetType().Name}");
-            return true;
+            _retryTimer.Stop();
+            Status?.Invoke($"클립보드 읽기 실패: {ex.Message}");
         }
     }
 
     private void AddText(string text)
     {
-        var hash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes("text\0" + text)));
-        var preview = text.Replace("\r", " ").Replace("\n", " ").Trim();
-        if (preview.Length > 90) preview = preview[..90] + "…";
+        var hash = Convert.ToHexString(
+            SHA256.HashData(Encoding.UTF8.GetBytes("text\0" + text)));
+
+        var preview = text
+            .Replace("\r", " ")
+            .Replace("\n", " ")
+            .Replace("\t", " ")
+            .Trim();
+
+        if (preview.Length > 100) preview = preview[..100] + "…";
+        if (preview.Length == 0) preview = "(공백 텍스트)";
 
         lock (_gate)
         {
             if (_entries.FirstOrDefault()?.Hash == hash) return;
+
             _entries.RemoveAll(x => x.Hash == hash);
             _entries.Insert(0, new ClipboardEntry
             {
@@ -180,16 +175,17 @@ public sealed class ClipboardHistoryService : IDisposable
                 Hash = hash,
                 CapturedAt = DateTime.Now
             });
+
             TrimLocked();
             SaveLocked();
         }
+
         Status?.Invoke("텍스트 클립보드를 기록했습니다.");
         Changed?.Invoke();
     }
 
     private void AddImage(Image image)
     {
-        Directory.CreateDirectory(ImageRoot);
         using var ms = new MemoryStream();
         image.Save(ms, System.Drawing.Imaging.ImageFormat.Png);
         var bytes = ms.ToArray();
@@ -198,25 +194,30 @@ public sealed class ClipboardHistoryService : IDisposable
         lock (_gate)
         {
             if (_entries.FirstOrDefault()?.Hash == hash) return;
+
             foreach (var duplicate in _entries.Where(x => x.Hash == hash).ToArray())
-                DeleteImageFile(duplicate);
+                DeleteImageLocked(duplicate);
+
             _entries.RemoveAll(x => x.Hash == hash);
 
             var id = Guid.NewGuid().ToString("N");
-            var file = Path.Combine(ImageRoot, id + ".png");
-            File.WriteAllBytes(file, bytes);
+            var fileName = id + ".png";
+            File.WriteAllBytes(Path.Combine(ImageRoot, fileName), bytes);
+
             _entries.Insert(0, new ClipboardEntry
             {
                 Id = id,
                 Kind = ClipboardEntryKind.Image,
-                ImageFile = file,
+                ImageFileName = fileName,
                 Preview = $"{image.Width} × {image.Height} 이미지",
                 Hash = hash,
                 CapturedAt = DateTime.Now
             });
+
             TrimLocked();
             SaveLocked();
         }
+
         Status?.Invoke("이미지/캡처 클립보드를 기록했습니다.");
         Changed?.Invoke();
     }
@@ -224,34 +225,49 @@ public sealed class ClipboardHistoryService : IDisposable
     public bool Restore(string id)
     {
         ClipboardEntry? entry;
-        lock (_gate) entry = _entries.FirstOrDefault(x => x.Id == id) is { } found ? Clone(found) : null;
+        lock (_gate)
+        {
+            var found = _entries.FirstOrDefault(x => x.Id == id);
+            entry = found is null ? null : Clone(found);
+        }
+
         if (entry is null) return false;
 
-        for (var attempt = 0; attempt < 6; attempt++)
+        try
         {
-            try
-            {
-                _ignoreUpdatesUntilUtc = DateTime.UtcNow.AddMilliseconds(500);
-                if (entry.Kind == ClipboardEntryKind.Text && entry.Text is not null)
-                {
-                    Clipboard.SetDataObject(entry.Text, true, 5, 40);
-                    return true;
-                }
+            _selfWrite = true;
+            _retryTimer.Stop();
 
-                if (entry.Kind == ClipboardEntryKind.Image && entry.ImageFile is { } path && File.Exists(path))
-                {
-                    using var source = Image.FromFile(path);
-                    using var copy = new Bitmap(source);
-                    Clipboard.SetDataObject(copy, true, 5, 40);
-                    return true;
-                }
-                return false;
-            }
-            catch (ExternalException)
+            if (entry.Kind == ClipboardEntryKind.Text && entry.Text is not null)
             {
-                Thread.Sleep(35);
+                Clipboard.SetText(entry.Text, TextDataFormat.UnicodeText);
+                Status?.Invoke("선택한 텍스트를 Windows 클립보드로 복원했습니다.");
+                return true;
+            }
+
+            if (entry.Kind == ClipboardEntryKind.Image &&
+                TryResolveImage(entry.ImageFileName, out var path))
+            {
+                using var source = Image.FromFile(path);
+                using var copy = new Bitmap(source);
+                Clipboard.SetImage(copy);
+                Status?.Invoke("선택한 이미지를 Windows 클립보드로 복원했습니다.");
+                return true;
             }
         }
+        catch (ExternalException)
+        {
+            Status?.Invoke("다른 프로그램이 클립보드를 사용 중이라 복원하지 못했습니다.");
+        }
+        catch (Exception ex)
+        {
+            Status?.Invoke($"클립보드 복원 실패: {ex.Message}");
+        }
+        finally
+        {
+            _selfWrite = false;
+        }
+
         return false;
     }
 
@@ -261,10 +277,12 @@ public sealed class ClipboardHistoryService : IDisposable
         {
             var entry = _entries.FirstOrDefault(x => x.Id == id);
             if (entry is null) return;
-            DeleteImageFile(entry);
+
+            DeleteImageLocked(entry);
             _entries.Remove(entry);
             SaveLocked();
         }
+
         Changed?.Invoke();
     }
 
@@ -272,10 +290,11 @@ public sealed class ClipboardHistoryService : IDisposable
     {
         lock (_gate)
         {
-            foreach (var entry in _entries) DeleteImageFile(entry);
+            foreach (var entry in _entries) DeleteImageLocked(entry);
             _entries.Clear();
             SaveLocked();
         }
+
         Changed?.Invoke();
     }
 
@@ -283,55 +302,94 @@ public sealed class ClipboardHistoryService : IDisposable
     {
         while (_entries.Count > _limit)
         {
-            var last = _entries[^1];
-            DeleteImageFile(last);
+            var entry = _entries[^1];
+            DeleteImageLocked(entry);
             _entries.RemoveAt(_entries.Count - 1);
         }
     }
 
-    private static void DeleteImageFile(ClipboardEntry entry)
+    private static bool TryResolveImage(string? fileName, out string path)
     {
-        if (entry.Kind != ClipboardEntryKind.Image || string.IsNullOrWhiteSpace(entry.ImageFile)) return;
-        try { if (File.Exists(entry.ImageFile)) File.Delete(entry.ImageFile); } catch { }
+        path = "";
+        if (string.IsNullOrWhiteSpace(fileName)) return false;
+
+        var safeName = Path.GetFileName(fileName);
+        if (!string.Equals(fileName, safeName, StringComparison.Ordinal)) return false;
+
+        path = Path.Combine(ImageRoot, safeName);
+        return File.Exists(path);
+    }
+
+    private static void DeleteImageLocked(ClipboardEntry entry)
+    {
+        if (entry.Kind != ClipboardEntryKind.Image) return;
+        if (!TryResolveImage(entry.ImageFileName, out var path)) return;
+
+        try { File.Delete(path); } catch { }
     }
 
     private void Load()
     {
         try
         {
-            Directory.CreateDirectory(Root);
             if (!File.Exists(HistoryPath)) return;
-            var loaded = JsonSerializer.Deserialize<List<ClipboardEntry>>(File.ReadAllText(HistoryPath));
+
+            var loaded = JsonSerializer.Deserialize<List<ClipboardEntry>>(
+                File.ReadAllText(HistoryPath));
+
             if (loaded is null) return;
-            _entries.AddRange(loaded.Where(x => x.Kind != ClipboardEntryKind.Image ||
-                                                (!string.IsNullOrWhiteSpace(x.ImageFile) && File.Exists(x.ImageFile))));
+
+            foreach (var entry in loaded)
+            {
+                if (entry.Kind == ClipboardEntryKind.Image &&
+                    !TryResolveImage(entry.ImageFileName, out _))
+                    continue;
+
+                _entries.Add(entry);
+            }
+
             TrimLocked();
         }
-        catch { }
+        catch
+        {
+            _entries.Clear();
+        }
     }
 
     private void SaveLocked()
     {
         try
         {
-            Directory.CreateDirectory(Root);
+            var json = JsonSerializer.Serialize(
+                _entries,
+                new JsonSerializerOptions { WriteIndented = true });
+
             var temp = HistoryPath + ".tmp";
-            var json = JsonSerializer.Serialize(_entries, new JsonSerializerOptions { WriteIndented = true });
             File.WriteAllText(temp, json);
             File.Move(temp, HistoryPath, true);
         }
-        catch { }
+        catch (Exception ex)
+        {
+            Status?.Invoke($"클립보드 기록 저장 실패: {ex.Message}");
+        }
     }
 
     private static ClipboardEntry Clone(ClipboardEntry x) => new()
     {
-        Id = x.Id, CapturedAt = x.CapturedAt, Kind = x.Kind, Preview = x.Preview,
-        Text = x.Text, ImageFile = x.ImageFile, Hash = x.Hash
+        Id = x.Id,
+        CapturedAt = x.CapturedAt,
+        Kind = x.Kind,
+        Preview = x.Preview,
+        Text = x.Text,
+        ImageFileName = x.ImageFileName,
+        Hash = x.Hash
     };
 
     public void Dispose()
     {
+        if (_disposed) return;
         _disposed = true;
+
         _retryTimer.Stop();
         _retryTimer.Dispose();
         _sink.Dispose();
@@ -344,16 +402,21 @@ public sealed class ClipboardHistoryService : IDisposable
         public ClipboardSink(ClipboardHistoryService owner)
         {
             _owner = owner;
-            // Use a normal hidden native window; this is more reliable for clipboard notifications
-            // than a message-only window on some Windows builds.
-            CreateHandle(new CreateParams { Caption = "Con.Phone.ClipboardSink" });
+            CreateHandle(new CreateParams
+            {
+                Caption = "Con.Phone.ClipboardSink",
+                Parent = new nint(-3)
+            });
+
             if (!AddClipboardFormatListener(Handle))
-                throw new ExternalException("AddClipboardFormatListener failed.", Marshal.GetLastWin32Error());
+                throw new InvalidOperationException("Windows 클립보드 변경 감시를 시작하지 못했습니다.");
         }
 
         protected override void WndProc(ref Message m)
         {
-            if (m.Msg == 0x031D) _owner.OnClipboardUpdate(); // WM_CLIPBOARDUPDATE
+            if (m.Msg == 0x031D) // WM_CLIPBOARDUPDATE
+                _owner.ScheduleCapture();
+
             base.WndProc(ref m);
         }
 

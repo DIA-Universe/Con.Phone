@@ -36,8 +36,8 @@ Check("pointer wheel conserved", chunks.Sum(r => (int)unchecked((sbyte)r.Data[5]
 Check("drag buttons preserved", chunks.All(r => r.Data[0] == 1));
 Check("release emitted without motion", Hid.Encode(new PointerPacket(0)).Single().Data.All(b => b == 0));
 Check("keyboard no embedded report id", Hid.Encode(new KeyboardPacket(new byte[8])).Single().Data.Length == 8);
-Check("system power value", Hid.SystemPowerDownValue == 2);
-Check("system power report", Hid.SystemControlReport(Hid.SystemPowerDownValue).SequenceEqual(new byte[] { 2 }));
+Check("system lock report down", Hid.SystemReport(true).SequenceEqual(new byte[] { 0x02 }));
+Check("system lock report up", Hid.SystemReport(false).SequenceEqual(new byte[] { 0x00 }));
 var scaler = new PointerScaler();
 scaler.Configure(50, 100, false);
 Check("50 percent pointer keeps fractional first step", scaler.Apply(new PointerPacket(0, 1)).X == 0);
