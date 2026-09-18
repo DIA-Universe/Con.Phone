@@ -28,6 +28,7 @@ public sealed class ConPhoneSettings
     public int MouseSpeedPercent { get; set; } = 100;
     public int ScrollSpeedPercent { get; set; } = 100;
     public bool InvertScroll { get; set; }
+    public HangulKeyMode HangulKeyMode { get; set; } = HangulKeyMode.RightAlt;
 
     public HotkeyBinding ToggleHotkey { get; set; } = new() { Key = (int)Keys.F8 };
     public HotkeyBinding EmergencyHotkey { get; set; } = new() { Key = (int)Keys.F9 };
@@ -88,6 +89,9 @@ public static class SettingsStore
         settings.ScrollSpeedPercent = Math.Clamp(settings.ScrollSpeedPercent, 25, 300);
         settings.ClipboardHistoryLimit = Math.Clamp(settings.ClipboardHistoryLimit, 10, 200);
         settings.ClipboardBleImageLimitKb = Math.Clamp(settings.ClipboardBleImageLimitKb, 64, 4096);
+        if (!Enum.IsDefined(typeof(HangulKeyMode), settings.HangulKeyMode))
+            settings.HangulKeyMode = HangulKeyMode.RightAlt;
+
         settings.ToggleHotkey ??= DefaultToggle();
         settings.EmergencyHotkey ??= DefaultEmergency();
         settings.LockAndReturnHotkey ??= DefaultLockAndReturn();
