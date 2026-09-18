@@ -107,7 +107,7 @@ final class ClipboardBridge: NSObject, ObservableObject {
             passphrase: config.passphrase,
             isWEP: false
         )
-        hotspot.joinOnce = false
+        hotspot.joinOnce = true
         status = "P2P Wi-Fi 연결 승인 대기"
 
         NEHotspotConfigurationManager.shared.apply(hotspot) { [weak self] error in
