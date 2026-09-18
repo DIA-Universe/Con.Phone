@@ -101,15 +101,11 @@ public sealed class BleClipboardService : IDisposable
 
     public int Subscribers => LiveClients(_tx).Count;
 
-    public async Task StartAsync()
+    public async Task PrepareAsync()
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
         if (_provider is not null)
-        {
-            if (!Running)
-                StartAdvertising();
             return;
-        }
 
         var created = await GattServiceProvider.CreateAsync(ServiceUuid);
         if (created.Error != BluetoothError.Success)
@@ -156,7 +152,11 @@ public sealed class BleClipboardService : IDisposable
         _secret.ReadRequested += SecretReadRequested;
         _capabilities.ReadRequested += CapabilitiesReadRequested;
         _directLink.ReadRequested += DirectLinkReadRequested;
+    }
 
+    public async Task StartAsync()
+    {
+        await PrepareAsync().ConfigureAwait(false);
         StartAdvertising();
     }
 
