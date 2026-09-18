@@ -53,7 +53,27 @@ public sealed class BleHidServer
         var radio = await adapter.GetRadioAsync();
         if (radio?.State != RadioState.On) throw new InvalidOperationException("Windows Bluetooth를 먼저 켜 주세요.");
         if (_provider is not null && !_configured)
-            throw new InvalidOperationException("이전 서비스 구성이 실패했습니다. 앱을 종료하고 다시 실행하세요.");
+            throw new InvalidOperationException("이전 서비스 구성이 실패했습니다. 앱을 완전히 종료하고 다시 실행하세요.");
+        if (_provider is not null && _configured)
+        {
+            var status = _provider.AdvertisementStatus;
+            if (status is GattServiceProviderAdvertisementStatus.Started
+                or GattServiceProviderAdvertisementStatus.StartedWithoutAllAdvertisementData)
+            {
+                _running = true;
+                Status?.Invoke("Bluetooth HID 광고는 이미 실행 중입니다. 휴대폰에서 새로 검색하거나 기존 연결을 확인하세요.");
+                Changed?.Invoke();
+                return;
+            }
+            if (status == GattServiceProviderAdvertisementStatus.Aborted)
+            {
+                _running = false;
+                _approved = null;
+                throw new InvalidOperationException(
+                    "Windows가 Bluetooth HID 광고를 중단했습니다. Bluetooth를 껐다 켠 뒤 Con.Phone을 완전히 종료/재실행하세요. " +
+                    "휴대폰에 이전 Con.Phone/PC 등록이 남아 있으면 등록 해제 후 앱이 실행 중인 상태에서 다시 페어링하세요.");
+            }
+        }
         if (_provider is null)
         {
             var result = await GattServiceProvider.CreateAsync(Uuid(0x1812));
@@ -98,7 +118,18 @@ public sealed class BleHidServer
         }
         _approved = null;
         _running = true;
-        _provider.StartAdvertising(new GattServiceProviderAdvertisingParameters { IsConnectable = true, IsDiscoverable = true });
+        try
+        {
+            _provider.StartAdvertising(new GattServiceProviderAdvertisingParameters { IsConnectable = true, IsDiscoverable = true });
+        }
+        catch (InvalidOperationException ex)
+        {
+            _running = false;
+            throw new InvalidOperationException(
+                "Bluetooth HID 광고를 시작할 수 없습니다. 이미 광고 중이면 다시 시작할 필요가 없습니다. " +
+                "계속 실패하면 Bluetooth를 껐다 켠 뒤 앱을 완전히 종료/재실행하세요.", ex);
+        }
+        Status?.Invoke("Bluetooth HID 광고 시작됨. 기존 등록 기기가 '연결할 수 없음'이면 휴대폰에서 해당 PC를 등록 해제한 뒤 지금 다시 페어링하세요.");
         Changed?.Invoke();
     }
 
@@ -128,22 +159,37 @@ public sealed class BleHidServer
         });
         c.SubscribedClientsChanged += (_, _) =>
         {
-            foreach (var client in c.SubscribedClients)
+            try
             {
-                var session = client.Session;
-                var id = session.DeviceId.Id;
-                if (_sessions.TryAdd(id, session))
-                    session.SessionStatusChanged += (sender, args) =>
+                foreach (var client in c.SubscribedClients)
+                {
+                    try
                     {
-                        if (args.Status == GattSessionStatus.Closed)
-                        {
-                            if (_approved == id) _approved = null;
-                            _protocol.TryRemove(id, out _);
-                            _suspended.TryRemove(id, out _);
-                            _sessions.TryRemove(id, out _);
-                        }
-                        Changed?.Invoke();
-                    };
+                        var session = client.Session;
+                        if (session.SessionStatus != GattSessionStatus.Active) continue;
+                        var id = session.DeviceId.Id;
+                        if (_sessions.TryAdd(id, session))
+                            session.SessionStatusChanged += (sender, args) =>
+                            {
+                                if (args.Status == GattSessionStatus.Closed)
+                                {
+                                    if (_approved == id) _approved = null;
+                                    _protocol.TryRemove(id, out _);
+                                    _suspended.TryRemove(id, out _);
+                                    _sessions.TryRemove(id, out _);
+                                }
+                                Changed?.Invoke();
+                            };
+                    }
+                    catch (InvalidOperationException)
+                    {
+                        // The client can disappear while Windows is raising the subscription callback.
+                    }
+                }
+            }
+            catch (InvalidOperationException)
+            {
+                // A disconnect can invalidate the projected collection mid-enumeration.
             }
             Changed?.Invoke();
         };
@@ -200,24 +246,77 @@ public sealed class BleHidServer
         bool boot = _protocol.GetValueOrDefault(id, (byte)1) == 0;
         return keyboard ? (boot ? _bootKeyboard : _keyboard) : (boot ? _bootMouse : _mouse);
     }
-    private static GattSubscribedClient? Client(GattLocalCharacteristic? c, string id) =>
-        c?.SubscribedClients.FirstOrDefault(x => x.Session.DeviceId.Id == id && x.Session.SessionStatus == GattSessionStatus.Active);
+    private static GattSubscribedClient? Client(GattLocalCharacteristic? c, string id)
+    {
+        if (c is null) return null;
+        try
+        {
+            foreach (var client in c.SubscribedClients)
+            {
+                try
+                {
+                    var session = client.Session;
+                    if (session.SessionStatus == GattSessionStatus.Active && session.DeviceId.Id == id)
+                        return client;
+                }
+                catch (InvalidOperationException)
+                {
+                    // Session closed between collection snapshot and inspection.
+                }
+            }
+        }
+        catch (InvalidOperationException)
+        {
+            // Characteristic/subscriber projection changed during disconnect.
+        }
+        return null;
+    }
     private bool IsReady(string id) => !_suspended.GetValueOrDefault(id) &&
         Client(Input(id, true), id) is not null && Client(Input(id, false), id) is not null;
 
     public async Task<IReadOnlyList<Peer>> GetPeersAsync()
     {
-        var chars = new[] { _keyboard, _mouse, _bootKeyboard, _bootMouse };
-        var ids = chars.Where(c => c is not null).SelectMany(c => c!.SubscribedClients)
-            .Where(c => c.Session.SessionStatus == GattSessionStatus.Active).Select(c => c.Session.DeviceId.Id).Distinct().ToArray();
+        var ids = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var c in new[] { _keyboard, _mouse, _bootKeyboard, _bootMouse })
+        {
+            if (c is null) continue;
+            try
+            {
+                foreach (var client in c.SubscribedClients)
+                {
+                    try
+                    {
+                        var session = client.Session;
+                        if (session.SessionStatus == GattSessionStatus.Active)
+                            ids.Add(session.DeviceId.Id);
+                    }
+                    catch (InvalidOperationException)
+                    {
+                        // Ignore a client that vanished while the list was being refreshed.
+                    }
+                }
+            }
+            catch (InvalidOperationException)
+            {
+                // Windows can invalidate the collection during a disconnect/reconnect edge.
+            }
+        }
+
         var peers = new List<Peer>();
         foreach (var id in ids)
         {
-            using var device = await BluetoothLEDevice.FromIdAsync(id);
-            var fingerprint = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(id)))[..8];
-            peers.Add(new(id, device?.Name ?? "이름 확인 불가", fingerprint,
-                Client(Input(id, true), id) is not null, Client(Input(id, false), id) is not null,
-                device?.DeviceInformation.Pairing.IsPaired == true));
+            try
+            {
+                using var device = await BluetoothLEDevice.FromIdAsync(id);
+                var fingerprint = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(id)))[..8];
+                peers.Add(new(id, device?.Name ?? "이름 확인 불가", fingerprint,
+                    Client(Input(id, true), id) is not null, Client(Input(id, false), id) is not null,
+                    device?.DeviceInformation.Pairing.IsPaired == true));
+            }
+            catch (InvalidOperationException)
+            {
+                // The peer disconnected while Windows was materializing BluetoothLEDevice.
+            }
         }
         return peers;
     }
@@ -258,7 +357,16 @@ public sealed class BleHidServer
     {
         _running = false; _approved = null;
         _keyboardValue = new byte[8]; _mouseValue = new byte[5];
-        _provider?.StopAdvertising();
+        try
+        {
+            if (_provider?.AdvertisementStatus is GattServiceProviderAdvertisementStatus.Started
+                or GattServiceProviderAdvertisementStatus.StartedWithoutAllAdvertisementData)
+                _provider.StopAdvertising();
+        }
+        catch (InvalidOperationException)
+        {
+            // The radio/provider may already have transitioned while the UI is stopping it.
+        }
         Changed?.Invoke();
     }
 }
