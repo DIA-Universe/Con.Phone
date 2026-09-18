@@ -36,8 +36,8 @@ Check("pointer wheel conserved", chunks.Sum(r => (int)unchecked((sbyte)r.Data[5]
 Check("drag buttons preserved", chunks.All(r => r.Data[0] == 1));
 Check("release emitted without motion", Hid.Encode(new PointerPacket(0)).Single().Data.All(b => b == 0));
 Check("keyboard no embedded report id", Hid.Encode(new KeyboardPacket(new byte[8])).Single().Data.Length == 8);
-Check("keyboard power usage", Hid.KeyboardPowerUsage == 0x66);
-Check("keyboard power report", Hid.KeyboardReport(Hid.KeyboardPowerUsage)[2] == 0x66);
+Check("system power value", Hid.SystemPowerDownValue == 2);
+Check("system power report", Hid.SystemControlReport(Hid.SystemPowerDownValue).SequenceEqual(new byte[] { 2 }));
 var scaler = new PointerScaler();
 scaler.Configure(50, 100, false);
 Check("50 percent pointer keeps fractional first step", scaler.Apply(new PointerPacket(0, 1)).X == 0);
@@ -93,4 +93,5 @@ Check("descriptor collections balanced", depth == 0);
 Check("descriptor keyboard input 64 bits", bits[(1, 0x80)] == 64);
 Check("descriptor has no output reports", !bits.ContainsKey((1, 0x90)));
 Check("descriptor pointer input 48 bits", bits[(2, 0x80)] == 48);
+Check("descriptor system-control input 8 bits", bits[(3, 0x80)] == 8);
 Console.WriteLine($"{passed} checks passed. No Windows/Bluetooth/phone hardware has been tested by these checks.");
