@@ -123,7 +123,7 @@ try { ClipboardContent.FromImage(ClipboardContentKind.Png, new byte[] { 1, 2, 3,
 catch (ArgumentException) { badPngRejected = true; }
 Check("clipboard bad png rejected", badPngRejected);
 
-var wholeFrame = ClipboardWireCodec.Encode(clipText, 1024).Single();
+var wholeFrame = ClipboardWireCodec.Encode(clipText, 4096).Single();
 var bleParts = BleFragmentCodec.Split(wholeFrame, 20, 42);
 Check("ble clipboard uses mtu-sized fragments", bleParts.All(x => x.Length <= 20) && bleParts.Count > 1);
 var bleReassembler = new BleFragmentReassembler();
