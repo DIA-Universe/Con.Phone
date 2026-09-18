@@ -30,6 +30,7 @@ final class ClipboardBridge: NSObject, ObservableObject {
     private var directConfig: DirectConfig?
     private var relayEndpoint: String?
     private var relay: RelayClipboardChannel?
+    private var relayGeneration: UUID?
     private var lan: LanClipboardChannel?
     private var directHostRefreshAttempt = 0
     private var directConfigReadAttempt = 0
@@ -249,6 +250,8 @@ final class ClipboardBridge: NSObject, ObservableObject {
         let secret = credential.subdata(in: 32..<64)
         relay?.close()
 
+        let generation = UUID()
+        relayGeneration = generation
         let channel = RelayClipboardChannel(
             endpoint: endpoint,
             deviceHash: deviceHash,
@@ -265,10 +268,9 @@ final class ClipboardBridge: NSObject, ObservableObject {
             },
             onClosed: { [weak self] in
                 DispatchQueue.main.async {
-                    guard let self else { return }
-                    if self.relay === channel {
-                        self.relay = nil
-                    }
+                    guard let self, self.relayGeneration == generation else { return }
+                    self.relay = nil
+                    self.relayGeneration = nil
                     if self.relayEndpoint == endpoint {
                         DispatchQueue.main.asyncAfter(deadline: .now() + 3) { [weak self] in
                             guard let self, self.relay == nil else { return }
