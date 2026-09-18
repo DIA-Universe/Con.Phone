@@ -1,3 +1,4 @@
+using System.ComponentModel;
 using System.Drawing.Drawing2D;
 
 namespace ConPhone.Windows;
@@ -75,6 +76,8 @@ public sealed class ConPhoneButton : Button
     private bool _hover;
     private bool _pressed;
 
+    [Browsable(false)]
+    [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
     public ConPhoneButtonKind Kind
     {
         get => _kind;
@@ -138,7 +141,12 @@ public sealed class ConPhoneButton : Button
 
 public sealed class ConPhoneCard : FlowLayoutPanel
 {
+    [Browsable(false)]
+    [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
     public int Radius { get; set; } = 16;
+
+    [Browsable(false)]
+    [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
     public Color BorderColor { get; set; } = ConPhoneTheme.Stroke;
 
     public ConPhoneCard()
@@ -170,6 +178,8 @@ public sealed class ConPhoneCard : FlowLayoutPanel
 public sealed class ConPhoneNavButton : Button
 {
     private bool _selected;
+    [Browsable(false)]
+    [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
     public bool Selected
     {
         get => _selected;
