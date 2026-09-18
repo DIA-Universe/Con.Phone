@@ -114,6 +114,20 @@ Check("pointer pacing 12 units = 15ms", PointerPacing.FromBleConnectionInterval(
 Check("pointer pacing 24 units = 30ms", PointerPacing.FromBleConnectionInterval(24) == 30);
 Check("pointer pacing lower clamp", PointerPacing.FromBleConnectionInterval(6) == 8);
 
+var p2pSecret = Enumerable.Range(0, 32).Select(i => (byte)i).ToArray();
+var p2pDeviceHash = Enumerable.Range(32, 32).Select(i => (byte)i).ToArray();
+var p2pClientNonce = Enumerable.Range(0, 16).Select(i => (byte)i).ToArray();
+var p2pServerNonce = Enumerable.Range(16, 16).Select(i => (byte)i).ToArray();
+var p2pSessionKey = P2PSecurity.DeriveSessionKey(
+    p2pSecret,
+    p2pDeviceHash,
+    p2pClientNonce,
+    p2pServerNonce);
+Check(
+    "P2P v2 session KDF vector",
+    Convert.ToHexString(p2pSessionKey) ==
+    "16BE739CCB5056785C93854CFD3C384105BE7F799292A5BEBA8FFE2BE73248D0");
+
 // Clipboard text/image sync protocol.
 var clipText = ClipboardContent.FromText(string.Concat(Enumerable.Repeat("한글🙂abc", 120)));
 Check("clipboard text utf8 roundtrip", clipText.GetText() == string.Concat(Enumerable.Repeat("한글🙂abc", 120)));
