@@ -115,3 +115,14 @@ CI만으로 검증할 수 없는 항목:
 - 절전/재부팅 후 장시간 reconnect
 
 이 항목은 실제 기기 E2E 시험표에서 별도로 확인한다.
+
+
+## Windows Direct Wi-Fi 주의사항
+
+Con.Phone은 같은 Wi-Fi를 전제로 하지 않는다. 고속 경로는 Windows가 직접 만드는 Wi-Fi Direct/legacy AP를 사용한다.
+
+- Windows Mobile Hotspot과 Wi-Fi Direct는 동시에 사용할 수 없다. Mobile Hotspot이 켜져 있으면 P2P 시작이 실패할 수 있으며 이 경우 BLE fallback을 사용한다.
+- P2P SSID는 클립보드 설정의 "P2P 링크 이름"으로 바꿀 수 있다.
+- Windows 내장 BLE의 시스템 Bluetooth 페어링 이름은 Con.Phone이 변경하지 않는다. 앱별 GATT 서버에서 시스템 Bluetooth 이름을 안전하게 재정의하는 지원 경로가 없기 때문이다.
+- P2P 비밀번호와 per-device clipboard secret은 Windows Password Vault에 보관한다.
+- 비활성 신뢰 기기는 clipboard secret을 유지할 수 있지만 P2P 설정 읽기와 clipboard 쓰기는 거부된다.
