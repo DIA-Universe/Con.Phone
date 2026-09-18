@@ -318,7 +318,7 @@ public sealed class InputCapture : IDisposable
                     key,
                     (int)k.Scan,
                     (k.Flags & 1) != 0);
-                usage = MapModifierUsage(usage, _modifierProfile);
+                usage = Hid.MapModifierUsage(usage, _modifierProfile);
 
                 var report = _keys.Update(usage, !up);
 
@@ -336,23 +336,6 @@ public sealed class InputCapture : IDisposable
 
     private static bool Matches(HotkeyBinding binding, int key, HotkeyModifiers modifiers) =>
         binding.Key == key && binding.Modifiers == modifiers;
-
-    private static byte MapModifierUsage(
-        byte usage,
-        ModifierProfile profile)
-    {
-        if (profile != ModifierProfile.MacCtrlCommandSwap)
-            return usage;
-
-        return usage switch
-        {
-            0xE0 => 0xE3,
-            0xE4 => 0xE7,
-            0xE3 => 0xE0,
-            0xE7 => 0xE4,
-            _ => usage
-        };
-    }
 
     private HotkeyModifiers ModifiersFromDownKeysLocked()
     {
