@@ -156,9 +156,10 @@ public sealed class ConPhoneCard : FlowLayoutPanel
 
     protected override void OnPaintBackground(PaintEventArgs e)
     {
+        if (Width < 4 || Height < 4) { base.OnPaintBackground(e); return; }
         e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
         var rect = new Rectangle(0, 0, Width - 1, Height - 1);
-        using var path = ConPhoneTheme.Rounded(rect, Radius);
+        using var path = ConPhoneTheme.Rounded(rect, Math.Min(Radius, Math.Min(Width, Height) / 2));
         using var brush = new SolidBrush(BackColor);
         e.Graphics.FillPath(brush, path);
         using var pen = new Pen(BorderColor, 1);
