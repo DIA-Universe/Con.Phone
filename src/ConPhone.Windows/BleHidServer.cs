@@ -33,12 +33,15 @@ public sealed class BleHidServer : IDisposable
     private readonly ConcurrentDictionary<string, bool> _suspended = new();
     private readonly ConcurrentDictionary<string, GattSession> _sessions = new();
     private readonly ConcurrentDictionary<string, BluetoothLEDevice> _devices = new();
+    private readonly ConcurrentDictionary<string, int> _connectionIntervalMs = new();
+    private readonly ConcurrentDictionary<string, BluetoothLEPreferredConnectionParametersRequest> _throughputRequests = new();
     private readonly SemaphoreSlim _send = new(1, 1);
     private readonly SemaphoreSlim _deviceGate = new(1, 1);
 
     private volatile string? _approved;
     private volatile string _lastOperation = "Idle";
     private volatile bool _running;
+    private volatile bool _interactiveMode;
     private bool _everAdvertised;
     private bool _configured;
     private bool _disposed;
@@ -57,6 +60,10 @@ public sealed class BleHidServer : IDisposable
     public int SystemSubscribers => LiveClientCount(_system);
     public string? ApprovedId => _approved;
     public bool Ready => _running && _approved is { } id && IsReady(id);
+    public int MousePacingIntervalMs =>
+        _approved is { } id && _connectionIntervalMs.TryGetValue(id, out var value)
+            ? value
+            : PointerPacing.FallbackIntervalMs;
 
     public BleHidServer()
     {
@@ -300,6 +307,8 @@ public sealed class BleHidServer : IDisposable
 
                 _protocol.TryRemove(id, out _);
                 _suspended.TryRemove(id, out _);
+                _connectionIntervalMs.TryRemove(id, out _);
+                ReleaseThroughputRequest(id);
                 Status?.Invoke("휴대폰 GATT 세션이 닫혔습니다. 입력은 로컬로 복귀하고 재연결을 기다립니다.");
             }
             else
@@ -337,12 +346,27 @@ public sealed class BleHidServer : IDisposable
 
             device.ConnectionStatusChanged += (sender, _) =>
             {
+                if (sender.ConnectionStatus == BluetoothConnectionStatus.Connected)
+                {
+                    RefreshConnectionInterval(id, sender);
+                    if (_interactiveMode && string.Equals(_approved, id, StringComparison.Ordinal))
+                        ApplyInteractiveLinkTuning(id, sender);
+                }
+
                 Status?.Invoke($"휴대폰 링크 상태: {sender.ConnectionStatus}");
                 Changed?.Invoke();
             };
 
             if (!_devices.TryAdd(id, device))
+            {
                 device.Dispose();
+            }
+            else
+            {
+                RefreshConnectionInterval(id, device);
+                if (_interactiveMode && string.Equals(_approved, id, StringComparison.Ordinal))
+                    ApplyInteractiveLinkTuning(id, device);
+            }
         }
         catch (Exception ex) when (ex is InvalidOperationException or ObjectDisposedException)
         {
@@ -352,6 +376,79 @@ public sealed class BleHidServer : IDisposable
         {
             _deviceGate.Release();
         }
+    }
+
+    public void SetInteractiveMode(bool enabled)
+    {
+        _interactiveMode = enabled;
+
+        if (!enabled)
+        {
+            foreach (var id in _throughputRequests.Keys.ToArray())
+                ReleaseThroughputRequest(id);
+            return;
+        }
+
+        var id = _approved;
+        if (id is not null && _devices.TryGetValue(id, out var device))
+            ApplyInteractiveLinkTuning(id, device);
+    }
+
+    private void ApplyInteractiveLinkTuning(string id, BluetoothLEDevice device)
+    {
+        RefreshConnectionInterval(id, device);
+
+        if (!OperatingSystem.IsWindowsVersionAtLeast(10, 0, 22000))
+            return;
+
+        try
+        {
+            if (_throughputRequests.ContainsKey(id))
+                return;
+
+            var request = device.RequestPreferredConnectionParameters(
+                BluetoothLEPreferredConnectionParameters.ThroughputOptimized);
+
+            if (!_throughputRequests.TryAdd(id, request))
+                request.Dispose();
+
+            RefreshConnectionInterval(id, device);
+            Status?.Invoke(
+                $"BLE 입력 최적화 · 마우스 pacing {MousePacingIntervalMs}ms");
+        }
+        catch (Exception ex) when (ex is InvalidOperationException or ObjectDisposedException or NotSupportedException)
+        {
+            Status?.Invoke(
+                $"BLE 입력 최적화 요청을 적용하지 못해 {MousePacingIntervalMs}ms pacing을 사용합니다.");
+        }
+    }
+
+    private void RefreshConnectionInterval(string id, BluetoothLEDevice device)
+    {
+        var interval = PointerPacing.FallbackIntervalMs;
+
+        if (OperatingSystem.IsWindowsVersionAtLeast(10, 0, 22000))
+        {
+            try
+            {
+                var parameters = device.GetConnectionParameters();
+                interval = PointerPacing.FromBleConnectionInterval(parameters.ConnectionInterval);
+            }
+            catch (Exception ex) when (ex is InvalidOperationException or ObjectDisposedException or NotSupportedException)
+            {
+            }
+        }
+
+        _connectionIntervalMs[id] = interval;
+    }
+
+    private void ReleaseThroughputRequest(string id)
+    {
+        if (!_throughputRequests.TryRemove(id, out var request))
+            return;
+
+        try { request.Dispose(); }
+        catch (Exception ex) when (ex is InvalidOperationException or ObjectDisposedException) { }
     }
 
     private bool IsConnected(string id) =>
@@ -578,6 +675,9 @@ public sealed class BleHidServer : IDisposable
         _systemValue = new byte[Hid.SystemReportLength];
         _approved = id;
         TrustedDeviceStore.Save(id);
+        RefreshConnectionInterval(id, device);
+        if (_interactiveMode)
+            ApplyInteractiveLinkTuning(id, device);
 
         if (_sessions.TryGetValue(id, out var session))
             TryMaintainConnection(session);
@@ -590,6 +690,7 @@ public sealed class BleHidServer : IDisposable
     public string? Revoke()
     {
         var previous = _approved;
+        SetInteractiveMode(false);
         _approved = null;
         TrustedDeviceStore.Clear();
         Changed?.Invoke();
@@ -690,7 +791,7 @@ public sealed class BleHidServer : IDisposable
         if (_disposed) return;
 
         _running = false;
-        _approved = null;
+        SetInteractiveMode(false);
         _keyboardValue = new byte[Hid.KeyboardReportLength];
         _mouseValue = new byte[Hid.MouseReportLength];
         _systemValue = new byte[Hid.SystemReportLength];
@@ -733,8 +834,12 @@ public sealed class BleHidServer : IDisposable
             try { device.Dispose(); } catch { }
         }
 
+        foreach (var id in _throughputRequests.Keys.ToArray())
+            ReleaseThroughputRequest(id);
+
         _devices.Clear();
         _sessions.Clear();
+        _connectionIntervalMs.Clear();
         _send.Dispose();
         _deviceGate.Dispose();
     }
