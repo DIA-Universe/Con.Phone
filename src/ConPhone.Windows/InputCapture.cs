@@ -35,6 +35,7 @@ public sealed class InputCapture : IDisposable
     public event Action? Toggle;
     public event Action? Emergency;
     public event Action? LockAndReturn;
+    public event Action<ConsumerAction>? Consumer;
     public event Action<string>? Fault;
 
     public bool IsRemote => _remote;
@@ -276,6 +277,13 @@ public sealed class InputCapture : IDisposable
             {
                 if (!_remote) return CallNextHookEx(0, code, message, data);
 
+                if (TryConsumerAction(key, out var consumerAction))
+                {
+                    if (!up && firstDown)
+                        Consumer?.Invoke(consumerAction);
+                    return 1;
+                }
+
                 var isHangulKey =
                     key == 0x15 ||
                     ((int)k.Scan & 0xFF) == 0xF2;
@@ -331,6 +339,34 @@ public sealed class InputCapture : IDisposable
             Deactivate();
             Fault?.Invoke($"키보드 처리 오류 — 로컬 복귀: {ex.Message}");
             return CallNextHookEx(0, code, message, data);
+        }
+    }
+
+    private static bool TryConsumerAction(int key, out ConsumerAction action)
+    {
+        switch (key)
+        {
+            case 0xAD:
+                action = ConsumerAction.Mute;
+                return true;
+            case 0xAE:
+                action = ConsumerAction.VolumeDown;
+                return true;
+            case 0xAF:
+                action = ConsumerAction.VolumeUp;
+                return true;
+            case 0xB0:
+                action = ConsumerAction.NextTrack;
+                return true;
+            case 0xB1:
+                action = ConsumerAction.PreviousTrack;
+                return true;
+            case 0xB3:
+                action = ConsumerAction.PlayPause;
+                return true;
+            default:
+                action = default;
+                return false;
         }
     }
 
