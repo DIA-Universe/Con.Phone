@@ -1,5 +1,7 @@
 using System.Diagnostics;
 using System.Reflection;
+using System.Security.Cryptography;
+using System.Security.Cryptography.X509Certificates;
 
 namespace ConPhone.Windows;
 
@@ -8,7 +10,8 @@ public sealed record UpdateCandidate(
     Version Version,
     long SizeBytes,
     string Sha256,
-    bool ChecksumVerified);
+    bool ChecksumVerified,
+    bool SignatureVerified);
 
 public static class LocalUpdateService
 {
@@ -55,12 +58,31 @@ public static class LocalUpdateService
 
         var checksumVerified = true;
 
+        var currentPath = Environment.ProcessPath;
+        var currentSigner = string.IsNullOrWhiteSpace(currentPath)
+            ? null
+            : TryGetSignerThumbprint(currentPath);
+        var candidateSigner = TryGetSignerThumbprint(path);
+
+        var signatureVerified =
+            currentSigner is not null &&
+            candidateSigner is not null &&
+            string.Equals(
+                currentSigner,
+                candidateSigner,
+                StringComparison.OrdinalIgnoreCase);
+
+        if (currentSigner is not null && !signatureVerified)
+            throw new InvalidOperationException(
+                "현재 Con.Phone과 업데이트 파일의 Authenticode 서명자가 다릅니다. 업데이트를 중단합니다.");
+
         return new UpdateCandidate(
             path,
             version,
             file.Length,
             sha256,
-            checksumVerified);
+            checksumVerified,
+            signatureVerified);
     }
 
     public static string Stage(UpdateCandidate candidate)
@@ -205,6 +227,28 @@ public static class LocalUpdateService
             FileName = target,
             UseShellExecute = true
         });
+    }
+
+    private static string? TryGetSignerThumbprint(string path)
+    {
+        try
+        {
+#pragma warning disable SYSLIB0026
+            using var certificate = new X509Certificate2(
+                X509Certificate.CreateFromSignedFile(path));
+#pragma warning restore SYSLIB0026
+            return string.IsNullOrWhiteSpace(certificate.Thumbprint)
+                ? null
+                : certificate.Thumbprint;
+        }
+        catch (CryptographicException)
+        {
+            return null;
+        }
+        catch (ArgumentException)
+        {
+            return null;
+        }
     }
 
     private static string ComputeSha256(string path)
