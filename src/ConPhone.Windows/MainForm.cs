@@ -22,6 +22,8 @@ public sealed class MainForm : Form
     private readonly Outbox _outbox = new();
     private readonly PointerScaler _pointerScaler = new();
     private readonly ConPhoneSettings _settings = SettingsStore.Load();
+    private HangulKeyMode _activeHangulMode;
+    private ModifierProfile _activeModifierProfile;
     private readonly CancellationTokenSource _lifetime = new();
     private readonly SemaphoreSlim _actions = new(1, 1);
 
@@ -201,6 +203,8 @@ public sealed class MainForm : Form
     public MainForm(bool previewMode = false)
     {
         _previewMode = previewMode;
+        _activeHangulMode = _settings.HangulKeyMode;
+        _activeModifierProfile = _settings.ModifierProfile;
         Text = "Con.Phone 0.2.1 · Bluetooth 입력 허브";
         Width = 980;
         Height = 800;
@@ -897,6 +901,9 @@ public sealed class MainForm : Form
             modifiers = profile.ModifierProfile;
         }
 
+        _activeHangulMode = hangul;
+        _activeModifierProfile = modifiers;
+
         _hangulMode.SelectedIndex = hangul switch
         {
             HangulKeyMode.RightAlt => 0,
@@ -947,16 +954,23 @@ public sealed class MainForm : Form
         _settings.MouseSpeedPercent = _mouseSpeed.Value;
         _settings.ScrollSpeedPercent = _scrollSpeed.Value;
         _settings.InvertScroll = _invertScroll.Checked;
-        _settings.HangulKeyMode = _hangulMode.SelectedIndex switch
+        _activeHangulMode = _hangulMode.SelectedIndex switch
         {
             1 => HangulKeyMode.Lang1,
             2 => HangulKeyMode.CtrlSpace,
             3 => HangulKeyMode.ShiftSpace,
             _ => HangulKeyMode.RightAlt
         };
-        _settings.ModifierProfile = _modifierProfile.SelectedIndex == 1
+        _activeModifierProfile = _modifierProfile.SelectedIndex == 1
             ? ModifierProfile.MacCtrlCommandSwap
             : ModifierProfile.Standard;
+
+        // With no active trusted target this edits the global fallback profile.
+        if (_ble.ApprovedId is null)
+        {
+            _settings.HangulKeyMode = _activeHangulMode;
+            _settings.ModifierProfile = _activeModifierProfile;
+        }
 
         _pointerScaler.Configure(
             _settings.MouseSpeedPercent,
@@ -968,8 +982,8 @@ public sealed class MainForm : Form
             _settings.EmergencyHotkey,
             _settings.LockAndReturnHotkey);
         _input.ConfigureKeyboard(
-            _settings.HangulKeyMode,
-            _settings.ModifierProfile);
+            _activeHangulMode,
+            _activeModifierProfile);
 
         _mouseSpeedValue.Text = $"{_mouseSpeed.Value}%";
         _scrollSpeedValue.Text = $"{_scrollSpeed.Value}%";
@@ -983,14 +997,14 @@ public sealed class MainForm : Form
             {
                 DeviceProfileStore.Save(
                     deviceId,
-                    _settings.HangulKeyMode,
-                    _settings.ModifierProfile);
+                    _activeHangulMode,
+                    _activeModifierProfile);
             }
 
             Log(
                 $"입력 설정 저장 · 마우스 {_settings.MouseSpeedPercent}% · " +
-                $"스크롤 {_settings.ScrollSpeedPercent}% · 한영키 {_settings.HangulKeyMode} · " +
-                $"수정키 {_settings.ModifierProfile}");
+                $"스크롤 {_settings.ScrollSpeedPercent}% · 한영키 {_activeHangulMode} · " +
+                $"수정키 {_activeModifierProfile}");
         }
     }
 
@@ -1643,8 +1657,8 @@ public sealed class MainForm : Form
             MouseSpeedPercent = _settings.MouseSpeedPercent,
             ScrollSpeedPercent = _settings.ScrollSpeedPercent,
             MousePacingIntervalMs = _ble.MousePacingIntervalMs,
-            HangulKeyMode = _settings.HangulKeyMode.ToString(),
-            ModifierProfile = _settings.ModifierProfile.ToString(),
+            HangulKeyMode = _activeHangulMode.ToString(),
+            ModifierProfile = _activeModifierProfile.ToString(),
             ToggleHotkey = HotkeyCatalog.Display(_settings.ToggleHotkey),
             EmergencyHotkey = HotkeyCatalog.Display(_settings.EmergencyHotkey),
             LockAndReturnHotkey = HotkeyCatalog.Display(_settings.LockAndReturnHotkey),
