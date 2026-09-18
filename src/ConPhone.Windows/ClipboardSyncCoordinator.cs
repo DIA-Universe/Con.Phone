@@ -25,7 +25,11 @@ public sealed class ClipboardSyncCoordinator : IAsyncDisposable
         _approvedDeviceId = approvedDeviceId;
         _enabled = enabled;
         _direct = new DirectClipboardLink();
-        _ble = new BleClipboardService(approvedDeviceId, enabled, () => _direct.Config);
+        _ble = new BleClipboardService(
+            approvedDeviceId,
+            enabled,
+            () => _direct.Config,
+            () => relayEnabled() ? relayUrl() : null);
         _lan = new LanClipboardServer(approvedDeviceId, enabled);
         _relay = new RelayClipboardTransport(
             approvedDeviceId,
