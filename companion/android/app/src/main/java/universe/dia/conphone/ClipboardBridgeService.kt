@@ -63,7 +63,8 @@ class ClipboardBridgeService : Service() {
     private val secureRandom = SecureRandom()
     private val bleQueue = ConcurrentLinkedQueue<ByteArray>()
     private val bleReassembler = BleReassembler()
-    private val wireReassembler = ClipboardWireReassembler()
+    private val bleWireReassembler = ClipboardWireReassembler()
+    private val p2pWireReassembler = ClipboardWireReassembler()
 
     @Volatile private var gatt: BluetoothGatt? = null
     @Volatile private var tx: BluetoothGattCharacteristic? = null
@@ -415,7 +416,7 @@ class ClipboardBridgeService : Service() {
         if (characteristic.uuid != TX_UUID) return
         runCatching {
             val message = bleReassembler.add(ClipboardProtocol.decodeBle(value)) ?: return
-            val content = wireReassembler.add(ClipboardProtocol.decode(message)) ?: return
+            val content = bleWireReassembler.add(ClipboardProtocol.decode(message)) ?: return
             applyRemoteClipboard(content)
         }.onFailure {
             showStatus("BLE Clipboard 수신 거부: ${it.message}")
@@ -542,7 +543,7 @@ class ClipboardBridgeService : Service() {
 
     private fun onP2PFrame(frame: ByteArray) {
         runCatching {
-            val content = wireReassembler.add(ClipboardProtocol.decode(frame)) ?: return
+            val content = p2pWireReassembler.add(ClipboardProtocol.decode(frame)) ?: return
             applyRemoteClipboard(content)
         }.onFailure {
             showStatus("P2P Clipboard 수신 거부: ${it.message}")
