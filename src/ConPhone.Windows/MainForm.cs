@@ -226,7 +226,11 @@ public sealed class MainForm : Form
 
     private void AddNavigation(Panel host, string key, string text, int order)
     {
-        var button = new ConPhoneNavButton { Text = text, BackColor = Color.Transparent, Top = order * 48, Width = 188 };
+        var button = new ConPhoneNavButton
+        {
+            Text = text, BackColor = Color.Transparent, Dock = DockStyle.None,
+            Location = new Point(0, order * 48), Width = 188
+        };
         button.Click += (_, _) => ShowPage(key);
         host.Controls.Add(button);
         _navButtons[key] = button;
