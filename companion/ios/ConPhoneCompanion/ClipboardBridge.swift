@@ -414,6 +414,22 @@ extension ClipboardBridge: CBPeripheralDelegate {
     ) {
         if let error {
             if characteristic.uuid == secretUUID {
+                status = "Windows에서 기기 승인 대기"
+                DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self, weak peripheral] in
+                    guard self != nil, let peripheral else { return }
+                    peripheral.readValue(for: characteristic)
+                }
+            } else if characteristic.uuid == directLinkUUID {
+                status = "P2P 설정 읽기 실패 · BLE fallback 유지"
+            } else {
+                status = "BLE 읽기 실패: \(error.localizedDescription)"
+            }
+            return
+        }
+
+        guard let value = characteristic.value else { return }
+
+        if characteristic.uuid == secretUUID {
             if value.count == 64 {
                 credential = value
                 status = "BLE Clipboard 연결됨 · 동일 Wi-Fi 불필요"
