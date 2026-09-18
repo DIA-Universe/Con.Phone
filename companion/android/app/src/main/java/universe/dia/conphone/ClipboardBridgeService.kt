@@ -46,6 +46,7 @@ class ClipboardBridgeService : Service() {
 
         const val EXTRA_SHARED_TEXT = "shared_text"
         const val EXTRA_SHARED_IMAGE_PATH = "shared_image_path"
+        const val EXTRA_SHARED_IMAGE_MIME = "shared_image_mime"
 
         private const val CHANNEL = "conphone_bridge"
         private const val NOTIFICATION_ID = 7310
@@ -102,7 +103,8 @@ class ClipboardBridgeService : Service() {
             ACTION_SEND_SHARED_TEXT -> sendSharedText(
                 intent?.getStringExtra(EXTRA_SHARED_TEXT))
             ACTION_SEND_SHARED_IMAGE -> sendSharedImage(
-                intent?.getStringExtra(EXTRA_SHARED_IMAGE_PATH))
+                intent?.getStringExtra(EXTRA_SHARED_IMAGE_PATH),
+                intent?.getStringExtra(EXTRA_SHARED_IMAGE_MIME))
             else -> beginScan()
         }
         return START_STICKY
@@ -572,7 +574,10 @@ class ClipboardBridgeService : Service() {
             .onFailure { toast("텍스트 전송 준비 실패: ${it.message}") }
     }
 
-    private fun sendSharedImage(path: String?) {
+    private fun sendSharedImage(
+        path: String?,
+        mime: String?
+    ) {
         if (path.isNullOrWhiteSpace()) {
             toast("공유할 이미지가 없습니다.")
             return
@@ -585,7 +590,8 @@ class ClipboardBridgeService : Service() {
                 require(candidate.path.startsWith(sharedRoot.path + File.separator)) {
                     "허용되지 않은 공유 이미지 경로입니다."
                 }
-                require(candidate.isFile && candidate.length() in 1..(40L * 1024 * 1024)) {
+                require(candidate.isFile &&
+                    candidate.length() in 1..ClipboardProtocol.MAX_IMAGE.toLong()) {
                     "공유 이미지 임시 파일 크기가 올바르지 않습니다."
                 }
                 candidate
@@ -595,30 +601,61 @@ class ClipboardBridgeService : Service() {
             }
 
             runCatching {
-                val options = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-                BitmapFactory.decodeFile(file.absolutePath, options)
+                val bytes = file.readBytes()
+                ensureSafeImageDimensions(bytes)
 
-                val width = options.outWidth
-                val height = options.outHeight
-                require(width > 0 && height > 0 &&
-                    width.toLong() * height.toLong() <= 40_000_000L) {
-                    "이미지 해상도가 안전 한도(40MP)를 초과합니다: ${width}x${height}"
-                }
+                val encodedKind = detectEncodedImageKind(bytes, mime)
+                if (encodedKind != null) {
+                    ClipboardProtocol.image(encodedKind, bytes)
+                } else {
+                    val bitmap = BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+                        ?: error("지원하지 않는 이미지 형식입니다.")
 
-                val bitmap = BitmapFactory.decodeFile(file.absolutePath)
-                    ?: error("공유 이미지를 읽을 수 없습니다.")
-
-                try {
-                    val out = ByteArrayOutputStream()
-                    bitmap.compress(Bitmap.CompressFormat.PNG, 100, out)
-                    ClipboardProtocol.image(ClipboardKind.PNG, out.toByteArray())
-                } finally {
-                    bitmap.recycle()
+                    try {
+                        val out = ByteArrayOutputStream()
+                        bitmap.compress(Bitmap.CompressFormat.PNG, 100, out)
+                        ClipboardProtocol.image(ClipboardKind.PNG, out.toByteArray())
+                    } finally {
+                        bitmap.recycle()
+                    }
                 }
             }.onSuccess(::sendContent)
                 .onFailure { toast("이미지 전송 준비 실패: ${it.message}") }
 
             runCatching { file.delete() }
+        }
+    }
+
+    private fun detectEncodedImageKind(
+        bytes: ByteArray,
+        mime: String?
+    ): ClipboardKind? {
+        if (bytes.size >= 8 &&
+            bytes.copyOfRange(0, 8).contentEquals(
+                byteArrayOf(137.toByte(), 80, 78, 71, 13, 10, 26, 10)))
+            return ClipboardKind.PNG
+
+        if (bytes.size >= 4 &&
+            bytes[0] == 0xFF.toByte() &&
+            bytes[1] == 0xD8.toByte() &&
+            bytes[bytes.size - 2] == 0xFF.toByte() &&
+            bytes.last() == 0xD9.toByte())
+            return ClipboardKind.JPEG
+
+        if (bytes.size >= 12 &&
+            String(bytes, 0, 4, Charsets.US_ASCII) == "RIFF" &&
+            String(bytes, 8, 4, Charsets.US_ASCII) == "WEBP")
+            return ClipboardKind.WEBP
+
+        return when (mime?.lowercase()) {
+            "image/png" -> ClipboardKind.PNG
+            "image/jpeg", "image/jpg" -> ClipboardKind.JPEG
+            "image/webp" -> ClipboardKind.WEBP
+            else -> null
+        }?.takeIf { kind ->
+            runCatching {
+                ClipboardProtocol.validate(kind, bytes)
+            }.isSuccess
         }
     }
 
