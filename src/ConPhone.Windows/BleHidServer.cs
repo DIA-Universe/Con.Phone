@@ -91,7 +91,7 @@ public sealed class BleHidServer : IDisposable
                $"Bluetooth LE: {adapter.IsLowEnergySupported}\r\n" +
                $"Peripheral 역할: {adapter.IsPeripheralRoleSupported}\r\n" +
                $"무선 상태: {radio?.State.ToString() ?? "Unknown"}\r\n" +
-               "0.2.1은 연결된 GATT 세션에 MaintainConnection을 요청하고 장치 객체를 재사용합니다.";
+               "연결된 GATT 세션에 MaintainConnection을 요청하고 장치 객체를 재사용합니다.";
     }
 
     public async Task StartAsync()
