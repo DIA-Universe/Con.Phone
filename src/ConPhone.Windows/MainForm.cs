@@ -100,6 +100,7 @@ public sealed class MainForm : Form
         Width = 240
     };
 
+    private readonly TextBox _nextDeviceHotkeyBox = HotkeyBox();
     private readonly TextBox _toggleHotkeyBox = HotkeyBox();
     private readonly TextBox _emergencyHotkeyBox = HotkeyBox();
     private readonly TextBox _lockHotkeyBox = HotkeyBox();
@@ -468,10 +469,11 @@ public sealed class MainForm : Form
             ActionButton("볼륨 +", () => SendConsumerActionAsync(ConsumerAction.VolumeUp))));
         flow.Controls.Add(special);
 
-        var hotkeys = Section(305);
+        var hotkeys = Section(355);
         hotkeys.Controls.Add(SectionTitle("단축키"));
         hotkeys.Controls.Add(Help(
             "드롭다운이 아니라 실제 키보드 조합을 읽습니다. ‘변경’을 누른 뒤 Ctrl·Alt·Shift·Win을 포함한 원하는 조합을 그대로 누르세요."));
+        hotkeys.Controls.Add(HotkeyRow("다음 등록 기기", _nextDeviceHotkeyBox, () => BeginHotkeyCapture(HotkeySlot.NextDevice)));
         hotkeys.Controls.Add(HotkeyRow("PC ↔ 휴대폰 전환", _toggleHotkeyBox, () => BeginHotkeyCapture(HotkeySlot.Toggle)));
         hotkeys.Controls.Add(HotkeyRow("비상 노트북 복귀", _emergencyHotkeyBox, () => BeginHotkeyCapture(HotkeySlot.Emergency)));
         hotkeys.Controls.Add(HotkeyRow("휴대폰 잠금 + 복귀", _lockHotkeyBox, () => BeginHotkeyCapture(HotkeySlot.LockAndReturn)));
@@ -812,6 +814,7 @@ public sealed class MainForm : Form
             }
         };
 
+        _input.NextDevice += () => DispatchCritical(SelectNextTrustedTargetAsync);
         _input.Toggle += () => DispatchCritical(ToggleAsync);
         _input.Emergency += () => DispatchCritical(ReturnLocalAsync);
         _input.LockAndReturn += () => DispatchCritical(LockPhoneAndReturnAsync);
@@ -961,11 +964,13 @@ public sealed class MainForm : Form
 
     private void RefreshHotkeyUi()
     {
+        _nextDeviceHotkeyBox.Text = HotkeyCatalog.Display(_settings.NextDeviceHotkey);
         _toggleHotkeyBox.Text = HotkeyCatalog.Display(_settings.ToggleHotkey);
         _emergencyHotkeyBox.Text = HotkeyCatalog.Display(_settings.EmergencyHotkey);
         _lockHotkeyBox.Text = HotkeyCatalog.Display(_settings.LockAndReturnHotkey);
         _quickHotkeyHelp.Text =
-            $"전환 {HotkeyCatalog.Display(_settings.ToggleHotkey)} · " +
+            $"다음 기기 {HotkeyCatalog.Display(_settings.NextDeviceHotkey)} · " +
+            $"전환 {HotkeyCatalog.Display(_settings.ToggleHotkey)} · "
             $"복귀 {HotkeyCatalog.Display(_settings.EmergencyHotkey)} · " +
             $"잠금+복귀 {HotkeyCatalog.Display(_settings.LockAndReturnHotkey)}";
     }
@@ -1021,6 +1026,7 @@ public sealed class MainForm : Form
             _settings.InvertScroll);
 
         _input.ConfigureHotkeys(
+            _settings.NextDeviceHotkey,
             _settings.ToggleHotkey,
             _settings.EmergencyHotkey,
             _settings.LockAndReturnHotkey);
@@ -1053,6 +1059,7 @@ public sealed class MainForm : Form
 
     private enum HotkeySlot
     {
+        NextDevice,
         Toggle,
         Emergency,
         LockAndReturn
@@ -1065,6 +1072,7 @@ public sealed class MainForm : Form
 
         var box = slot switch
         {
+            HotkeySlot.NextDevice => _nextDeviceHotkeyBox,
             HotkeySlot.Toggle => _toggleHotkeyBox,
             HotkeySlot.Emergency => _emergencyHotkeyBox,
             _ => _lockHotkeyBox
@@ -1084,6 +1092,10 @@ public sealed class MainForm : Form
 
                     switch (slot)
                     {
+                        case HotkeySlot.NextDevice:
+                            _settings.NextDeviceHotkey = binding;
+                            _nextDeviceHotkeyBox.Text = HotkeyCatalog.Display(binding);
+                            break;
                         case HotkeySlot.Toggle:
                             _settings.ToggleHotkey = binding;
                             _toggleHotkeyBox.Text = HotkeyCatalog.Display(binding);
@@ -1113,23 +1125,32 @@ public sealed class MainForm : Form
         });
     }
 
-    private void ValidateHotkeyCandidate(HotkeySlot slot, HotkeyBinding candidate)
+    private void ValidateHotkeyCandidate(
+        HotkeySlot slot,
+        HotkeyBinding candidate)
     {
         if (!HotkeyCatalog.IsAllowedKey(candidate.Key))
             throw new InvalidOperationException("이 키는 단축키로 사용할 수 없습니다.");
 
-        if (slot != HotkeySlot.Toggle && HotkeyCatalog.Same(candidate, _settings.ToggleHotkey))
-            throw new InvalidOperationException("이미 PC ↔ 휴대폰 전환에 사용 중인 조합입니다.");
+        var existing = new[]
+        {
+            (HotkeySlot.NextDevice, _settings.NextDeviceHotkey, "다음 등록 기기"),
+            (HotkeySlot.Toggle, _settings.ToggleHotkey, "PC ↔ 휴대폰 전환"),
+            (HotkeySlot.Emergency, _settings.EmergencyHotkey, "비상 복귀"),
+            (HotkeySlot.LockAndReturn, _settings.LockAndReturnHotkey, "휴대폰 잠금 + 복귀")
+        };
 
-        if (slot != HotkeySlot.Emergency && HotkeyCatalog.Same(candidate, _settings.EmergencyHotkey))
-            throw new InvalidOperationException("이미 비상 복귀에 사용 중인 조합입니다.");
-
-        if (slot != HotkeySlot.LockAndReturn && HotkeyCatalog.Same(candidate, _settings.LockAndReturnHotkey))
-            throw new InvalidOperationException("이미 휴대폰 잠금 + 복귀에 사용 중인 조합입니다.");
+        foreach (var (otherSlot, binding, label) in existing)
+        {
+            if (otherSlot != slot && HotkeyCatalog.Same(candidate, binding))
+                throw new InvalidOperationException(
+                    $"이미 '{label}'에 사용 중인 조합입니다.");
+        }
     }
 
     private void ResetHotkeys()
     {
+        _settings.NextDeviceHotkey = SettingsStore.DefaultNextDevice();
         _settings.ToggleHotkey = SettingsStore.DefaultToggle();
         _settings.EmergencyHotkey = SettingsStore.DefaultEmergency();
         _settings.LockAndReturnHotkey = SettingsStore.DefaultLockAndReturn();
@@ -1561,6 +1582,54 @@ public sealed class MainForm : Form
             $"{HotkeyCatalog.Display(_settings.ToggleHotkey)}로 휴대폰 입력을 시작할 수 있습니다.");
     }
 
+    private async Task SelectNextTrustedTargetAsync()
+    {
+        if (_input.IsRemote)
+            throw new InvalidOperationException(
+                "기기 전환은 노트북 입력 상태에서만 사용할 수 있습니다.");
+
+        var peers = await _ble.GetPeersAsync();
+        var ready = peers
+            .Where(peer =>
+                peer.Trusted &&
+                peer.Keyboard &&
+                peer.Mouse)
+            .ToArray();
+
+        if (ready.Length == 0)
+        {
+            Log("전환 가능한 등록 기기가 없습니다.");
+            return;
+        }
+
+        var currentId = _ble.ApprovedId;
+        var currentIndex = Array.FindIndex(
+            ready,
+            peer => string.Equals(
+                peer.Id,
+                currentId,
+                StringComparison.Ordinal));
+
+        var next = ready[(currentIndex + 1 + ready.Length) % ready.Length];
+
+        if (ready.Length == 1 &&
+            string.Equals(next.Id, currentId, StringComparison.Ordinal))
+        {
+            Log($"등록 기기 1대 · 활성 대상 유지: {next.Name} [{next.Fingerprint}]");
+            return;
+        }
+
+        await _ble.SelectTargetAsync(next.Id);
+        _clipboardSync?.TargetChanged();
+        LoadActiveDeviceProfileToUi();
+        ApplyInputSettings(save: false);
+        await RefreshPeersAsync(true);
+
+        Log(
+            $"다음 기기로 전환 · {next.Name} [{next.Fingerprint}] · " +
+            $"등록 {_ble.TrustedDeviceCount}/{TrustedDeviceStore.MaxDevices}");
+    }
+
     private async Task SelectSelectedTargetAsync()
     {
         await ReturnLocalAsync();
@@ -1827,6 +1896,7 @@ public sealed class MainForm : Form
             MousePacingIntervalMs = _ble.MousePacingIntervalMs,
             HangulKeyMode = _activeHangulMode.ToString(),
             ModifierProfile = _activeModifierProfile.ToString(),
+            NextDeviceHotkey = HotkeyCatalog.Display(_settings.NextDeviceHotkey),
             ToggleHotkey = HotkeyCatalog.Display(_settings.ToggleHotkey),
             EmergencyHotkey = HotkeyCatalog.Display(_settings.EmergencyHotkey),
             LockAndReturnHotkey = HotkeyCatalog.Display(_settings.LockAndReturnHotkey),
