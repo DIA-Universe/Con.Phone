@@ -72,7 +72,7 @@ final class ClipboardBridge: NSObject, ObservableObject {
                 return
             }
 
-            try sendOrQueue(content, sharedPayloadId: envelope.id)
+            try sendOrQueue(content)
         } catch {
             status = "클립보드 전송 준비 실패: \(error.localizedDescription)"
         }
@@ -80,6 +80,10 @@ final class ClipboardBridge: NSObject, ObservableObject {
 
     func sendPendingShareIfPresent() {
         guard let (envelope, imageData) = SharedPayloadStore.peek() else {
+            return
+        }
+
+        if pendingSharedPayloadId == envelope.id {
             return
         }
 
@@ -110,7 +114,7 @@ final class ClipboardBridge: NSObject, ObservableObject {
                 content = try ClipboardProtocol.image(.png, png)
             }
 
-            try sendOrQueue(content)
+            try sendOrQueue(content, sharedPayloadId: envelope.id)
         } catch {
             status = "공유 내용 전송 준비 실패: \(error.localizedDescription)"
         }
@@ -121,7 +125,8 @@ final class ClipboardBridge: NSObject, ObservableObject {
         sharedPayloadId: UUID? = nil
     ) throws {
         if let p2p, p2p.ready {
-            p2p.send(frames: try ClipboardProtocol.encode(content))
+            let frames = try ClipboardProtocol.encode(content)
+            p2p.send(frames: frames)
             if let sharedPayloadId {
                 SharedPayloadStore.clear(sharedPayloadId)
             }
@@ -143,7 +148,9 @@ final class ClipboardBridge: NSObject, ObservableObject {
             return
         }
 
-        setPendingContent(content)
+        setPendingContent(
+            content,
+            sharedPayloadId: sharedPayloadId)
 
         if !bleAllowed {
             status = "큰 이미지 전송을 위해 P2P 고속 연결이 필요합니다."
@@ -168,8 +175,9 @@ final class ClipboardBridge: NSObject, ObservableObject {
 
         do {
             if let p2p, p2p.ready {
-                clearPendingContent()
-                p2p.send(frames: try ClipboardProtocol.encode(content))
+                let frames = try ClipboardProtocol.encode(content)
+                p2p.send(frames: frames)
+                clearPendingContent(clearSharedStore: true)
                 return
             }
 
@@ -181,15 +189,18 @@ final class ClipboardBridge: NSObject, ObservableObject {
                let peripheral,
                rx != nil,
                credential != nil {
-                clearPendingContent()
                 try enqueueBle(content, peripheral: peripheral)
+                clearPendingContent(clearSharedStore: true)
             }
         } catch {
             status = "대기 중 Clipboard 전송 실패: \(error.localizedDescription)"
         }
     }
 
-    private func setPendingContent(_ content: ClipboardContent) {
+    private func setPendingContent(
+        _ content: ClipboardContent,
+        sharedPayloadId: UUID?
+    ) {
         pendingContent = content
         pendingSharedPayloadId = sharedPayloadId
         pendingGeneration += 1
@@ -200,15 +211,21 @@ final class ClipboardBridge: NSObject, ObservableObject {
                   self.pendingGeneration == generation,
                   self.pendingContent != nil else { return }
 
-            self.pendingContent = nil
-            self.pendingGeneration += 1
-            self.status = "Clipboard 전송 대기 시간이 만료됐습니다."
+            self.clearPendingContent(clearSharedStore: false)
+            self.status =
+                "Clipboard 전송 대기 시간이 만료됐습니다. 공유한 내용은 다음 실행 때 다시 시도합니다."
         }
     }
 
-    private func clearPendingContent() {
+    private func clearPendingContent(clearSharedStore: Bool) {
+        let sharedId = pendingSharedPayloadId
         pendingContent = nil
+        pendingSharedPayloadId = nil
         pendingGeneration += 1
+
+        if clearSharedStore, let sharedId {
+            SharedPayloadStore.clear(sharedId)
+        }
     }
 
     private func enqueueBle(
