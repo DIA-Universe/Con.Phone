@@ -31,6 +31,7 @@ public sealed class ConPhoneSettings
     public HangulKeyMode HangulKeyMode { get; set; } = HangulKeyMode.RightAlt;
     public ModifierProfile ModifierProfile { get; set; } = ModifierProfile.Standard;
 
+    public HotkeyBinding NextDeviceHotkey { get; set; } = new() { Key = (int)Keys.F7 };
     public HotkeyBinding ToggleHotkey { get; set; } = new() { Key = (int)Keys.F8 };
     public HotkeyBinding EmergencyHotkey { get; set; } = new() { Key = (int)Keys.F9 };
     public HotkeyBinding LockAndReturnHotkey { get; set; } = new()
@@ -97,18 +98,33 @@ public static class SettingsStore
         if (!Enum.IsDefined(typeof(ModifierProfile), settings.ModifierProfile))
             settings.ModifierProfile = ModifierProfile.Standard;
 
+        settings.NextDeviceHotkey ??= DefaultNextDevice();
         settings.ToggleHotkey ??= DefaultToggle();
         settings.EmergencyHotkey ??= DefaultEmergency();
         settings.LockAndReturnHotkey ??= DefaultLockAndReturn();
 
+        if (!HotkeyCatalog.IsAllowedKey(settings.NextDeviceHotkey.Key)) settings.NextDeviceHotkey = DefaultNextDevice();
         if (!HotkeyCatalog.IsAllowedKey(settings.ToggleHotkey.Key)) settings.ToggleHotkey = DefaultToggle();
         if (!HotkeyCatalog.IsAllowedKey(settings.EmergencyHotkey.Key)) settings.EmergencyHotkey = DefaultEmergency();
         if (!HotkeyCatalog.IsAllowedKey(settings.LockAndReturnHotkey.Key)) settings.LockAndReturnHotkey = DefaultLockAndReturn();
 
-        if (HotkeyCatalog.Same(settings.ToggleHotkey, settings.EmergencyHotkey) ||
-            HotkeyCatalog.Same(settings.ToggleHotkey, settings.LockAndReturnHotkey) ||
-            HotkeyCatalog.Same(settings.EmergencyHotkey, settings.LockAndReturnHotkey))
+        var hotkeys = new[]
         {
+            settings.NextDeviceHotkey,
+            settings.ToggleHotkey,
+            settings.EmergencyHotkey,
+            settings.LockAndReturnHotkey
+        };
+
+        var duplicate = hotkeys
+            .Select((binding, index) => new { binding, index })
+            .Any(x => hotkeys
+                .Take(x.index)
+                .Any(previous => HotkeyCatalog.Same(previous, x.binding)));
+
+        if (duplicate)
+        {
+            settings.NextDeviceHotkey = DefaultNextDevice();
             settings.ToggleHotkey = DefaultToggle();
             settings.EmergencyHotkey = DefaultEmergency();
             settings.LockAndReturnHotkey = DefaultLockAndReturn();
@@ -127,6 +143,7 @@ public static class SettingsStore
         return string.IsNullOrWhiteSpace(safe) ? "ConPhone" : safe;
     }
 
+    public static HotkeyBinding DefaultNextDevice() => new() { Key = (int)Keys.F7 };
     public static HotkeyBinding DefaultToggle() => new() { Key = (int)Keys.F8 };
     public static HotkeyBinding DefaultEmergency() => new() { Key = (int)Keys.F9 };
     public static HotkeyBinding DefaultLockAndReturn() => new()
