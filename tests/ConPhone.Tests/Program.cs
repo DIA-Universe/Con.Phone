@@ -144,6 +144,31 @@ catch (InvalidDataException)
 }
 Check("clipboard completed transfer replay rejected", clipboardReplayRejected);
 
+var conflictReassembler = new ClipboardReassembler();
+var conflictChunk = ClipboardWireCodec.Decode(clipFrames[0]);
+_ = conflictReassembler.Add(conflictChunk);
+var changedPayload = conflictChunk.Payload.ToArray();
+changedPayload[0] ^= 0x01;
+bool conflictingDuplicateRejected = false;
+try
+{
+    conflictReassembler.Add(conflictChunk with { Payload = changedPayload });
+}
+catch (InvalidDataException)
+{
+    conflictingDuplicateRejected = true;
+}
+Check("clipboard conflicting duplicate rejected", conflictingDuplicateRejected);
+
+var oversizedMetadata = clipFrames[0].ToArray();
+System.Buffers.Binary.BinaryPrimitives.WriteInt32LittleEndian(
+    oversizedMetadata.AsSpan(30, 4),
+    ClipboardContent.MaxImageBytes + 1);
+bool oversizedTotalRejected = false;
+try { _ = ClipboardWireCodec.Decode(oversizedMetadata); }
+catch (InvalidDataException) { oversizedTotalRejected = true; }
+Check("clipboard oversized declared total rejected", oversizedTotalRejected);
+
 var pngBytes = new byte[] { 137, 80, 78, 71, 13, 10, 26, 10, 1, 2, 3, 4 };
 var clipImage = ClipboardContent.FromImage(ClipboardContentKind.Png, pngBytes);
 Check("clipboard png signature accepted", clipImage.Kind == ClipboardContentKind.Png);
@@ -210,6 +235,16 @@ catch (InvalidDataException)
     bleReplayRejected = true;
 }
 Check("ble completed fragment replay rejected", bleReplayRejected);
+
+var bleConflict = new BleFragmentReassembler();
+var firstBle = BleFragmentCodec.Decode(bleParts[0]);
+_ = bleConflict.Add(firstBle);
+var changedBlePayload = firstBle.Payload.ToArray();
+changedBlePayload[0] ^= 0x01;
+bool bleConflictRejected = false;
+try { _ = bleConflict.Add(firstBle with { Payload = changedBlePayload }); }
+catch (InvalidDataException) { bleConflictRejected = true; }
+Check("ble conflicting duplicate fragment rejected", bleConflictRejected);
 
 var allRoutes = ClipboardTransportPolicy.Candidates(
     clipText,
