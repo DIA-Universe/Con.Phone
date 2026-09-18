@@ -205,7 +205,7 @@ public sealed class MainForm : Form
         _previewMode = previewMode;
         _activeHangulMode = _settings.HangulKeyMode;
         _activeModifierProfile = _settings.ModifierProfile;
-        Text = "Con.Phone 0.2.1 · Bluetooth 입력 허브";
+        Text = $"Con.Phone {LocalUpdateService.CurrentVersion.ToString(3)} · Bluetooth 입력 허브";
         Width = 980;
         Height = 800;
         MinimumSize = new Size(880, 700);
@@ -351,7 +351,7 @@ public sealed class MainForm : Form
         var connect = Section(170);
         connect.Controls.Add(SectionTitle("Bluetooth 연결"));
         connect.Controls.Add(Help(
-            "0.2.1은 0.1.6의 HID 경로를 기준으로 연결 유지 로직을 보강했습니다. 잠금 Report가 추가되어 첫 사용 시 휴대폰에서 기존 PC 등록을 삭제하고 한 번 다시 페어링하는 것을 권장합니다."));
+            "HID 프로필에 잠금 및 미디어키 Report가 포함됩니다. 이전 프로필로 페어링했던 기기는 새 기능 테스트 전 한 번 재페어링하는 것을 권장합니다."));
         connect.Controls.Add(Row(
             ActionButton("Bluetooth 다시 검사", async () => _diagnosis.Text = await BleHidServer.DiagnoseAsync()),
             ActionButton("Bluetooth 검색 신호 확인 / 시작", async () =>
@@ -543,6 +543,25 @@ public sealed class MainForm : Form
         status.Controls.Add(ActionButton("Bluetooth 다시 검사", async () =>
             _diagnosis.Text = await BleHidServer.DiagnoseAsync()));
         flow.Controls.Add(status);
+
+        var update = Section(175, InfoWeak);
+        update.Controls.Add(SectionTitle("앱 업데이트"));
+        update.Controls.Add(Help(
+            $"현재 버전 {LocalUpdateService.CurrentVersion}. private GitHub 인증키를 앱에 저장하지 않고, " +
+            "새 ConPhone.exe를 선택하면 종료 후 파일 교체와 재실행을 자동 수행합니다.",
+            TextColor));
+        update.Controls.Add(Row(
+            ActionButton("업데이트 EXE 적용", ApplyLocalUpdateAsync, primary: true),
+            ActionButton("GitHub 릴리스 열기", () =>
+            {
+                System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
+                {
+                    FileName = "https://github.com/DIA-Universe/Con.Phone/releases",
+                    UseShellExecute = true
+                });
+                return Task.CompletedTask;
+            })));
+        flow.Controls.Add(update);
 
         var logs = Section(365);
         logs.Controls.Add(SectionTitle("실행 로그"));
@@ -1622,6 +1641,50 @@ public sealed class MainForm : Form
         }
     }
 
+    private Task ApplyLocalUpdateAsync()
+    {
+        using var dialog = new OpenFileDialog
+        {
+            Filter = "Con.Phone 실행 파일 (ConPhone*.exe)|ConPhone*.exe|실행 파일 (*.exe)|*.exe",
+            Title = "적용할 Con.Phone 업데이트 파일 선택"
+        };
+
+        if (dialog.ShowDialog(this) != DialogResult.OK)
+            return Task.CompletedTask;
+
+        var candidate = LocalUpdateService.Inspect(dialog.FileName);
+        var current = LocalUpdateService.CurrentVersion;
+
+        if (candidate.Version <= current)
+        {
+            if (MessageBox.Show(
+                    this,
+                    $"선택한 버전 {candidate.Version}은 현재 버전 {current}보다 새 버전이 아닙니다. 그래도 적용할까요?",
+                    "업데이트 확인",
+                    MessageBoxButtons.YesNo,
+                    MessageBoxIcon.Warning) != DialogResult.Yes)
+                return Task.CompletedTask;
+        }
+        else if (MessageBox.Show(
+                     this,
+                     $"Con.Phone {current} → {candidate.Version}으로 업데이트할까요?\r\n" +
+                     "앱을 종료한 뒤 자동으로 교체하고 다시 실행합니다.",
+                     "업데이트",
+                     MessageBoxButtons.YesNo,
+                     MessageBoxIcon.Question) != DialogResult.Yes)
+        {
+            return Task.CompletedTask;
+        }
+
+        var staged = LocalUpdateService.Stage(candidate);
+        LocalUpdateService.LaunchInstaller(staged);
+        Log($"업데이트 적용 시작 · {current} → {candidate.Version}");
+
+        _exitRequested = true;
+        BeginInvoke(Close);
+        return Task.CompletedTask;
+    }
+
     private async Task SaveDiagnosticsAsync()
     {
         using var dialog = new SaveFileDialog
@@ -1635,7 +1698,7 @@ public sealed class MainForm : Form
 
         var report = new
         {
-            Version = "0.2.1",
+            Version = LocalUpdateService.CurrentVersion.ToString(),
             OS = Environment.OSVersion.Version.ToString(),
             Runtime = Environment.Version.ToString(),
             Bluetooth = await BleHidServer.DiagnoseAsync(),
