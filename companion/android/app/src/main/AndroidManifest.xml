@@ -32,22 +32,6 @@
         </activity>
 
         <activity
-            android:name=".ShareToPcActivity"
-            android:exported="true"
-            android:theme="@android:style/Theme.Material.Light.Dialog.NoActionBar">
-            <intent-filter>
-                <action android:name="android.intent.action.SEND" />
-                <category android:name="android.intent.category.DEFAULT" />
-                <data android:mimeType="text/*" />
-            </intent-filter>
-            <intent-filter>
-                <action android:name="android.intent.action.SEND" />
-                <category android:name="android.intent.category.DEFAULT" />
-                <data android:mimeType="image/*" />
-            </intent-filter>
-        </activity>
-
-        <activity
             android:name=".ShareActivity"
             android:exported="true"
             android:excludeFromRecents="true"
