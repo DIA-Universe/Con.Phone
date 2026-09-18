@@ -1,5 +1,5 @@
 import http from "node:http";
-import { WebSocketServer } from "ws";
+import { WebSocket, WebSocketServer } from "ws";
 
 const port = Number(process.env.PORT || 8080);
 const maxPayload = 2 * 1024 * 1024;
@@ -81,7 +81,7 @@ server.on("upgrade", (req, socket, head) => {
       }
 
       for (const peer of room.clients) {
-        if (peer !== ws && peer.readyState === peer.OPEN && peer.side !== ws.side) {
+        if (peer !== ws && peer.readyState === WebSocket.OPEN && peer.side !== ws.side) {
           peer.send(data, { binary: true });
         }
       }
