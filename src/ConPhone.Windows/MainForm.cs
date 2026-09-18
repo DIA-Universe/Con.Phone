@@ -415,7 +415,7 @@ public sealed class MainForm : Form
         var info = Section(180, InfoWeak);
         info.Controls.Add(SectionTitle("텍스트 · 이미지 기기간 복붙"));
         info.Controls.Add(Help(
-            "PC에서 복사한 텍스트/이미지는 휴대폰으로 전환할 때 Companion으로 전달합니다. LAN/P2P를 우선 사용하고, 사용할 수 없으면 Bluetooth LE로 fallback합니다.",
+            "PC와 휴대폰이 같은 Wi-Fi에 없다고 가정합니다. Windows가 Direct Wi-Fi/P2P 링크를 만들고, 사용할 수 없으면 Bluetooth LE로 fallback합니다.",
             TextColor));
         info.Controls.Add(Help(
             "동일 Wi-Fi는 필수가 아닙니다. 휴대폰에는 Con.Phone Companion이 필요하며 파일/폴더 복사는 지원하지 않습니다.",
@@ -980,7 +980,7 @@ public sealed class MainForm : Form
         try
         {
             await _clipboardSync.StartAsync();
-            Log("기기간 복붙 서비스 시작 · LAN/P2P → BLE");
+            Log("기기간 복붙 서비스 시작 · Direct Wi-Fi/P2P → BLE");
         }
         catch (Exception ex)
         {
