@@ -32,6 +32,8 @@ public sealed class BleHidServer
     public event Action<string>? Status;
     public string Advertisement => _provider?.AdvertisementStatus.ToString() ?? "NotStarted";
     public string LastOperation => _lastOperation;
+    public int KeyboardSubscribers => LiveClientCount(_keyboard);
+    public int MouseSubscribers => LiveClientCount(_mouse);
     public string? ApprovedId => _approved;
     public bool Ready => _running && _approved is { } id && IsReady(id);
     private static Guid Uuid(ushort n) => new($"0000{n:x4}-0000-1000-8000-00805f9b34fb");
