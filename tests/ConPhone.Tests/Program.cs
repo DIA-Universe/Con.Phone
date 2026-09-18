@@ -38,6 +38,10 @@ Check("release emitted without motion", Hid.Encode(new PointerPacket(0)).Single(
 Check("keyboard no embedded report id", Hid.Encode(new KeyboardPacket(new byte[8])).Single().Data.Length == 8);
 Check("system lock report down", Hid.SystemReport(true).SequenceEqual(new byte[] { 0x02 }));
 Check("system lock report up", Hid.SystemReport(false).SequenceEqual(new byte[] { 0x00 }));
+Check("consumer report little endian", Hid.ConsumerReport(0x0224).SequenceEqual(new byte[] { 0x24, 0x02 }));
+var consumerWire = Hid.Encode(new ConsumerPacket(0x00E9)).Single();
+Check("consumer report is marked separately", consumerWire.Consumer && !consumerWire.Keyboard);
+Check("consumer report length", consumerWire.Data.Length == Hid.ConsumerReportLength);
 var scaler = new PointerScaler();
 scaler.Configure(50, 100, false);
 Check("50 percent pointer keeps fractional first step", scaler.Apply(new PointerPacket(0, 1)).X == 0);
@@ -104,4 +108,5 @@ Check("descriptor declares Korean/Hanja language usages", map.AsSpan().IndexOf(l
 Check("descriptor has no output reports", !bits.ContainsKey((1, 0x90)));
 Check("descriptor pointer input 48 bits", bits[(2, 0x80)] == 48);
 Check("descriptor system-control input 8 bits", bits[(3, 0x80)] == 8);
+Check("descriptor consumer-control input 16 bits", bits[(4, 0x80)] == 16);
 Console.WriteLine($"{passed} checks passed. No Windows/Bluetooth/phone hardware has been tested by these checks.");
