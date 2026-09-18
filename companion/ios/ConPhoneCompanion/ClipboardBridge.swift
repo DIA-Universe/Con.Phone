@@ -420,7 +420,8 @@ extension ClipboardBridge: CBPeripheralDelegate {
                     peripheral.readValue(for: characteristic)
                 }
             } else if characteristic.uuid == directLinkUUID {
-                status = "P2P 설정 읽기 실패 · BLE fallback 유지"
+                status = "현재 비활성 기기 또는 P2P 준비 전 · 활성화 대기"
+                retryDirectConfigRead(peripheral)
             } else {
                 status = "BLE 읽기 실패: \(error.localizedDescription)"
             }
