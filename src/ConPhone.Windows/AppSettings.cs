@@ -29,6 +29,10 @@ public sealed class ConPhoneSettings
     public bool InvertScroll { get; set; }
     public HotkeyBinding ToggleHotkey { get; set; } = new() { Key = 0x77 }; // F8
     public HotkeyBinding EmergencyHotkey { get; set; } = new() { Key = 0x78 }; // F9
+    public HotkeyBinding LockAndReturnHotkey { get; set; } = new() { Key = (int)Keys.L, Modifiers = HotkeyModifiers.Control | HotkeyModifiers.Alt };
+    public int ClipboardHistoryLimit { get; set; } = 50;
+    public bool CaptureClipboardText { get; set; } = true;
+    public bool CaptureClipboardImages { get; set; } = true;
 }
 
 public static class SettingsStore
@@ -71,31 +75,70 @@ public static class SettingsStore
         settings.ScrollSpeedPercent = Math.Clamp(settings.ScrollSpeedPercent, 25, 300);
         settings.ToggleHotkey ??= new HotkeyBinding { Key = 0x77 };
         settings.EmergencyHotkey ??= new HotkeyBinding { Key = 0x78 };
-        if (!HotkeyCatalog.IsAllowedKey(settings.ToggleHotkey.Key)) settings.ToggleHotkey.Key = 0x77;
-        if (!HotkeyCatalog.IsAllowedKey(settings.EmergencyHotkey.Key)) settings.EmergencyHotkey.Key = 0x78;
+        settings.LockAndReturnHotkey ??= new HotkeyBinding { Key = (int)Keys.L, Modifiers = HotkeyModifiers.Control | HotkeyModifiers.Alt };
+        if (!HotkeyCatalog.IsAllowedKey(settings.ToggleHotkey.Key)) settings.ToggleHotkey = new HotkeyBinding { Key = 0x77 };
+        if (!HotkeyCatalog.IsAllowedKey(settings.EmergencyHotkey.Key)) settings.EmergencyHotkey = new HotkeyBinding { Key = 0x78 };
+        if (!HotkeyCatalog.IsAllowedKey(settings.LockAndReturnHotkey.Key))
+            settings.LockAndReturnHotkey = new HotkeyBinding { Key = (int)Keys.L, Modifiers = HotkeyModifiers.Control | HotkeyModifiers.Alt };
+        settings.ClipboardHistoryLimit = Math.Clamp(settings.ClipboardHistoryLimit, 10, 200);
         return settings;
     }
 }
 
-public sealed record HotkeyOption(string Name, int Key)
-{
-    public override string ToString() => Name;
-}
-
 public static class HotkeyCatalog
 {
-    public static IReadOnlyList<HotkeyOption> Options { get; } =
-    [
-        new("F1", 0x70), new("F2", 0x71), new("F3", 0x72), new("F4", 0x73),
-        new("F5", 0x74), new("F6", 0x75), new("F7", 0x76), new("F8", 0x77),
-        new("F9", 0x78), new("F10", 0x79), new("F11", 0x7A), new("F12", 0x7B),
-        new("Space", 0x20), new("↑", 0x26), new("↓", 0x28), new("←", 0x25), new("→", 0x27),
-        new("Insert", 0x2D), new("Home", 0x24), new("End", 0x23),
-        new("Page Up", 0x21), new("Page Down", 0x22), new("Pause", 0x13), new("Scroll Lock", 0x91)
-    ];
+    public static bool IsModifierKey(int key) => key is
+        (int)Keys.ControlKey or (int)Keys.LControlKey or (int)Keys.RControlKey or
+        (int)Keys.Menu or (int)Keys.LMenu or (int)Keys.RMenu or
+        (int)Keys.ShiftKey or (int)Keys.LShiftKey or (int)Keys.RShiftKey or
+        (int)Keys.LWin or (int)Keys.RWin;
 
-    public static bool IsAllowedKey(int key) => Options.Any(x => x.Key == key);
-    public static string NameOf(int key) => Options.FirstOrDefault(x => x.Key == key)?.Name ?? $"VK 0x{key:X2}";
+    public static bool IsAllowedKey(int key)
+    {
+        if (IsModifierKey(key)) return false;
+        if (key < 0x08 || key > 0xFE) return false;
+        return key is not (int)Keys.ProcessKey and not (int)Keys.Packet;
+    }
+
+    public static string NameOf(int key)
+    {
+        if (key is >= (int)Keys.A and <= (int)Keys.Z) return ((char)key).ToString();
+        if (key is >= (int)Keys.D0 and <= (int)Keys.D9) return ((char)key).ToString();
+        if (key is >= (int)Keys.F1 and <= (int)Keys.F24) return $"F{key - (int)Keys.F1 + 1}";
+        return key switch
+        {
+            (int)Keys.Space => "Space",
+            (int)Keys.Up => "↑",
+            (int)Keys.Down => "↓",
+            (int)Keys.Left => "←",
+            (int)Keys.Right => "→",
+            (int)Keys.PageUp => "Page Up",
+            (int)Keys.PageDown => "Page Down",
+            (int)Keys.Oemtilde => "`",
+            (int)Keys.OemMinus => "-",
+            (int)Keys.Oemplus => "=",
+            (int)Keys.OemOpenBrackets => "[",
+            (int)Keys.Oem6 => "]",
+            (int)Keys.Oem5 => "\\",
+            (int)Keys.Oem1 => ";",
+            (int)Keys.Oem7 => "'",
+            (int)Keys.Oemcomma => ",",
+            (int)Keys.OemPeriod => ".",
+            (int)Keys.OemQuestion => "/",
+            _ => new KeysConverter().ConvertToString((Keys)key) ?? $"VK 0x{key:X2}"
+        };
+    }
+
+    public static string DisplayModifiers(HotkeyModifiers modifiers)
+    {
+        var parts = new List<string>();
+        if (modifiers.HasFlag(HotkeyModifiers.Control)) parts.Add("Ctrl");
+        if (modifiers.HasFlag(HotkeyModifiers.Alt)) parts.Add("Alt");
+        if (modifiers.HasFlag(HotkeyModifiers.Shift)) parts.Add("Shift");
+        if (modifiers.HasFlag(HotkeyModifiers.Windows)) parts.Add("Win");
+        return parts.Count == 0 ? "키 조합을 입력하세요" : string.Join("+", parts) + "+…";
+    }
+
     public static string Display(HotkeyBinding binding)
     {
         var parts = new List<string>();
@@ -106,4 +149,7 @@ public static class HotkeyCatalog
         parts.Add(NameOf(binding.Key));
         return string.Join("+", parts);
     }
+
+    public static bool Same(HotkeyBinding a, HotkeyBinding b) =>
+        a.Key == b.Key && a.Modifiers == b.Modifiers;
 }
