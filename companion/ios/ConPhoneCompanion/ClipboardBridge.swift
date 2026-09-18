@@ -159,12 +159,12 @@ final class ClipboardBridge: NSObject, ObservableObject {
             if self.directConfig?.hostAddress == nil {
                 self.refreshDirectHost()
             } else {
-                self.startLanFastPath()
+                self.startP2PFastPath()
             }
         }
     }
 
-    private func startLanFastPath() {
+    private func startP2PFastPath() {
         guard p2p?.ready != true,
               let config = directConfig,
               let host = config.hostAddress,
@@ -182,7 +182,7 @@ final class ClipboardBridge: NSObject, ObservableObject {
             secret: secret,
             onFrame: { [weak self] frame in
                 DispatchQueue.main.async {
-                    self?.receiveLan(frame)
+                    self?.receiveP2P(frame)
                 }
             },
             onStatus: { [weak self] text in
@@ -195,7 +195,7 @@ final class ClipboardBridge: NSObject, ObservableObject {
         channel.start()
     }
 
-    private func receiveLan(_ frame: Data) {
+    private func receiveP2P(_ frame: Data) {
         do {
             let chunk = try ClipboardProtocol.decode(frame)
             guard let content = try wireReassembler.add(chunk) else { return }
@@ -469,7 +469,7 @@ extension ClipboardBridge: CBPeripheralDelegate {
                 directConfig = config
                 fastLinkAvailable = true
                 if config.hostAddress != nil && directHostRefreshAttempt > 0 {
-                    startLanFastPath()
+                    startP2PFastPath()
                 } else if pendingFastLinkConnect {
                     pendingFastLinkConnect = false
                     applyFastLinkConfiguration()
