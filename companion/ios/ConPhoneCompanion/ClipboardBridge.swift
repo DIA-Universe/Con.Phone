@@ -28,6 +28,7 @@ final class ClipboardBridge: NSObject, ObservableObject {
     private var directConfig: DirectConfig?
     private var lan: LanClipboardChannel?
     private var directHostRefreshAttempt = 0
+    private var directConfigReadAttempt = 0
 
     private struct DirectConfig {
         let ssid: String
@@ -191,6 +192,17 @@ final class ClipboardBridge: NSObject, ObservableObject {
             apply(content)
         } catch {
             status = "P2P Clipboard 수신 거부: \(error.localizedDescription)"
+        }
+    }
+
+    private func retryDirectConfigRead(_ peripheral: CBPeripheral) {
+        guard directConfigReadAttempt < 8,
+              let characteristic = directLinkCharacteristic else { return }
+
+        directConfigReadAttempt += 1
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { [weak self, weak peripheral] in
+            guard let self, let peripheral else { return }
+            peripheral.readValue(for: characteristic)
         }
     }
 
@@ -433,6 +445,7 @@ extension ClipboardBridge: CBPeripheralDelegate {
 
         if characteristic.uuid == directLinkUUID {
             if let config = parseDirectConfig(value) {
+                directConfigReadAttempt = 0
                 directConfig = config
                 fastLinkAvailable = true
                 if config.hostAddress != nil && directHostRefreshAttempt > 0 {
@@ -440,6 +453,8 @@ extension ClipboardBridge: CBPeripheralDelegate {
                 } else {
                     status = "P2P 고속 연결 사용 가능 · 필요하면 버튼으로 연결"
                 }
+            } else {
+                retryDirectConfigRead(peripheral)
             }
             return
         }
