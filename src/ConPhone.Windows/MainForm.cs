@@ -695,14 +695,16 @@ public sealed class MainForm : Form
         if (dialog.ShowDialog(this) != DialogResult.OK) return;
         var report = new
         {
-            Version = "0.1.6", OS = Environment.OSVersion.Version.ToString(), Runtime = Environment.Version.ToString(),
+            Version = "0.2.0", OS = Environment.OSVersion.Version.ToString(), Runtime = Environment.Version.ToString(),
             TargetProfile = _profile.SelectedIndex == 0 ? "Android" : "iPhone", Bluetooth = await BleHidServer.DiagnoseAsync(),
             Advertisement = _ble.Advertisement, BleLastOperation = _ble.LastOperation, KeyboardSubscribers = _ble.KeyboardSubscribers, MouseSubscribers = _ble.MouseSubscribers, ApprovedAndSubscribed = _ble.Ready,
             SendOperations = Interlocked.Read(ref _sent), Pending = _outbox.Count, LastError = _lastError,
             MouseSpeedPercent = _settings.MouseSpeedPercent, ScrollSpeedPercent = _settings.ScrollSpeedPercent,
             ToggleHotkey = HotkeyCatalog.Display(_settings.ToggleHotkey), EmergencyHotkey = HotkeyCatalog.Display(_settings.EmergencyHotkey),
-            AndroidHardwareTest = "Not performed by build environment", IPhoneHardwareTest = "Not performed",
-            Privacy = "No text, keys, pairing codes, device names or Bluetooth addresses are exported."
+            LockAndReturnHotkey = HotkeyCatalog.Display(_settings.LockAndReturnHotkey),
+            ClipboardEntries = _clipboard?.Entries.Count ?? 0,
+            AndroidHardwareTest = "Phone lock HID Power is device-dependent and requires hardware validation.", IPhoneHardwareTest = "Not performed",
+            Privacy = "Diagnostic export excludes clipboard contents, typed keys, pairing codes, device names and Bluetooth addresses. Clipboard history itself is stored locally under LocalAppData."
         };
         await File.WriteAllTextAsync(dialog.FileName, JsonSerializer.Serialize(report, new JsonSerializerOptions { WriteIndented = true }));
         Log("진단 저장 완료. 입력 문자/키코드/기기 주소는 저장하지 않았습니다.");
@@ -753,7 +755,7 @@ public sealed class MainForm : Form
         if (_closing) return;
         _closing = true;
         await ReturnLocalAsync();
-        _lifetime.Cancel(); _ble.Stop(); _input.Dispose();
+        _lifetime.Cancel(); _ble.Stop(); _input.Dispose(); _clipboard?.Dispose();
         if (_pump is not null) { try { await _pump; } catch (OperationCanceledException) { } }
         SystemEvents.PowerModeChanged -= PowerChanged; SystemEvents.SessionSwitch -= SessionChanged;
         _timer.Stop(); _timer.Dispose(); _peerTimer.Stop(); _peerTimer.Dispose(); _tray.Visible = false; _tray.Dispose();
