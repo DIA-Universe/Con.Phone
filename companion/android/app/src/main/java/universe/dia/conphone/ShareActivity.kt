@@ -1,7 +1,9 @@
 package universe.dia.conphone
 
+import android.Manifest
 import android.app.Activity
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
@@ -46,6 +48,7 @@ class ShareActivity : Activity() {
                 .setAction(ClipboardBridgeService.ACTION_SEND_SHARED_TEXT)
                 .putExtra(ClipboardBridgeService.EXTRA_SHARED_TEXT, text)
         )
+        openSetupIfPermissionsMissing()
         Toast.makeText(this, "PC 전송 대기열에 추가했습니다.", Toast.LENGTH_SHORT).show()
         finish()
     }
@@ -91,6 +94,7 @@ class ShareActivity : Activity() {
                     .setAction(ClipboardBridgeService.ACTION_SEND_SHARED_IMAGE)
                     .putExtra(ClipboardBridgeService.EXTRA_SHARED_IMAGE_PATH, target.absolutePath)
             )
+            openSetupIfPermissionsMissing()
             Toast.makeText(this, "PC 이미지 전송 대기열에 추가했습니다.", Toast.LENGTH_SHORT).show()
         }.onFailure {
             runCatching { target.delete() }
@@ -98,6 +102,25 @@ class ShareActivity : Activity() {
         }
 
         finish()
+    }
+
+    private fun openSetupIfPermissionsMissing() {
+        val bluetoothReady =
+            checkSelfPermission(Manifest.permission.BLUETOOTH_SCAN) == PackageManager.PERMISSION_GRANTED &&
+            checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT) == PackageManager.PERMISSION_GRANTED
+
+        val nearbyReady =
+            if (Build.VERSION.SDK_INT >= 33)
+                checkSelfPermission(Manifest.permission.NEARBY_WIFI_DEVICES) == PackageManager.PERMISSION_GRANTED
+            else
+                checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED
+
+        if (bluetoothReady && nearbyReady) return
+
+        startActivity(
+            Intent(this, MainActivity::class.java)
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        )
     }
 
     private fun sharedUri(): Uri? =
