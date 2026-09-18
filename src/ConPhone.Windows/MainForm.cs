@@ -9,6 +9,8 @@ public sealed class MainForm : Form
     private readonly BleHidServer _ble = new();
     private readonly InputCapture _input = new();
     private readonly Outbox _outbox = new();
+    private readonly PointerScaler _pointerScaler = new();
+    private readonly ConPhoneSettings _settings = SettingsStore.Load();
     private readonly CancellationTokenSource _lifetime = new();
     private readonly SemaphoreSlim _actions = new(1, 1);
     private readonly Label _state = new() { AutoSize = true, Font = new Font("Segoe UI", 15, FontStyle.Bold), ForeColor = Color.FromArgb(25, 75, 125) };
@@ -16,6 +18,14 @@ public sealed class MainForm : Form
     private readonly ListBox _peers = new() { Width = 810, Height = 86 };
     private readonly TextBox _events = new() { Multiline = true, ReadOnly = true, ScrollBars = ScrollBars.Vertical, Width = 810, Height = 100 };
     private readonly ComboBox _profile = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 240 };
+    private readonly TrackBar _mouseSpeed = new() { Minimum = 25, Maximum = 300, TickFrequency = 25, SmallChange = 5, LargeChange = 25, Width = 430 };
+    private readonly TrackBar _scrollSpeed = new() { Minimum = 25, Maximum = 300, TickFrequency = 25, SmallChange = 5, LargeChange = 25, Width = 430 };
+    private readonly Label _mouseSpeedValue = new() { AutoSize = true, Width = 70 };
+    private readonly Label _scrollSpeedValue = new() { AutoSize = true, Width = 70 };
+    private readonly CheckBox _invertScroll = new() { Text = "스크롤 방향 반전", AutoSize = true };
+    private readonly ComboBox _toggleKey = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 160 };
+    private readonly ComboBox _emergencyKey = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 160 };
+    private readonly Label _shortcutSummary = new() { AutoSize = true, ForeColor = Color.FromArgb(35, 90, 145) };
     private readonly NotifyIcon _tray = new() { Text = "Con.Phone · 로컬 입력", Icon = SystemIcons.Application, Visible = true };
     private readonly System.Windows.Forms.Timer _timer = new() { Interval = 400 };
     private readonly System.Windows.Forms.Timer _peerTimer = new() { Interval = 1500 };
