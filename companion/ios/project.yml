@@ -12,6 +12,8 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: universe.dia.conphone.ios
         SWIFT_VERSION: "5.0"
+        MARKETING_VERSION: "0.3.0"
+        CURRENT_PROJECT_VERSION: "3"
         CODE_SIGNING_ALLOWED: NO
         CODE_SIGN_ENTITLEMENTS: ConPhoneCompanion/ConPhoneCompanion.entitlements
     info:
