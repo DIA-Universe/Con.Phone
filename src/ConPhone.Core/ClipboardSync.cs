@@ -94,13 +94,15 @@ public static class ClipboardWireCodec
 {
     private static readonly byte[] Magic = "CPH1"u8.ToArray();
     public const int HeaderSize = 70;
+    public const int MinChunkSize = 256;
     public const int MaxChunkSize = 1024 * 1024;
     public const int MaxEncodedFrameBytes = HeaderSize + MaxChunkSize;
     public const int DefaultChunkSize = 64 * 1024;
+    public const int MaxInFlightTransfers = 8;
 
     public static IReadOnlyList<byte[]> Encode(ClipboardContent content, int chunkSize = DefaultChunkSize)
     {
-        if (chunkSize is < 256 or > MaxChunkSize)
+        if (chunkSize is < MinChunkSize or > MaxChunkSize)
             throw new ArgumentOutOfRangeException(nameof(chunkSize));
 
         ClipboardContent.Validate(content.Kind, content.Data);
@@ -145,12 +147,18 @@ public static class ClipboardWireCodec
         var hash = frame.Slice(34, 32).ToArray();
         var payloadLength = BinaryPrimitives.ReadInt32LittleEndian(frame.Slice(66, 4));
 
+        if (!Enum.IsDefined(kind))
+            throw new InvalidDataException("Unsupported clipboard content kind.");
+
         var maxTotal = kind == ClipboardContentKind.TextUtf8
             ? ClipboardContent.MaxTextBytes
             : ClipboardContent.MaxImageBytes;
-        var maxCount = (maxTotal + 255) / 256;
+        var minCount = Math.Max(1, (total + MaxChunkSize - 1) / MaxChunkSize);
+        var maxCount = total <= MinChunkSize
+            ? 1
+            : (total + MinChunkSize - 1) / MinChunkSize;
 
-        if (count <= 0 || count > maxCount ||
+        if (count < minCount || count > maxCount ||
             index < 0 || index >= count ||
             total <= 0 || total > maxTotal ||
             payloadLength <= 0 || payloadLength > MaxChunkSize ||
@@ -192,6 +200,9 @@ public sealed class ClipboardReassembler
 
         if (!_pending.TryGetValue(chunk.TransferId, out var pending))
         {
+            if (_pending.Count >= ClipboardWireCodec.MaxInFlightTransfers)
+                throw new InvalidDataException("Too many clipboard transfers are in flight.");
+
             pending = new Pending
             {
                 Kind = chunk.Kind,
@@ -209,7 +220,15 @@ public sealed class ClipboardReassembler
             throw new InvalidDataException("Clipboard transfer metadata changed mid-transfer.");
         }
 
-        if (!pending.Chunks.ContainsKey(chunk.Index))
+        if (pending.Chunks.TryGetValue(chunk.Index, out var existingChunk))
+        {
+            if (!existingChunk.AsSpan().SequenceEqual(chunk.Payload))
+            {
+                _pending.Remove(chunk.TransferId);
+                throw new InvalidDataException("Clipboard duplicate chunk payload changed.");
+            }
+        }
+        else
         {
             if ((long)pending.Bytes + chunk.Payload.Length > pending.TotalLength)
             {
@@ -340,6 +359,9 @@ public sealed class BleFragmentReassembler
 
         if (!_pending.TryGetValue(fragment.TransferId, out var state))
         {
+            if (_pending.Count >= ClipboardWireCodec.MaxInFlightTransfers)
+                throw new InvalidDataException("Too many BLE clipboard frames are in flight.");
+
             state = new Pending
             {
                 Count = fragment.Count,
@@ -353,7 +375,15 @@ public sealed class BleFragmentReassembler
             throw new InvalidDataException("BLE fragment count changed mid-transfer.");
         }
 
-        if (!state.Parts.ContainsKey(fragment.Index))
+        if (state.Parts.TryGetValue(fragment.Index, out var existingFragment))
+        {
+            if (!existingFragment.AsSpan().SequenceEqual(fragment.Payload))
+            {
+                _pending.Remove(fragment.TransferId);
+                throw new InvalidDataException("BLE duplicate fragment payload changed.");
+            }
+        }
+        else
         {
             if ((long)state.Bytes + fragment.Payload.Length >
                 ClipboardWireCodec.MaxEncodedFrameBytes)
