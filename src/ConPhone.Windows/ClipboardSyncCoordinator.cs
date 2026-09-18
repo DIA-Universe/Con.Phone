@@ -33,6 +33,9 @@ public sealed class ClipboardSyncCoordinator : IAsyncDisposable
     }
 
     public int BleSubscribers => _ble.Subscribers;
+    public bool P2PLinkRunning => _direct.Running;
+    public bool P2PChannelConnected => _lan.Connected;
+    public string? P2PHostAddress => _direct.Config?.HostAddress;
 
     public Task PrepareBleAsync() => _ble.PrepareAsync();
 
