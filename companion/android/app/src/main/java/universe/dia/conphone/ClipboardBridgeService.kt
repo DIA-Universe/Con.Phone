@@ -40,7 +40,12 @@ class ClipboardBridgeService : Service() {
     companion object {
         const val ACTION_START = "universe.dia.conphone.START"
         const val ACTION_SEND = "universe.dia.conphone.SEND"
+        const val ACTION_SEND_SHARED_TEXT = "universe.dia.conphone.SEND_SHARED_TEXT"
+        const val ACTION_SEND_SHARED_IMAGE = "universe.dia.conphone.SEND_SHARED_IMAGE"
         const val ACTION_STOP = "universe.dia.conphone.STOP"
+
+        const val EXTRA_SHARED_TEXT = "shared_text"
+        const val EXTRA_SHARED_IMAGE_PATH = "shared_image_path"
 
         private const val CHANNEL = "conphone_bridge"
         private const val NOTIFICATION_ID = 7310
@@ -93,6 +98,10 @@ class ClipboardBridgeService : Service() {
                 return START_NOT_STICKY
             }
             ACTION_SEND -> sendCurrentClipboard()
+            ACTION_SEND_SHARED_TEXT -> sendSharedText(
+                intent?.getStringExtra(EXTRA_SHARED_TEXT))
+            ACTION_SEND_SHARED_IMAGE -> sendSharedImage(
+                intent?.getStringExtra(EXTRA_SHARED_IMAGE_PATH))
             else -> beginScan()
         }
         return START_STICKY
@@ -548,6 +557,68 @@ class ClipboardBridgeService : Service() {
             executor.execute {
                 runCatching { connectDirectChannel(direct) }
             }
+    }
+
+    private fun sendSharedText(text: String?) {
+        if (text.isNullOrEmpty()) {
+            toast("공유할 텍스트가 없습니다.")
+            return
+        }
+
+        runCatching {
+            ClipboardProtocol.text(text)
+        }.onSuccess(::sendContent)
+            .onFailure { toast("텍스트 전송 준비 실패: ${it.message}") }
+    }
+
+    private fun sendSharedImage(path: String?) {
+        if (path.isNullOrWhiteSpace()) {
+            toast("공유할 이미지가 없습니다.")
+            return
+        }
+
+        executor.execute {
+            val file = runCatching {
+                val sharedRoot = File(cacheDir, "shared").canonicalFile
+                val candidate = File(path).canonicalFile
+                require(candidate.path.startsWith(sharedRoot.path + File.separator)) {
+                    "허용되지 않은 공유 이미지 경로입니다."
+                }
+                require(candidate.isFile && candidate.length() in 1..(40L * 1024 * 1024)) {
+                    "공유 이미지 임시 파일 크기가 올바르지 않습니다."
+                }
+                candidate
+            }.getOrElse {
+                toast("이미지 공유 준비 실패: ${it.message}")
+                return@execute
+            }
+
+            runCatching {
+                val options = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+                BitmapFactory.decodeFile(file.absolutePath, options)
+
+                val width = options.outWidth
+                val height = options.outHeight
+                require(width > 0 && height > 0 &&
+                    width.toLong() * height.toLong() <= 40_000_000L) {
+                    "이미지 해상도가 안전 한도(40MP)를 초과합니다: ${width}x${height}"
+                }
+
+                val bitmap = BitmapFactory.decodeFile(file.absolutePath)
+                    ?: error("공유 이미지를 읽을 수 없습니다.")
+
+                try {
+                    val out = ByteArrayOutputStream()
+                    bitmap.compress(Bitmap.CompressFormat.PNG, 100, out)
+                    ClipboardProtocol.image(ClipboardKind.PNG, out.toByteArray())
+                } finally {
+                    bitmap.recycle()
+                }
+            }.onSuccess(::sendContent)
+                .onFailure { toast("이미지 전송 준비 실패: ${it.message}") }
+
+            runCatching { file.delete() }
+        }
     }
 
     private fun sendCurrentClipboard() {
