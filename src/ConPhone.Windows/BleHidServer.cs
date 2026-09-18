@@ -93,6 +93,7 @@ public sealed class BleHidServer
                 {
                     _everAdvertised = true;
                     _running = true;
+                    TryRestoreTrustedApproval();
                     Status?.Invoke($"광고 상태: {args.Status}; 결과: {args.Error}");
                 }
                 else if (args.Status == GattServiceProviderAdvertisementStatus.Aborted)
