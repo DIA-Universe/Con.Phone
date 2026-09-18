@@ -32,6 +32,15 @@ public sealed class LanClipboardServer : IAsyncDisposable
         _enabled = enabled;
     }
 
+    public bool Connected
+    {
+        get
+        {
+            lock (_clientGate)
+                return _client is { Closed: false };
+        }
+    }
+
     public bool HasClient(string deviceId)
     {
         lock (_clientGate)
