@@ -341,6 +341,20 @@ public sealed class BleClipboardService : IDisposable
         }
     }
 
+    public void StopAdvertising()
+    {
+        if (_provider is null) return;
+        try
+        {
+            if (Running)
+                _provider.StopAdvertising();
+        }
+        catch (Exception ex)
+        {
+            Status?.Invoke($"Clipboard BLE 광고 중지 확인 실패: {ex.Message}");
+        }
+    }
+
     public bool HasSubscriber(string deviceId) =>
         LiveClients(_tx).Any(x => SessionId(x) == deviceId);
 
