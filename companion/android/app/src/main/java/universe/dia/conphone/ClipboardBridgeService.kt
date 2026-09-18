@@ -732,7 +732,7 @@ class ClipboardBridgeService : Service() {
         val g = gatt
         val rxLocal = rx
         if (g == null || rxLocal == null || credential == null) {
-            pendingContent = content
+            setPendingContent(content)
             showStatus("PC 연결 후 Clipboard 전송 대기")
             main.post { beginScan() }
             return
@@ -872,6 +872,7 @@ class ClipboardBridgeService : Service() {
         main.post { Toast.makeText(this, text, Toast.LENGTH_SHORT).show() }
 
     override fun onDestroy() {
+        clearPendingContent()
         scanning = false
         p2p?.close()
         p2p = null
