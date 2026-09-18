@@ -793,6 +793,7 @@ public sealed class MainForm : Form
         _input.Toggle += () => DispatchCritical(ToggleAsync);
         _input.Emergency += () => DispatchCritical(ReturnLocalAsync);
         _input.LockAndReturn += () => DispatchCritical(LockPhoneAndReturnAsync);
+        _input.Consumer += action => Post(() => _ = SendConsumerActionSafeAsync(action));
         _input.Fault += text => DispatchCritical(async () =>
         {
             ImmediateLocal();
@@ -1442,6 +1443,19 @@ public sealed class MainForm : Form
             throw new InvalidOperationException("현재 사용 가능한 Clipboard 전송 경로가 없습니다.");
 
         _lastSentClipboardHash = content.Hash;
+    }
+
+    private async Task SendConsumerActionSafeAsync(ConsumerAction action)
+    {
+        try
+        {
+            await SendConsumerActionAsync(action);
+        }
+        catch (Exception ex)
+        {
+            _lastError = $"Consumer:{ex.GetType().Name}:0x{ex.HResult:X8}";
+            Log($"미디어키 전송 실패 · HID 입력은 유지합니다. ({ex.Message})");
+        }
     }
 
     private async Task SendConsumerActionAsync(ConsumerAction action)
