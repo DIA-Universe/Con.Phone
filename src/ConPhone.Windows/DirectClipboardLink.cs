@@ -87,7 +87,9 @@ public sealed class DirectClipboardLink : IDisposable
     public event Action<string>? Status;
 
     public DirectLinkConfig? Config =>
-        _config is null ? null : _config with { HostAddress = FindDirectIpv4() };
+        !Running || _config is null
+            ? null
+            : _config with { HostAddress = FindDirectIpv4() };
     public bool Running => _publisher?.Status == WiFiDirectAdvertisementPublisherStatus.Started;
 
     public void Start()
