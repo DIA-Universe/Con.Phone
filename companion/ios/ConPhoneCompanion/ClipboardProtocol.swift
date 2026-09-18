@@ -144,14 +144,17 @@ enum ClipboardProtocol {
         let payloadLength = Int(frame.int32LE(at: 66))
 
         let maxTotal = kind == .text ? maxText : maxImage
-        let maxCount = (maxTotal + 255) / 256
+        guard total > 0, total <= maxTotal else {
+            throw ProtocolError.invalidFrame
+        }
 
-        guard count > 0,
+        let minCount = max(1, (total + maxChunk - 1) / maxChunk)
+        let maxCount = total <= minChunk ? 1 : (total + minChunk - 1) / minChunk
+
+        guard count >= minCount,
               count <= maxCount,
               index >= 0,
               index < count,
-              total > 0,
-              total <= maxTotal,
               payloadLength > 0,
               payloadLength <= maxChunk,
               payloadLength <= total,
@@ -257,7 +260,12 @@ final class ClipboardWireReassembler {
             throw ClipboardProtocol.ProtocolError.invalidFrame
         }
 
-        if state.parts[chunk.index] == nil {
+        if let existing = state.parts[chunk.index] {
+            guard existing == chunk.payload else {
+                pending.removeValue(forKey: chunk.transferId)
+                throw ClipboardProtocol.ProtocolError.invalidFrame
+            }
+        } else {
             guard state.bytes + chunk.payload.count <= state.total else {
                 pending.removeValue(forKey: chunk.transferId)
                 throw ClipboardProtocol.ProtocolError.tooLarge
