@@ -17,6 +17,7 @@ public sealed class InputCapture : IDisposable
     private Sink? _sink;
 
     private volatile bool _remote;
+    private HotkeyBinding _nextDeviceHotkey = SettingsStore.DefaultNextDevice();
     private HotkeyBinding _toggleHotkey = SettingsStore.DefaultToggle();
     private HotkeyBinding _emergencyHotkey = SettingsStore.DefaultEmergency();
     private HotkeyBinding _lockAndReturnHotkey = SettingsStore.DefaultLockAndReturn();
@@ -32,6 +33,7 @@ public sealed class InputCapture : IDisposable
     private int _wheel, _pan;
 
     public event Action<InputPacket>? Packet;
+    public event Action? NextDevice;
     public event Action? Toggle;
     public event Action? Emergency;
     public event Action? LockAndReturn;
@@ -48,20 +50,29 @@ public sealed class InputCapture : IDisposable
         _thread.Start();
     }
 
-    public void ConfigureHotkeys(HotkeyBinding toggle, HotkeyBinding emergency, HotkeyBinding lockAndReturn)
+    public void ConfigureHotkeys(
+        HotkeyBinding nextDevice,
+        HotkeyBinding toggle,
+        HotkeyBinding emergency,
+        HotkeyBinding lockAndReturn)
     {
-        if (!HotkeyCatalog.IsAllowedKey(toggle.Key) ||
-            !HotkeyCatalog.IsAllowedKey(emergency.Key) ||
-            !HotkeyCatalog.IsAllowedKey(lockAndReturn.Key))
+        var bindings = new[] { nextDevice, toggle, emergency, lockAndReturn };
+        if (bindings.Any(binding => !HotkeyCatalog.IsAllowedKey(binding.Key)))
             throw new ArgumentOutOfRangeException(nameof(toggle), "지원하지 않는 단축키입니다.");
 
-        if (HotkeyCatalog.Same(toggle, emergency) ||
-            HotkeyCatalog.Same(toggle, lockAndReturn) ||
-            HotkeyCatalog.Same(emergency, lockAndReturn))
-            throw new InvalidOperationException("각 동작의 단축키 조합은 서로 다르게 지정해 주세요.");
+        for (var i = 0; i < bindings.Length; i++)
+        {
+            for (var j = 0; j < i; j++)
+            {
+                if (HotkeyCatalog.Same(bindings[i], bindings[j]))
+                    throw new InvalidOperationException(
+                        "각 동작의 단축키 조합은 서로 다르게 지정해 주세요.");
+            }
+        }
 
         lock (_gate)
         {
+            _nextDeviceHotkey = nextDevice.Clone();
             _toggleHotkey = toggle.Clone();
             _emergencyHotkey = emergency.Clone();
             _lockAndReturnHotkey = lockAndReturn.Clone();
@@ -191,7 +202,7 @@ public sealed class InputCapture : IDisposable
             bool firstDown;
             Action<HotkeyBinding>? capturedCallback = null;
             HotkeyBinding? capturedBinding = null;
-            HotkeyBinding toggle, emergency, lockAndReturn;
+            HotkeyBinding nextDevice, toggle, emergency, lockAndReturn;
 
             lock (_gate)
             {
@@ -224,6 +235,7 @@ public sealed class InputCapture : IDisposable
                     if (capturedBinding is null) return 1;
                 }
 
+                nextDevice = _nextDeviceHotkey.Clone();
                 toggle = _toggleHotkey.Clone();
                 emergency = _emergencyHotkey.Clone();
                 lockAndReturn = _lockAndReturnHotkey.Clone();
@@ -239,6 +251,19 @@ public sealed class InputCapture : IDisposable
             {
                 HotkeyModifiers modifiers;
                 lock (_gate) modifiers = ModifiersFromDownKeysLocked();
+
+                if (!_remote && Matches(nextDevice, key, modifiers))
+                {
+                    lock (_gate)
+                    {
+                        _suppressUntilUp.Add(key);
+                        foreach (var down in _downKeys)
+                            if (down != key && IsPhysicalModifier(down))
+                                _localPassthroughUntilUp.Add(down);
+                    }
+                    NextDevice?.Invoke();
+                    return 1;
+                }
 
                 if (Matches(toggle, key, modifiers))
                 {
