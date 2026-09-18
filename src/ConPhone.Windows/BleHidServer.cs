@@ -220,7 +220,7 @@ public sealed class BleHidServer
             {
                 if (!TryActiveSession(client, out var session, out var id) || session is null) continue;
                 if (_sessions.TryAdd(id, session))
-                    session.SessionStatusChanged += (_, args) =>
+                    session.SessionStatusChanged += (sessionSender, args) =>
                     {
                         if (args.Status == GattSessionStatus.Closed)
                         {
@@ -506,7 +506,7 @@ public sealed class BleHidServer
             if (id is null || !_running) throw new InvalidOperationException("승인된 입력 연결이 사라졌습니다.");
             var characteristic = report.Keyboard ? _keyboard : _mouse;
             var client = report.Keyboard ? _approvedKeyboardClient : _approvedMouseClient;
-            if (characteristic is null || !IsApprovedClientActive(client, id))
+            if (characteristic is null || client is null || !IsApprovedClientActive(client, id))
                 throw new InvalidOperationException("승인된 입력 연결이 사라졌습니다.");
             var bytes = report.Data;
             if (bytes.Length > client.MaxNotificationSize) throw new InvalidOperationException("HID report가 알림 크기를 초과합니다.");
