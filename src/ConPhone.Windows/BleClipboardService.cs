@@ -116,7 +116,7 @@ public sealed class BleClipboardService : IDisposable
 
         _provider = created.ServiceProvider;
         _provider.AdvertisementStatusChanged += (_, args) =>
-            Status?.Invoke($"Clipboard BLE 광고: {args.Status} ({args.Error})");
+            Status?.Invoke($"Clipboard BLE 검색 신호: {args.Status} ({args.Error})");
 
         _tx = await CreateCharacteristicAsync(
             TxUuid,
@@ -351,7 +351,7 @@ public sealed class BleClipboardService : IDisposable
         }
         catch (Exception ex)
         {
-            Status?.Invoke($"Clipboard BLE 광고 중지 확인 실패: {ex.Message}");
+            Status?.Invoke($"Clipboard BLE 검색 신호 중지 확인 실패: {ex.Message}");
         }
     }
 
