@@ -439,8 +439,8 @@ class ClipboardBridgeService : Service() {
         val channel = P2PChannel(
             socket,
             cred,
-            ::onLanFrame,
-            ::onLanClosed
+            ::onP2PFrame,
+            ::onP2PClosed
         )
         channel.handshake()
         p2p = channel
@@ -527,7 +527,7 @@ class ClipboardBridgeService : Service() {
         }
     }
 
-    private fun onLanFrame(frame: ByteArray) {
+    private fun onP2PFrame(frame: ByteArray) {
         runCatching {
             val content = wireReassembler.add(ClipboardProtocol.decode(frame)) ?: return
             applyRemoteClipboard(content)
@@ -536,7 +536,7 @@ class ClipboardBridgeService : Service() {
         }
     }
 
-    private fun onLanClosed() {
+    private fun onP2PClosed() {
         p2p = null
         showStatus("P2P 채널 종료 · BLE fallback 유지")
         val direct = p2pNetwork
