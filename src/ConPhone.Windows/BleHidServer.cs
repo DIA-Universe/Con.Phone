@@ -17,7 +17,8 @@ public sealed record Peer(string Id, string Name, string Fingerprint, bool Keybo
 public sealed class BleHidServer
 {
     private GattServiceProvider? _provider;
-    private GattLocalCharacteristic? _keyboard, _mouse, _bootKeyboard, _bootMouse;
+    private GattServiceProvider? _batteryProvider;
+    private GattLocalCharacteristic? _keyboard, _mouse;
     private readonly ConcurrentDictionary<string, byte> _protocol = new();
     private readonly ConcurrentDictionary<string, bool> _suspended = new();
     private readonly ConcurrentDictionary<string, GattSession> _sessions = new();
@@ -26,7 +27,7 @@ public sealed class BleHidServer
     private volatile string _lastOperation = "Idle";
     private volatile bool _running;
     private bool _configured;
-    private byte[] _keyboardValue = new byte[8], _mouseValue = new byte[5];
+    private byte[] _keyboardValue = new byte[Hid.KeyboardReportLength], _mouseValue = new byte[Hid.MouseReportLength];
     public event Action? Changed;
     public event Action<string>? Status;
     public string Advertisement => _provider?.AdvertisementStatus.ToString() ?? "NotStarted";
@@ -83,17 +84,11 @@ public sealed class BleHidServer
                 if (args.Status == GattServiceProviderAdvertisementStatus.Aborted) { _running = false; _approved = null; }
                 Changed?.Invoke();
             };
-            await Characteristic(0x2A4A, GattCharacteristicProperties.Read, [0x11, 0x01, 0x00, 0x02]);
+            await Characteristic(0x2A4A, GattCharacteristicProperties.Read, [0x11, 0x01, 0x00, 0x03]);
             await Characteristic(0x2A4B, GattCharacteristicProperties.Read, Hid.ReportMap);
-            _keyboard = await InputCharacteristic(0x2A4D, true, false, 1);
-            _mouse = await InputCharacteristic(0x2A4D, false, false, 2);
-            _bootKeyboard = await InputCharacteristic(0x2A22, true, true);
-            _bootMouse = await InputCharacteristic(0x2A33, false, true);
-            var output = await Characteristic(0x2A4D, GattCharacteristicProperties.Read | GattCharacteristicProperties.Write | GattCharacteristicProperties.WriteWithoutResponse);
-            await Reference(output, 1, 2);
-            OutputHandler(output);
-            var bootOutput = await Characteristic(0x2A32, GattCharacteristicProperties.Read | GattCharacteristicProperties.Write | GattCharacteristicProperties.WriteWithoutResponse);
-            OutputHandler(bootOutput);
+            _keyboard = await InputCharacteristic(true, 1);
+            _mouse = await InputCharacteristic(false, 2);
+            await CreateBatteryServiceAsync();
             var protocol = await Characteristic(0x2A4E, GattCharacteristicProperties.Read | GattCharacteristicProperties.WriteWithoutResponse);
             Read(protocol, id => [_protocol.GetValueOrDefault(id, (byte)1)]);
             Write(protocol, (id, bytes) =>
@@ -147,15 +142,16 @@ public sealed class BleHidServer
         return r.Characteristic;
     }
 
-    private async Task<GattLocalCharacteristic> InputCharacteristic(ushort uuid, bool keyboard, bool boot, byte? reportId = null)
+    private async Task<GattLocalCharacteristic> InputCharacteristic(bool keyboard, byte reportId)
     {
-        var c = await Characteristic(uuid, GattCharacteristicProperties.Read | GattCharacteristicProperties.Notify);
-        if (reportId is { } id) await Reference(c, id, 1);
+        var c = await Characteristic(0x2A4D, GattCharacteristicProperties.Read | GattCharacteristicProperties.Notify);
+        await Reference(c, reportId, 1);
         Read(c, client =>
         {
             // Never expose the approved user's current keys to a second bonded central.
-            var value = client == _approved ? (keyboard ? _keyboardValue : _mouseValue) : new byte[keyboard ? 8 : 5];
-            return boot && !keyboard ? new byte[] { (byte)(value[0] & 7), value[1], value[2] } : value.ToArray();
+            var value = client == _approved ? (keyboard ? _keyboardValue : _mouseValue)
+                : new byte[keyboard ? Hid.KeyboardReportLength : Hid.MouseReportLength];
+            return value.ToArray();
         });
         c.SubscribedClientsChanged += (_, _) =>
         {
@@ -180,9 +176,40 @@ public sealed class BleHidServer
             }
             catch (InvalidOperationException ex) when (IsIllegalState(ex)) { }
             catch (ObjectDisposedException) { }
+            Status?.Invoke($"HID 구독 상태 · 키보드:{LiveClientCount(_keyboard)} 마우스:{LiveClientCount(_mouse)}");
             Changed?.Invoke();
         };
         return c;
+    }
+
+    private static int LiveClientCount(GattLocalCharacteristic? characteristic)
+    {
+        if (characteristic is null) return 0;
+        try
+        {
+            var count = 0;
+            foreach (var client in characteristic.SubscribedClients)
+                if (TryActiveSession(client, out _, out _)) count++;
+            return count;
+        }
+        catch (InvalidOperationException ex) when (IsIllegalState(ex)) { return 0; }
+        catch (ObjectDisposedException) { return 0; }
+    }
+
+    private async Task CreateBatteryServiceAsync()
+    {
+        var result = await GattServiceProvider.CreateAsync(Uuid(0x180F));
+        if (result.Error != BluetoothError.Success) return;
+        _batteryProvider = result.ServiceProvider;
+
+        var p = new GattLocalCharacteristicParameters
+        {
+            CharacteristicProperties = GattCharacteristicProperties.Read | GattCharacteristicProperties.Notify,
+            ReadProtectionLevel = GattProtectionLevel.Plain
+        };
+        var level = await _batteryProvider.Service.CreateCharacteristicAsync(Uuid(0x2A19), p);
+        if (level.Error != BluetoothError.Success) return;
+        Read(level.Characteristic, _ => [100]);
     }
 
     private async Task Reference(GattLocalCharacteristic c, byte id, byte type)
@@ -226,16 +253,7 @@ public sealed class BleHidServer
             finally { deferral.Complete(); }
         };
     }
-    private static void OutputHandler(GattLocalCharacteristic c)
-    {
-        Read(c, _ => [0]); // LED output does not reveal the phone's current IME language.
-        Write(c, (_, bytes) => bytes.Length == 1);
-    }
-    private GattLocalCharacteristic? Input(string id, bool keyboard)
-    {
-        bool boot = _protocol.GetValueOrDefault(id, (byte)1) == 0;
-        return keyboard ? (boot ? _bootKeyboard : _keyboard) : (boot ? _bootMouse : _mouse);
-    }
+    private GattLocalCharacteristic? Input(string id, bool keyboard) => keyboard ? _keyboard : _mouse;
 
     private static bool IsAdvertising(GattServiceProviderAdvertisementStatus status) =>
         status is GattServiceProviderAdvertisementStatus.Started or
@@ -279,7 +297,7 @@ public sealed class BleHidServer
     {
         _lastOperation = "EnumerateSubscribedClients";
         var ids = new HashSet<string>(StringComparer.Ordinal);
-        foreach (var c in new[] { _keyboard, _mouse, _bootKeyboard, _bootMouse })
+        foreach (var c in new[] { _keyboard, _mouse })
         {
             if (c is null) continue;
             try
@@ -318,9 +336,26 @@ public sealed class BleHidServer
         using var device = await BluetoothLEDevice.FromIdAsync(id);
         if (device?.DeviceInformation.Pairing.IsPaired != true)
             throw new InvalidOperationException("Windows에서 페어링된 기기만 승인할 수 있습니다. 양쪽의 연결 확인 화면을 확인하세요.");
-        if (!_running || !IsReady(id)) throw new InvalidOperationException("키보드와 마우스 구독이 모두 활성화되어야 합니다.");
-        _keyboardValue = new byte[8]; _mouseValue = new byte[5];
+        if (!_running) throw new InvalidOperationException("Bluetooth HID 서비스가 실행 중이 아닙니다.");
+
+        // Android may finish bonding before HID Host has written both input-report CCCDs.
+        for (var i = 0; i < 20 && !IsReady(id); i++)
+            await Task.Delay(250);
+
+        if (!IsReady(id))
+        {
+            var keyboard = Client(_keyboard, id) is not null;
+            var mouse = Client(_mouse, id) is not null;
+            throw new InvalidOperationException(
+                $"HID 구독 미완료 · 키보드:{keyboard} 마우스:{mouse}. " +
+                "휴대폰 Bluetooth 상세에서 '입력 장치'가 켜져 있는지 확인하세요. " +
+                "입력 장치 항목이 없으면 일반 Bluetooth 쪽에만 연결된 것이므로 등록 해제 후 새로 페어링해야 합니다.");
+        }
+
+        _keyboardValue = new byte[Hid.KeyboardReportLength];
+        _mouseValue = new byte[Hid.MouseReportLength];
         _approved = id;
+        Status?.Invoke("키보드/마우스 HID 구독 1/1 확인 · 입력 대상 승인 완료");
         Changed?.Invoke();
     }
     public void Revoke() { _approved = null; Changed?.Invoke(); }
@@ -337,8 +372,6 @@ public sealed class BleHidServer
             var client = Client(characteristic, id);
             if (client is null) throw new InvalidOperationException("승인된 입력 연결이 사라졌습니다.");
             var bytes = report.Data;
-            if (!report.Keyboard && _protocol.GetValueOrDefault(id, (byte)1) == 0)
-                bytes = [(byte)(bytes[0] & 7), bytes[1], bytes[2]];
             if (bytes.Length > client.MaxNotificationSize) throw new InvalidOperationException("HID report가 알림 크기를 초과합니다.");
             if (report.Keyboard) _keyboardValue = report.Data.ToArray(); else _mouseValue = report.Data.ToArray();
             // This overload targets one approved client; never broadcast input to all clients.
@@ -350,7 +383,7 @@ public sealed class BleHidServer
     public void Stop()
     {
         _running = false; _approved = null;
-        _keyboardValue = new byte[8]; _mouseValue = new byte[5];
+        _keyboardValue = new byte[Hid.KeyboardReportLength]; _mouseValue = new byte[Hid.MouseReportLength];
         if (_provider is not null)
         {
             try
