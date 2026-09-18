@@ -14,6 +14,16 @@ public enum HangulKeyMode
     ShiftSpace
 }
 
+public enum ConsumerAction
+{
+    Mute = 0,
+    VolumeUp = 1,
+    VolumeDown = 2,
+    PlayPause = 3,
+    NextTrack = 4,
+    PreviousTrack = 5
+}
+
 public static class Hid
 {
     // HOGP: report IDs live in each Report Reference descriptor, not in notification payloads.
@@ -21,16 +31,27 @@ public static class Hid
     public const int KeyboardReportLength = 8;
     public const int MouseReportLength = 6;
     public const int SystemReportLength = 1;
+    public const int ConsumerReportLength = 1;
     public const byte SystemLockMask = 0x02; // HID Generic Desktop System Sleep (usage 0x82)
     public static byte[] ReportMap => Convert.FromHexString(
         "05010906A1018501050719E029E715002501750195088102950175088101" +
         "95067508150025650507190029658100C0" +
         "05010902A10185020901A10005091901290315002501950375018102950175058101" +
         "05010930093116018026FF7F75109502810609381581257F750895018106C0C0" +
-        "05010980A1018503150025017501950319812983810295058101C0");
+        "05010980A1018503150025017501950319812983810295058101C0" +
+        "050C0901A1018504150025017501950609E209E909EA09CD09B509B6810295028101C0");
 
     public static byte[] SystemReport(bool lockPressed) =>
         [lockPressed ? SystemLockMask : (byte)0];
+
+    public static byte[] ConsumerReport(ConsumerAction action, bool pressed)
+    {
+        var bit = (int)action;
+        if (bit is < 0 or > 5)
+            throw new ArgumentOutOfRangeException(nameof(action));
+
+        return [pressed ? (byte)(1 << bit) : (byte)0];
+    }
 
     public static IEnumerable<WireReport> Encode(InputPacket packet)
     {
