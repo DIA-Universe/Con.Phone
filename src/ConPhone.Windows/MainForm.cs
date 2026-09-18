@@ -535,11 +535,17 @@ public sealed class MainForm : Form
         options.Controls.Add(LabeledRow("최대 저장 개수", _clipboardLimit));
         options.Controls.Add(LabeledRow("BLE 이미지 한도 (KiB)", _clipboardBleImageLimit));
         options.Controls.Add(LabeledRow("P2P 링크 이름", _p2pLinkName));
-        options.Controls.Add(ActionButton("클립보드 설정 저장", () =>
-        {
-            ApplyClipboardSettings(save: true);
-            return Task.CompletedTask;
-        }, primary: true));
+        options.Controls.Add(Row(
+            ActionButton("클립보드 설정 저장", () =>
+            {
+                ApplyClipboardSettings(save: true);
+                return Task.CompletedTask;
+            }, primary: true),
+            ActionButton("Windows 방화벽 P2P 허용", ConfigureP2PFirewallAsync)));
+        options.Controls.Add(Help(
+            "P2P 연결은 TCP 47911을 사용합니다. 연결이 계속 실패할 때만 방화벽 허용 버튼을 누르세요. UAC 승인이 필요합니다.",
+            Secondary));
+
         flow.Controls.Add(options);
 
         return tab;
@@ -1708,6 +1714,13 @@ public sealed class MainForm : Form
                     "Bluetooth 전송 실패/지연으로 노트북 입력으로 복귀했습니다. 서비스는 유지하며 재연결을 기다립니다."));
             }
         }
+    }
+
+    private async Task ConfigureP2PFirewallAsync()
+    {
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(45));
+        await P2PFirewallSupport.ConfigureAsync(timeout.Token);
+        Log($"Windows 방화벽 P2P 허용 완료 · TCP {P2PFirewallSupport.Port}");
     }
 
     private Task ApplyLocalUpdateAsync()
