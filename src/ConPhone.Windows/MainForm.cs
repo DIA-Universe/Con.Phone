@@ -355,7 +355,7 @@ public sealed class MainForm : Form
         devices.Controls.Add(SectionTitle("연결된 휴대폰"));
         devices.Controls.Add(Help(
             $"최대 {TrustedDeviceStore.MaxDevices}대까지 등록할 수 있습니다. ▶ 표시가 현재 활성 대상입니다. " +
-            "K/M은 키보드·마우스 구독, LOCK은 보조 System Control 구독 상태입니다."));
+            "K/M은 키보드·마우스 구독, LOCK은 보조 잠금, MEDIA는 미디어키 구독 상태입니다."));
         devices.Controls.Add(_peers);
         devices.Controls.Add(Row(
             ActionButton("목록 갱신", () => RefreshPeersAsync(false)),
@@ -422,6 +422,20 @@ public sealed class MainForm : Form
                 return Task.CompletedTask;
             })));
         flow.Controls.Add(keyboard);
+
+        var special = Section(190);
+        special.Controls.Add(SectionTitle("특수키 / 미디어"));
+        special.Controls.Add(Help(
+            "표준 HID Consumer Control을 사용합니다. 기기가 MEDIA report를 구독해야 동작합니다."));
+        special.Controls.Add(Row(
+            ActionButton("재생 / 일시정지", () => SendConsumerActionAsync(ConsumerAction.PlayPause), primary: true),
+            ActionButton("이전 곡", () => SendConsumerActionAsync(ConsumerAction.PreviousTrack)),
+            ActionButton("다음 곡", () => SendConsumerActionAsync(ConsumerAction.NextTrack))));
+        special.Controls.Add(Row(
+            ActionButton("음소거", () => SendConsumerActionAsync(ConsumerAction.Mute)),
+            ActionButton("볼륨 -", () => SendConsumerActionAsync(ConsumerAction.VolumeDown)),
+            ActionButton("볼륨 +", () => SendConsumerActionAsync(ConsumerAction.VolumeUp))));
+        flow.Controls.Add(special);
 
         var hotkeys = Section(305);
         hotkeys.Controls.Add(SectionTitle("단축키"));
@@ -786,7 +800,8 @@ public sealed class MainForm : Form
             var emergency = HotkeyCatalog.Display(_settings.EmergencyHotkey);
             _state.Text = _input.IsRemote
                 ? $"휴대폰 조작 중 · {emergency}로 즉시 복귀"
-                : $"노트북 조작 중 · 검색:{_ble.Advertisement} · K:{_ble.KeyboardSubscribers} M:{_ble.MouseSubscribers} LOCK:{_ble.SystemSubscribers} · 승인:{(_ble.Ready ? "준비됨" : "대기")}";
+                : $"노트북 조작 중 · 검색:{_ble.Advertisement} · K:{_ble.KeyboardSubscribers} M:{_ble.MouseSubscribers} " +
+                  $"LOCK:{_ble.SystemSubscribers} MEDIA:{_ble.ConsumerSubscribers} · 승인:{(_ble.Ready ? "준비됨" : "대기")}";
 
             _tray.Text = _input.IsRemote
                 ? $"Con.Phone · 휴대폰 입력 / {emergency} 복귀"
@@ -1322,6 +1337,16 @@ public sealed class MainForm : Form
         _lastSentClipboardHash = content.Hash;
     }
 
+    private async Task SendConsumerActionAsync(ConsumerAction action)
+    {
+        if (!_ble.Ready)
+            throw new InvalidOperationException("미디어키를 보낼 활성 휴대폰 연결이 없습니다.");
+
+        using var timeout = new CancellationTokenSource(TimeSpan.FromMilliseconds(1500));
+        await _ble.SendConsumerAsync(action, timeout.Token);
+        Log($"미디어키 전송 · {action}");
+    }
+
     private async Task LockPhoneAndReturnAsync()
     {
         ImmediateLocal();
@@ -1548,6 +1573,7 @@ public sealed class MainForm : Form
             KeyboardSubscribers = _ble.KeyboardSubscribers,
             MouseSubscribers = _ble.MouseSubscribers,
             SystemSubscribers = _ble.SystemSubscribers,
+            ConsumerSubscribers = _ble.ConsumerSubscribers,
             ApprovedAndSubscribed = _ble.Ready,
             TrustedDeviceCount = _ble.TrustedDeviceCount,
             ActiveDeviceFingerprint = _ble.ApprovedId is { } activeDeviceId
