@@ -38,6 +38,45 @@ public sealed record DirectLinkConfig(
     }
 }
 
+public static class DirectLinkCredentialStore
+{
+    private const string Resource = "ConPhone.DirectLink";
+
+    public static DirectLinkConfig GetOrCreate()
+    {
+        var vault = new PasswordVault();
+        try
+        {
+            var existing = vault.FindAllByResource(Resource).FirstOrDefault();
+            if (existing is not null)
+            {
+                existing.RetrievePassword();
+                if (!string.IsNullOrWhiteSpace(existing.UserName) &&
+                    !string.IsNullOrWhiteSpace(existing.Password))
+                    return new DirectLinkConfig(existing.UserName, existing.Password);
+            }
+        }
+        catch (Exception)
+        {
+        }
+
+        var suffix = Convert.ToHexString(RandomNumberGenerator.GetBytes(3));
+        var ssid = $"DIRECT-CP-{suffix}";
+        var passphrase = DirectClipboardLink.CreatePassphraseValue();
+
+        try
+        {
+            vault.Add(new PasswordCredential(Resource, ssid, passphrase));
+        }
+        catch (Exception)
+        {
+            // If Password Vault is unavailable, this session still gets an ephemeral direct link.
+        }
+
+        return new DirectLinkConfig(ssid, passphrase);
+    }
+}
+
 public sealed class DirectClipboardLink : IDisposable
 {
     private WiFiDirectAdvertisementPublisher? _publisher;
@@ -62,9 +101,7 @@ public sealed class DirectClipboardLink : IDisposable
         }
 
         _baselineIpv4 = CurrentIpv4();
-        var suffix = Convert.ToHexString(RandomNumberGenerator.GetBytes(3));
-        var passphrase = CreatePassphrase();
-        var config = new DirectLinkConfig($"DIRECT-CP-{suffix}", passphrase);
+        var config = DirectLinkCredentialStore.GetOrCreate();
 
         var publisher = new WiFiDirectAdvertisementPublisher();
         publisher.Advertisement.IsAutonomousGroupOwnerEnabled = true;
@@ -159,7 +196,7 @@ public sealed class DirectClipboardLink : IDisposable
         return result;
     }
 
-    private static string CreatePassphrase()
+    internal static string CreatePassphraseValue()
     {
         // WPA2 personal passphrase: ASCII 8-63 characters.
         const string alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789";
