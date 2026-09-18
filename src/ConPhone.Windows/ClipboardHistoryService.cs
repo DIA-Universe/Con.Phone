@@ -286,6 +286,7 @@ public sealed class ClipboardHistoryService : IDisposable
 
             using var stream = new MemoryStream(content.Data, writable: false);
             using var source = Image.FromStream(stream, useEmbeddedColorManagement: true, validateImageData: true);
+            EnsureSafeImageDimensions(source.Width, source.Height);
             using var copy = new Bitmap(source);
             Clipboard.SetImage(copy);
             AddImage(copy, publish: false);
@@ -306,6 +307,14 @@ public sealed class ClipboardHistoryService : IDisposable
         }
 
         return false;
+    }
+
+    private static void EnsureSafeImageDimensions(int width, int height)
+    {
+        if (width <= 0 || height <= 0 ||
+            (long)width * height > 40_000_000L)
+            throw new InvalidDataException(
+                $"이미지 해상도가 안전 한도(40MP)를 초과합니다: {width}x{height}");
     }
 
     public bool Restore(string id)
