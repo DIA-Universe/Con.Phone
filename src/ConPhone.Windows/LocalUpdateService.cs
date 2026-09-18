@@ -6,7 +6,9 @@ namespace ConPhone.Windows;
 public sealed record UpdateCandidate(
     string Path,
     Version Version,
-    long SizeBytes);
+    long SizeBytes,
+    string Sha256,
+    bool ChecksumVerified);
 
 public static class LocalUpdateService
 {
@@ -29,7 +31,39 @@ public static class LocalUpdateService
         if (file.Length < 1024 * 1024)
             throw new InvalidOperationException("업데이트 실행 파일 크기가 비정상적으로 작습니다.");
 
-        return new UpdateCandidate(path, version, file.Length);
+        var sha256 = Convert.ToHexString(
+            System.Security.Cryptography.SHA256.HashData(
+                File.ReadAllBytes(path)));
+
+        var checksumPath = path + ".sha256";
+        var checksumVerified = false;
+
+        if (File.Exists(checksumPath))
+        {
+            var expected = File.ReadAllText(checksumPath)
+                .Trim()
+                .Split([' ', '\t'], StringSplitOptions.RemoveEmptyEntries)
+                .FirstOrDefault();
+
+            if (expected is null ||
+                expected.Length != 64 ||
+                !expected.All(Uri.IsHexDigit))
+                throw new InvalidOperationException(
+                    "업데이트 SHA-256 파일 형식이 올바르지 않습니다.");
+
+            if (!string.Equals(expected, sha256, StringComparison.OrdinalIgnoreCase))
+                throw new InvalidOperationException(
+                    "업데이트 SHA-256이 일치하지 않습니다. 파일을 적용하지 않습니다.");
+
+            checksumVerified = true;
+        }
+
+        return new UpdateCandidate(
+            path,
+            version,
+            file.Length,
+            sha256,
+            checksumVerified);
     }
 
     public static string Stage(UpdateCandidate candidate)
