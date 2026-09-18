@@ -230,7 +230,9 @@ public sealed class RelayClipboardTransport : IAsyncDisposable
 
             do
             {
-                result = await socket.ReceiveAsync(buffer, token).ConfigureAwait(false);
+                result = await socket.ReceiveAsync(
+                    new ArraySegment<byte>(buffer),
+                    token).ConfigureAwait(false);
                 if (result.MessageType == WebSocketMessageType.Close)
                     return;
                 if (result.MessageType != WebSocketMessageType.Binary)
