@@ -662,17 +662,22 @@ public sealed class MainForm : Form
             return;
         }
 
-        using var timeout = new CancellationTokenSource(TimeSpan.FromMilliseconds(900));
+        using var timeout = new CancellationTokenSource(TimeSpan.FromMilliseconds(1400));
         try
         {
-            await _ble.TapKeyboardUsageAsync(Hid.KeyboardPowerUsage, timeout.Token);
-            await _ble.SendAsync(new(false, new byte[Hid.MouseReportLength]), () => true, timeout.Token);
-            Log("휴대폰에 Power 키를 보내고 노트북 입력으로 복귀했습니다. 기기에서 Power HID를 지원하지 않으면 화면은 그대로일 수 있습니다.");
+            await _ble.SendSystemPowerAsync(timeout.Token);
+            await ReleaseAsync();
+            Log("Android KEYCODE_POWER에 매핑되는 HID System Power Down을 보내고 노트북으로 복귀했습니다.");
+        }
+        catch (NotSupportedException ex)
+        {
+            _lastError = $"LockReturn:{ex.GetType().Name}:0x{ex.HResult:X8}";
+            Log(ex.Message);
         }
         catch (Exception ex)
         {
             _lastError = $"LockReturn:{ex.GetType().Name}:0x{ex.HResult:X8}";
-            Log("노트북 입력으로는 복귀했지만 휴대폰 화면 잠금 전송을 확인하지 못했습니다.");
+            Log("노트북 입력으로는 복귀했지만 휴대폰 잠금 전송에 실패했습니다. 진단의 HID S 구독 값을 확인해 주세요.");
         }
     }
 
@@ -724,6 +729,9 @@ public sealed class MainForm : Form
     }
     private async Task PumpAsync()
     {
+        long lastPointerSend = 0;
+        const double pointerIntervalMs = 12.0;
+
         while (!_lifetime.IsCancellationRequested)
         {
             try
@@ -731,9 +739,21 @@ public sealed class MainForm : Form
                 var envelope = await _outbox.TakeAsync(_lifetime.Token);
                 foreach (var report in Hid.Encode(envelope.Packet))
                 {
+                    if (!report.Keyboard && lastPointerSend != 0)
+                    {
+                        var elapsedMs = (Stopwatch.GetTimestamp() - lastPointerSend) * 1000.0 / Stopwatch.Frequency;
+                        var remaining = pointerIntervalMs - elapsedMs;
+                        if (remaining > 0.5)
+                            await Task.Delay(TimeSpan.FromMilliseconds(remaining), _lifetime.Token);
+                    }
+
                     using var timeout = CancellationTokenSource.CreateLinkedTokenSource(_lifetime.Token);
-                    timeout.CancelAfter(750);
-                    await _ble.SendAsync(report, () => envelope.Epoch == Volatile.Read(ref _epoch) && _input.IsRemote, timeout.Token);
+                    timeout.CancelAfter(900);
+                    await _ble.SendAsync(report,
+                        () => envelope.Epoch == Volatile.Read(ref _epoch) && _input.IsRemote,
+                        timeout.Token);
+
+                    if (!report.Keyboard) lastPointerSend = Stopwatch.GetTimestamp();
                     Interlocked.Increment(ref _sent);
                 }
             }
@@ -742,7 +762,7 @@ public sealed class MainForm : Form
             {
                 ImmediateLocal();
                 _lastError = $"Send:{ex.GetType().Name}:0x{ex.HResult:X8}";
-                Post(() => Log("Bluetooth 전송 실패/지연으로 노트북 입력으로 복귀했습니다. 서비스는 유지하므로 연결 상태를 확인한 뒤 다시 전환할 수 있습니다."));
+                Post(() => Log("Bluetooth 전송이 지연되어 노트북 입력으로 복귀했습니다. HID 서비스는 유지합니다. 반복되면 진단 파일을 저장해 주세요."));
             }
         }
     }
@@ -752,15 +772,18 @@ public sealed class MainForm : Form
         if (dialog.ShowDialog(this) != DialogResult.OK) return;
         var report = new
         {
-            Version = "0.2.0", OS = Environment.OSVersion.Version.ToString(), Runtime = Environment.Version.ToString(),
+            Version = "0.2.1", OS = Environment.OSVersion.Version.ToString(), Runtime = Environment.Version.ToString(),
             TargetProfile = _profile.SelectedIndex == 0 ? "Android" : "iPhone", Bluetooth = await BleHidServer.DiagnoseAsync(),
-            Advertisement = _ble.Advertisement, BleLastOperation = _ble.LastOperation, KeyboardSubscribers = _ble.KeyboardSubscribers, MouseSubscribers = _ble.MouseSubscribers, ApprovedAndSubscribed = _ble.Ready,
+            Advertisement = _ble.Advertisement, BleLastOperation = _ble.LastOperation,
+            KeyboardSubscribers = _ble.KeyboardSubscribers, MouseSubscribers = _ble.MouseSubscribers, SystemSubscribers = _ble.SystemSubscribers,
+            ApprovedAndSubscribed = _ble.Ready,
             SendOperations = Interlocked.Read(ref _sent), Pending = _outbox.Count, LastError = _lastError,
             MouseSpeedPercent = _settings.MouseSpeedPercent, ScrollSpeedPercent = _settings.ScrollSpeedPercent,
             ToggleHotkey = HotkeyCatalog.Display(_settings.ToggleHotkey), EmergencyHotkey = HotkeyCatalog.Display(_settings.EmergencyHotkey),
             LockAndReturnHotkey = HotkeyCatalog.Display(_settings.LockAndReturnHotkey),
             ClipboardEntries = _clipboard?.Entries.Count ?? 0,
-            AndroidHardwareTest = "Phone lock HID Power is device-dependent and requires hardware validation.", IPhoneHardwareTest = "Not performed",
+            PointerPacingMs = 12,
+            AndroidHardwareTest = "System Power Down report maps to Android KEYCODE_POWER; host subscription and hardware behavior remain device-dependent.", IPhoneHardwareTest = "Not performed",
             Privacy = "Diagnostic export excludes clipboard contents, typed keys, pairing codes, device names and Bluetooth addresses. Clipboard history itself is stored locally under LocalAppData."
         };
         await File.WriteAllTextAsync(dialog.FileName, JsonSerializer.Serialize(report, new JsonSerializerOptions { WriteIndented = true }));
