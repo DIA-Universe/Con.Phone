@@ -407,6 +407,16 @@ public sealed class BleHidServer : IDisposable
         if (!OperatingSystem.IsWindowsVersionAtLeast(10, 0, 22000))
             return;
 
+        // Windows documents that ThroughputOptimized can reduce the number of
+        // concurrent BLE connections. Preserve multi-host stability when more
+        // than one keyboard/mouse host is already subscribed.
+        if (Math.Max(KeyboardSubscribers, MouseSubscribers) > 1)
+        {
+            Status?.Invoke(
+                $"다중기기 연결 유지 · throughput 강제 없이 {MousePacingIntervalMs}ms pacing");
+            return;
+        }
+
         try
         {
             if (_throughputRequests.ContainsKey(id))
