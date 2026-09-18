@@ -89,7 +89,7 @@ public static class DirectLinkCredentialStore
     {
         var raw = string.IsNullOrWhiteSpace(linkName) ? "ConPhone" : linkName.Trim();
         var safe = new string(raw
-            .Where(ch => char.IsLetterOrDigit(ch) || ch is '-' or '_' or '.')
+            .Where(ch => (ch is >= 'A' and <= 'Z') || (ch is >= 'a' and <= 'z') || (ch is >= '0' and <= '9') || ch is '-' or '_' or '.')
             .Take(18)
             .ToArray());
 
