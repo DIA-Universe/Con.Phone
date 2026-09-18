@@ -5,6 +5,7 @@ on:
   workflow_dispatch:
 permissions:
   contents: read
+  pull-requests: write
 jobs:
   build:
     runs-on: windows-latest
@@ -71,6 +72,17 @@ jobs:
           path: ${{ runner.temp }}/ConPhone-win-x64/ConPhone.exe
           if-no-files-found: error
           retention-days: 14
+      - name: Report successful single-EXE build to PR
+        if: success() && github.event_name == 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          $exe = Join-Path $env:RUNNER_TEMP 'ConPhone-win-x64\ConPhone.exe'
+          $hash = (Get-FileHash $exe -Algorithm SHA256).Hash
+          $size = (Get-Item $exe).Length
+          $body = "ConPhone single-EXE build succeeded.`n`nrun_id=$env:GITHUB_RUN_ID`nartifact=ConPhone-win-x64-single-exe`nsize=$size`nsha256=$hash"
+          gh pr comment $env:PR_NUMBER --repo $env:GITHUB_REPOSITORY --body $body
       - name: Upload exact source archive
         if: always()
         uses: actions/upload-artifact@v4
