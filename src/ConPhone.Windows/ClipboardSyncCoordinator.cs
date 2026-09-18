@@ -8,7 +8,7 @@ public sealed class ClipboardSyncCoordinator : IAsyncDisposable
     private readonly Func<bool> _enabled;
     private readonly DirectClipboardLink _direct;
     private readonly BleClipboardService _ble;
-    private readonly LanClipboardServer _lan;
+    private readonly P2PClipboardServer _p2p;
     private readonly SemaphoreSlim _send = new(1, 1);
     private bool _started;
 
@@ -28,18 +28,18 @@ public sealed class ClipboardSyncCoordinator : IAsyncDisposable
             trustedDevice,
             enabled,
             GetDirectLinkConfig);
-        _lan = new LanClipboardServer(approvedDeviceId, enabled);
+        _p2p = new P2PClipboardServer(approvedDeviceId, enabled);
 
         _direct.Status += text => Status?.Invoke(text);
         _ble.Status += text => Status?.Invoke(text);
-        _lan.Status += text => Status?.Invoke(text);
+        _p2p.Status += text => Status?.Invoke(text);
         _ble.Received += OnReceived;
-        _lan.Received += OnReceived;
+        _p2p.Received += OnReceived;
     }
 
     public int BleSubscribers => _ble.Subscribers;
     public bool P2PLinkRunning => _direct.Running;
-    public bool P2PChannelConnected => _lan.Connected;
+    public bool P2PChannelConnected => _p2p.Connected;
     public string? P2PHostAddress => _direct.Config?.HostAddress;
 
     public Task PrepareBleAsync() => _ble.PrepareAsync();
@@ -51,7 +51,7 @@ public sealed class ClipboardSyncCoordinator : IAsyncDisposable
             _started = true;
             try
             {
-                await _lan.StartAsync().ConfigureAwait(false);
+                await _p2p.StartAsync().ConfigureAwait(false);
             }
             catch (Exception ex)
             {
@@ -72,7 +72,7 @@ public sealed class ClipboardSyncCoordinator : IAsyncDisposable
 
     public void TargetChanged()
     {
-        _lan.Deactivate();
+        _p2p.Deactivate();
         _direct.Stop();
         Status?.Invoke("활성 휴대폰 변경 · P2P 채널을 새 대상으로 재설정합니다.");
     }
@@ -87,7 +87,7 @@ public sealed class ClipboardSyncCoordinator : IAsyncDisposable
 
         _ble.StopAdvertising();
         _direct.Stop();
-        _lan.Deactivate();
+        _p2p.Deactivate();
         Status?.Invoke("기기간 복붙 비활성화 · Bluetooth/P2P 연결 중지");
     }
 
@@ -125,11 +125,11 @@ public sealed class ClipboardSyncCoordinator : IAsyncDisposable
         await _send.WaitAsync(token).ConfigureAwait(false);
         try
         {
-            if (_lan.HasClient(id))
+            if (_p2p.HasClient(id))
             {
                 try
                 {
-                    await _lan.SendAsync(id, content, token).ConfigureAwait(false);
+                    await _p2p.SendAsync(id, content, token).ConfigureAwait(false);
                     Status?.Invoke($"Clipboard 전송 완료 · P2P · {Describe(content)}");
                     return true;
                 }
@@ -143,23 +143,23 @@ public sealed class ClipboardSyncCoordinator : IAsyncDisposable
                 content.Kind == ClipboardContentKind.TextUtf8 ||
                 content.Data.Length <= bleImageLimitBytes;
 
-            if (!bleAllowed && !_lan.HasClient(id))
+            if (!bleAllowed && !_p2p.HasClient(id))
             {
                 _ = GetDirectLinkConfig();
                 Status?.Invoke("큰 이미지 전송을 위해 P2P 고속 링크 연결을 기다립니다.");
 
                 var deadline = DateTimeOffset.UtcNow + TimeSpan.FromSeconds(8);
-                while (!_lan.HasClient(id) && DateTimeOffset.UtcNow < deadline)
+                while (!_p2p.HasClient(id) && DateTimeOffset.UtcNow < deadline)
                 {
                     token.ThrowIfCancellationRequested();
                     await Task.Delay(125, token).ConfigureAwait(false);
                 }
 
-                if (_lan.HasClient(id))
+                if (_p2p.HasClient(id))
                 {
                     try
                     {
-                        await _lan.SendAsync(id, content, token).ConfigureAwait(false);
+                        await _p2p.SendAsync(id, content, token).ConfigureAwait(false);
                         Status?.Invoke($"Clipboard 전송 완료 · P2P · {Describe(content)}");
                         return true;
                     }
@@ -214,7 +214,7 @@ public sealed class ClipboardSyncCoordinator : IAsyncDisposable
 
     public async ValueTask DisposeAsync()
     {
-        await _lan.DisposeAsync().ConfigureAwait(false);
+        await _p2p.DisposeAsync().ConfigureAwait(false);
         _ble.Dispose();
         _direct.Dispose();
         _send.Dispose();
