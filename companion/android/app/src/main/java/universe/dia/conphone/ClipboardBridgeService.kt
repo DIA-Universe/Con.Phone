@@ -326,10 +326,18 @@ class ClipboardBridgeService : Service() {
                 directConfig = parseDirectConfig(value)
                 if (directConfig != null) {
                     directConfigReadAttempts = 0
-                    showStatus("P2P 고속 링크 준비됨 · 직접 연결 요청")
-                    main.postDelayed({
-                        if (lan?.ready != true) requestDirectNetwork()
-                    }, 300)
+                    val direct = p2pNetwork
+                    if (direct != null && lan?.ready != true) {
+                        executor.execute {
+                            runCatching { connectDirectChannel(direct) }
+                                .onFailure { showStatus("P2P TCP 연결 재시도 실패 · BLE fallback 유지") }
+                        }
+                    } else {
+                        showStatus("P2P 고속 링크 준비됨 · 직접 연결 요청")
+                        main.postDelayed({
+                            if (lan?.ready != true) requestDirectNetwork()
+                        }, 300)
+                    }
                 } else {
                     retryDirectLinkRead()
                 }
@@ -457,13 +465,28 @@ class ClipboardBridgeService : Service() {
                 showStatus("P2P Wi-Fi 링크 연결됨 · 보안 채널 승격 중")
                 executor.execute {
                     runCatching { connectDirectChannel(network) }
-                        .onFailure { showStatus("P2P 데이터 채널 연결 실패 · BLE fallback 유지: ${it.message}") }
+                        .onFailure {
+                            showStatus("P2P 데이터 채널 연결 실패 · 주소 재확인: ${it.message}")
+                            main.postDelayed({ retryDirectLinkRead() }, 500)
+                        }
                 }
             }
 
             override fun onLost(network: Network) {
                 if (p2pNetwork == network) p2pNetwork = null
-                if (lan == null) showStatus("P2P 링크 종료 · BLE fallback 유지")
+                lan?.close()
+                lan = null
+
+                if (directNetworkCallback === this) {
+                    directNetworkCallback = null
+                    runCatching { connectivity.unregisterNetworkCallback(this) }
+                }
+
+                showStatus("P2P 링크 종료 · BLE fallback 유지")
+                main.postDelayed({
+                    if (gatt != null && directConfig != null)
+                        requestDirectNetwork()
+                }, 1500)
             }
 
             override fun onUnavailable() {
