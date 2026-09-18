@@ -70,7 +70,6 @@ internal static class WindowsSmoke
                 settings.PersistClipboardHistory=false;await clip.ConfigureAsync(settings);
                 Check("turning off persistence removes encrypted history",!File.Exists(encrypted));
                 await clip.RestoreAsync(clip.Entries[0].Id);
-                // Preserve exclusion markers used by sensitive clipboard producers.
                 var privateData=new DataObject();privateData.SetText("DO NOT RECORD THIS TEST",TextDataFormat.UnicodeText);
                 privateData.SetData("ExcludeClipboardContentFromMonitorProcessing",new MemoryStream([1,0,0,0]));
                 Clipboard.SetDataObject(privateData,true);await Task.Delay(400);
@@ -84,9 +83,13 @@ internal static class WindowsSmoke
                         form.ClientSize=viewport;
                         foreach(string page in new[]{"connection","input","clipboard","diagnostics"})
                         {
-                            form.ShowPage(page);await Task.Delay(160);form.PerformLayout();
+                            form.ShowPage(page);ScrollPages(form,false);await Task.Delay(160);form.PerformLayout();
                             Capture(form,Path.Combine(output,$"{page}-{viewport.Width}.png"));
                             Check($"no horizontal layout overflow {page}/{viewport.Width}",NoHorizontalOverflow(form));
+                            ScrollPages(form,true);await Task.Delay(100);
+                            Capture(form,Path.Combine(output,$"{page}-{viewport.Width}-bottom.png"));
+                            Check($"scrolled controls fit {page}/{viewport.Width}",NoHorizontalOverflow(form));
+                            ScrollPages(form,false);
                         }
                     }
                     foreach(float scale in new[]{1.5f,2f})
@@ -96,6 +99,9 @@ internal static class WindowsSmoke
                         enlarged.ShowPage("input");await Task.Delay(200);
                         Capture(enlarged,Path.Combine(output,$"input-logical-scale-{scale}.png"));
                         Check($"scaled layout overflow {scale}",NoHorizontalOverflow(enlarged));
+                        ScrollPages(enlarged,true);await Task.Delay(100);
+                        Capture(enlarged,Path.Combine(output,$"input-logical-scale-{scale}-bottom.png"));
+                        Check($"scaled scrolled layout {scale}",NoHorizontalOverflow(enlarged));
                         enlarged.TestExit();await Wait(()=>enlarged.IsDisposed);
                     }
                 }
@@ -117,6 +123,16 @@ internal static class WindowsSmoke
             }
         };
         Application.Run(form);return code;
+    }
+    private static void ScrollPages(Control parent,bool bottom)
+    {
+        foreach(Control child in parent.Controls)
+        {
+            if(!child.Visible) continue;
+            if(child is Panel panel && child is not TableLayoutPanel && panel.AutoScroll)
+                panel.AutoScrollPosition=bottom ? new Point(0,panel.DisplayRectangle.Height) : Point.Empty;
+            ScrollPages(child,bottom);
+        }
     }
     private static void Capture(Form form,string path)
     {
