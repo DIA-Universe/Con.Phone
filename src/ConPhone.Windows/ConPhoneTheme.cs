@@ -136,7 +136,7 @@ public sealed class ConPhoneButton : Button
     }
 }
 
-public sealed class ConPhoneCard : Panel
+public sealed class ConPhoneCard : FlowLayoutPanel
 {
     public int Radius { get; set; } = 16;
     public Color BorderColor { get; set; } = ConPhoneTheme.Stroke;
@@ -146,6 +146,10 @@ public sealed class ConPhoneCard : Panel
         BackColor = ConPhoneTheme.Surface;
         Padding = new Padding(20);
         Margin = new Padding(0, 0, 0, 16);
+        FlowDirection = FlowDirection.TopDown;
+        WrapContents = false;
+        AutoSize = true;
+        AutoSizeMode = AutoSizeMode.GrowAndShrink;
         SetStyle(ControlStyles.UserPaint | ControlStyles.AllPaintingInWmPaint |
                  ControlStyles.OptimizedDoubleBuffer | ControlStyles.ResizeRedraw, true);
     }
