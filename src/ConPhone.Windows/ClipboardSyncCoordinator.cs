@@ -9,6 +9,7 @@ public sealed class ClipboardSyncCoordinator : IAsyncDisposable
     private readonly DirectClipboardLink _direct;
     private readonly BleClipboardService _ble;
     private readonly LanClipboardServer _lan;
+    private readonly RelayClipboardTransport _relay;
     private readonly SemaphoreSlim _send = new(1, 1);
     private bool _started;
 
@@ -17,22 +18,31 @@ public sealed class ClipboardSyncCoordinator : IAsyncDisposable
 
     public ClipboardSyncCoordinator(
         Func<string?> approvedDeviceId,
-        Func<bool> enabled)
+        Func<bool> enabled,
+        Func<bool> relayEnabled,
+        Func<string?> relayUrl)
     {
         _approvedDeviceId = approvedDeviceId;
         _enabled = enabled;
         _direct = new DirectClipboardLink();
         _ble = new BleClipboardService(approvedDeviceId, enabled, () => _direct.Config);
         _lan = new LanClipboardServer(approvedDeviceId, enabled);
+        _relay = new RelayClipboardTransport(
+            approvedDeviceId,
+            () => enabled() && relayEnabled(),
+            relayUrl);
 
         _direct.Status += text => Status?.Invoke(text);
         _ble.Status += text => Status?.Invoke(text);
         _lan.Status += text => Status?.Invoke(text);
+        _relay.Status += text => Status?.Invoke(text);
         _ble.Received += OnReceived;
         _lan.Received += OnReceived;
+        _relay.Received += OnReceived;
     }
 
     public int BleSubscribers => _ble.Subscribers;
+    public bool RelayConnected => _relay.Connected;
 
     public Task PrepareBleAsync() => _ble.PrepareAsync();
 
@@ -68,6 +78,8 @@ public sealed class ClipboardSyncCoordinator : IAsyncDisposable
         {
             Status?.Invoke($"Clipboard BLE fallback 시작 실패: {ex.Message}");
         }
+
+        await _relay.StartAsync().ConfigureAwait(false);
     }
 
     public async Task SetActiveAsync(bool active)
@@ -81,7 +93,8 @@ public sealed class ClipboardSyncCoordinator : IAsyncDisposable
         _ble.StopAdvertising();
         _direct.Stop();
         _lan.Deactivate();
-        Status?.Invoke("기기간 복붙 비활성화 · Bluetooth/P2P 검색 신호 중지");
+        await _relay.StopConnectionAsync().ConfigureAwait(false);
+        Status?.Invoke("기기간 복붙 비활성화 · Bluetooth/P2P/Relay 연결 중지");
     }
 
     public async Task<bool> SendAsync(
@@ -136,7 +149,21 @@ public sealed class ClipboardSyncCoordinator : IAsyncDisposable
             else if (!bleAllowed)
             {
                 Status?.Invoke(
-                    $"이미지 {content.Data.Length / 1024:N0} KiB는 BLE 제한을 초과했습니다. LAN/P2P 연결을 기다립니다.");
+                    $"이미지 {content.Data.Length / 1024:N0} KiB는 BLE 제한을 초과했습니다. LAN/P2P 또는 Relay를 확인합니다.");
+            }
+
+            if (_relay.Connected)
+            {
+                try
+                {
+                    await _relay.SendAsync(id, content, token).ConfigureAwait(false);
+                    Status?.Invoke($"Clipboard 전송 완료 · Relay(E2E) · {Describe(content)}");
+                    return true;
+                }
+                catch (Exception ex)
+                {
+                    Status?.Invoke($"Clipboard Relay 전송 실패: {ex.Message}");
+                }
             }
 
             return false;
@@ -165,6 +192,7 @@ public sealed class ClipboardSyncCoordinator : IAsyncDisposable
     public async ValueTask DisposeAsync()
     {
         await _lan.DisposeAsync().ConfigureAwait(false);
+        await _relay.DisposeAsync().ConfigureAwait(false);
         _ble.Dispose();
         _direct.Dispose();
         _send.Dispose();
