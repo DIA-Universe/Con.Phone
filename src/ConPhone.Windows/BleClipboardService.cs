@@ -72,6 +72,7 @@ public sealed class BleClipboardService : IDisposable
     public static readonly Guid DirectLinkUuid = Guid.Parse("67A7F006-7E5B-4A2E-9B8B-1C9A5B6D1001");
 
     private readonly Func<string?> _approvedDeviceId;
+    private readonly Func<string, bool> _trustedDevice;
     private readonly Func<bool> _enabled;
     private readonly Func<DirectLinkConfig?> _directLinkConfig;
     private readonly SemaphoreSlim _sendGate = new(1, 1);
@@ -91,10 +92,12 @@ public sealed class BleClipboardService : IDisposable
 
     public BleClipboardService(
         Func<string?> approvedDeviceId,
+        Func<string, bool> trustedDevice,
         Func<bool> enabled,
         Func<DirectLinkConfig?> directLinkConfig)
     {
         _approvedDeviceId = approvedDeviceId;
+        _trustedDevice = trustedDevice;
         _enabled = enabled;
         _directLinkConfig = directLinkConfig;
     }
@@ -206,7 +209,7 @@ public sealed class BleClipboardService : IDisposable
             if (request is null) return;
 
             var id = args.Session.DeviceId.Id;
-            if (!IsApproved(id))
+            if (!IsTrusted(id))
             {
                 request.RespondWithProtocolError(0x05);
                 return;
@@ -239,7 +242,7 @@ public sealed class BleClipboardService : IDisposable
             var request = await args.GetRequestAsync();
             if (request is null) return;
 
-            if (!IsApproved(args.Session.DeviceId.Id))
+            if (!IsTrusted(args.Session.DeviceId.Id))
             {
                 request.RespondWithProtocolError(0x05);
                 return;
@@ -264,7 +267,7 @@ public sealed class BleClipboardService : IDisposable
             var request = await args.GetRequestAsync();
             if (request is null) return;
 
-            if (!IsApproved(args.Session.DeviceId.Id))
+            if (!IsActive(args.Session.DeviceId.Id))
             {
                 request.RespondWithProtocolError(0x05);
                 return;
@@ -297,7 +300,7 @@ public sealed class BleClipboardService : IDisposable
             if (request is null) return;
 
             var id = args.Session.DeviceId.Id;
-            if (!IsApproved(id))
+            if (!IsActive(id))
             {
                 if (request.Option == GattWriteOption.WriteWithResponse)
                     request.RespondWithProtocolError(0x05);
@@ -362,7 +365,7 @@ public sealed class BleClipboardService : IDisposable
     public async Task SendAsync(string deviceId, ClipboardContent content, CancellationToken token)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
-        if (!IsApproved(deviceId))
+        if (!IsActive(deviceId))
             throw new InvalidOperationException("승인된 기기에만 클립보드를 보낼 수 있습니다.");
 
         var client = LiveClients(_tx).FirstOrDefault(x => SessionId(x) == deviceId)
@@ -397,7 +400,12 @@ public sealed class BleClipboardService : IDisposable
         }
     }
 
-    private bool IsApproved(string id) =>
+    private bool IsTrusted(string id) =>
+        _enabled() &&
+        !string.IsNullOrWhiteSpace(id) &&
+        _trustedDevice(id);
+
+    private bool IsActive(string id) =>
         _enabled() &&
         !string.IsNullOrWhiteSpace(id) &&
         string.Equals(_approvedDeviceId(), id, StringComparison.Ordinal);
