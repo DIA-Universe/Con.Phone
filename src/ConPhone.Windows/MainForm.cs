@@ -264,6 +264,7 @@ public sealed class MainForm : Form
                 id => _ble.IsTrustedDevice(id),
                 () => _settings.ClipboardSyncEnabled,
                 () => _input.IsRemote,
+                IsPointerRecentlyActive,
                 () => _settings.P2PLinkName);
             ConfigureTray();
             ConfigureRuntimeEvents();
@@ -1637,6 +1638,23 @@ public sealed class MainForm : Form
 
         if (!silent && peers.Count == 0)
             Log("HID 구독 기기가 없습니다. 휴대폰 Bluetooth 페어링과 '입력 장치' 상태를 확인하세요.");
+    }
+
+    private bool IsPointerRecentlyActive()
+    {
+        if (!_input.IsRemote)
+            return false;
+
+        var last = Interlocked.Read(ref _lastPointerSentTicks);
+        if (last == 0)
+            return false;
+
+        var elapsedMs =
+            (System.Diagnostics.Stopwatch.GetTimestamp() - last) *
+            1000.0 /
+            System.Diagnostics.Stopwatch.Frequency;
+
+        return elapsedMs < 350;
     }
 
     private async Task PacePointerAsync(
