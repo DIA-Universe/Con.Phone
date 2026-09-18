@@ -162,6 +162,7 @@ public sealed class ClipboardReassembler
     }
 
     private readonly Dictionary<Guid, Pending> _pending = [];
+    private readonly Dictionary<Guid, DateTimeOffset> _completed = [];
     private readonly TimeSpan _timeout;
 
     public ClipboardReassembler(TimeSpan? timeout = null) =>
@@ -169,7 +170,11 @@ public sealed class ClipboardReassembler
 
     public ClipboardContent? Add(ClipboardChunk chunk, DateTimeOffset? now = null)
     {
-        Cleanup(now ?? DateTimeOffset.UtcNow);
+        var at = now ?? DateTimeOffset.UtcNow;
+        Cleanup(at);
+
+        if (_completed.ContainsKey(chunk.TransferId))
+            throw new InvalidDataException("Clipboard transfer replay rejected.");
 
         if (!_pending.TryGetValue(chunk.TransferId, out var pending))
         {
@@ -179,7 +184,7 @@ public sealed class ClipboardReassembler
                 Count = chunk.Count,
                 TotalLength = chunk.TotalLength,
                 Hash = chunk.Hash.ToArray(),
-                Created = now ?? DateTimeOffset.UtcNow
+                Created = at
             };
             _pending.Add(chunk.TransferId, pending);
         }
@@ -202,6 +207,7 @@ public sealed class ClipboardReassembler
         }
 
         _pending.Remove(chunk.TransferId);
+        _completed[chunk.TransferId] = at;
         var bytes = output.ToArray();
         if (bytes.Length != pending.TotalLength ||
             !SHA256.HashData(bytes).SequenceEqual(pending.Hash))
@@ -217,6 +223,12 @@ public sealed class ClipboardReassembler
                      .Select(x => x.Key)
                      .ToArray())
             _pending.Remove(id);
+
+        foreach (var id in _completed
+                     .Where(x => now - x.Value > _timeout)
+                     .Select(x => x.Key)
+                     .ToArray())
+            _completed.Remove(id);
     }
 }
 
@@ -274,6 +286,7 @@ public static class BleFragmentCodec
 public sealed class BleFragmentReassembler
 {
     private readonly Dictionary<uint, (ushort Count, DateTimeOffset Created, Dictionary<ushort, byte[]> Parts)> _pending = [];
+    private readonly Dictionary<uint, DateTimeOffset> _completed = [];
     private readonly TimeSpan _timeout;
 
     public BleFragmentReassembler(TimeSpan? timeout = null) =>
@@ -284,6 +297,11 @@ public sealed class BleFragmentReassembler
         var at = now ?? DateTimeOffset.UtcNow;
         foreach (var id in _pending.Where(x => at - x.Value.Created > _timeout).Select(x => x.Key).ToArray())
             _pending.Remove(id);
+        foreach (var id in _completed.Where(x => at - x.Value > _timeout).Select(x => x.Key).ToArray())
+            _completed.Remove(id);
+
+        if (_completed.ContainsKey(fragment.TransferId))
+            throw new InvalidDataException("BLE clipboard fragment replay rejected.");
 
         if (!_pending.TryGetValue(fragment.TransferId, out var state))
         {
@@ -308,6 +326,7 @@ public sealed class BleFragmentReassembler
         }
 
         _pending.Remove(fragment.TransferId);
+        _completed[fragment.TransferId] = at;
         return output.ToArray();
     }
 }
