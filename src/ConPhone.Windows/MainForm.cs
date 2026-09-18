@@ -127,7 +127,39 @@ public sealed class MainForm : Form
         ForeColor = TextColor
     };
 
+    private readonly CheckBox _clipboardSyncEnabled = new()
+    {
+        Text = "기기간 복붙 사용",
+        AutoSize = true,
+        ForeColor = TextColor
+    };
+
+    private readonly CheckBox _clipboardSyncText = new()
+    {
+        Text = "텍스트 자동 전송",
+        AutoSize = true,
+        ForeColor = TextColor
+    };
+
+    private readonly CheckBox _clipboardSyncImages = new()
+    {
+        Text = "이미지 자동 전송",
+        AutoSize = true,
+        ForeColor = TextColor
+    };
+
+    private readonly NumericUpDown _clipboardBleImageLimit = new()
+    {
+        Minimum = 64,
+        Maximum = 4096,
+        Increment = 64,
+        Width = 90
+    };
+
     private ClipboardHistoryService? _clipboard;
+    private ClipboardSyncCoordinator? _clipboardSync;
+    private ClipboardContent? _latestLocalClipboard;
+    private string? _lastSentClipboardHash;
 
     private readonly NotifyIcon _tray = new()
     {
@@ -180,6 +212,7 @@ public sealed class MainForm : Form
         }
         else
         {
+            _clipboardSync = new ClipboardSyncCoordinator(() => _ble.ApprovedId);
             ConfigureTray();
             ConfigureRuntimeEvents();
             _pump = Task.Run(PumpAsync);
@@ -372,13 +405,13 @@ public sealed class MainForm : Form
         var flow = TabFlow();
         tab.Controls.Add(flow);
 
-        var info = Section(145, InfoWeak);
-        info.Controls.Add(SectionTitle("Windows 클립보드 기록"));
+        var info = Section(180, InfoWeak);
+        info.Controls.Add(SectionTitle("텍스트 · 이미지 기기간 복붙"));
         info.Controls.Add(Help(
-            "텍스트와 스크린샷/이미지를 이 PC에만 보관하고, 나중에 다시 Windows 클립보드로 복원해 다른 프로그램에 붙여넣을 수 있습니다.",
+            "PC에서 복사한 텍스트/이미지는 휴대폰으로 전환할 때 Companion으로 전달합니다. 같은 LAN/P2P가 있으면 암호화 고속 채널을 우선 사용하고, 없으면 텍스트와 작은 이미지를 Bluetooth LE로 보냅니다.",
             TextColor));
         info.Controls.Add(Help(
-            "휴대폰에서 복사한 실제 내용은 Bluetooth HID만으로 PC에 전달되지 않습니다. 휴대폰 → PC 자동 동기화는 Android 보조앱과 별도 데이터 채널이 필요합니다.",
+            "동일 Wi-Fi는 필수가 아닙니다. 휴대폰에는 Con.Phone Companion이 필요하며 파일/폴더 복사는 지원하지 않습니다.",
             Secondary));
         flow.Controls.Add(info);
 
@@ -397,6 +430,7 @@ public sealed class MainForm : Form
                 RestoreSelectedClipboard();
                 return Task.CompletedTask;
             }, primary: true),
+            ActionButton("휴대폰으로 보내기", SendSelectedClipboardToPhoneAsync),
             ActionButton("삭제", () =>
             {
                 DeleteSelectedClipboard();
@@ -409,10 +443,12 @@ public sealed class MainForm : Form
             })));
         flow.Controls.Add(history);
 
-        var options = Section(145);
-        options.Controls.Add(SectionTitle("기록 설정"));
+        var options = Section(245);
+        options.Controls.Add(SectionTitle("클립보드 · 동기화 설정"));
         options.Controls.Add(Row(_captureClipboardText, _captureClipboardImages));
+        options.Controls.Add(Row(_clipboardSyncEnabled, _clipboardSyncText, _clipboardSyncImages));
         options.Controls.Add(LabeledRow("최대 저장 개수", _clipboardLimit));
+        options.Controls.Add(LabeledRow("BLE 이미지 한도 (KiB)", _clipboardBleImageLimit));
         options.Controls.Add(ActionButton("클립보드 설정 저장", () =>
         {
             ApplyClipboardSettings(save: true);
@@ -659,6 +695,17 @@ public sealed class MainForm : Form
         });
 
         _ble.Status += text => Post(() => Log(text));
+
+        if (_clipboardSync is not null)
+        {
+            _clipboardSync.Status += text => Post(() => Log(text));
+            _clipboardSync.Received += content => Post(() =>
+            {
+                if (_clipboard?.ApplyRemote(content) == true)
+                    Log("휴대폰 클립보드를 Windows에 적용했습니다.");
+            });
+        }
+
         _ble.Changed += () =>
         {
             if (_input.IsRemote && !_ble.Ready)
@@ -698,6 +745,8 @@ public sealed class MainForm : Form
 
             _diagnosis.Text = await BleHidServer.DiagnoseAsync();
             await _ble.StartAsync();
+            if (_clipboardSync is not null)
+                await _clipboardSync.StartAsync();
 
             Log("Bluetooth HID 광고를 시작했습니다.");
             Log("0.2.1은 잠금용 System Control Report가 추가되어 LOCK:0이면 휴대폰에서 기존 PC 등록을 삭제하고 다시 페어링해 주세요.");
@@ -717,6 +766,17 @@ public sealed class MainForm : Form
 
             _clipboard.Changed += () => Post(RefreshClipboardList);
             _clipboard.Status += text => Post(() => Log(text));
+            _clipboard.ContentCaptured += content => Post(() =>
+            {
+                _latestLocalClipboard = content;
+                Log(content.Kind == ClipboardContentKind.TextUtf8
+                    ? "텍스트 복사 감지 · 휴대폰 전환 시 동기화 대기"
+                    : $"이미지 복사 감지 · {content.Data.Length / 1024.0:N1} KiB · 휴대폰 전환 시 동기화 대기");
+            });
+
+            if (_clipboard.TryGetLatestContent(out var latest))
+                _latestLocalClipboard = latest;
+
             _clipboard.CaptureNow();
             RefreshClipboardList();
         }
@@ -739,6 +799,10 @@ public sealed class MainForm : Form
         _clipboardLimit.Value = _settings.ClipboardHistoryLimit;
         _captureClipboardText.Checked = _settings.CaptureClipboardText;
         _captureClipboardImages.Checked = _settings.CaptureClipboardImages;
+        _clipboardSyncEnabled.Checked = _settings.ClipboardSyncEnabled;
+        _clipboardSyncText.Checked = _settings.ClipboardAutoSendText;
+        _clipboardSyncImages.Checked = _settings.ClipboardAutoSendImages;
+        _clipboardBleImageLimit.Value = _settings.ClipboardBleImageLimitKb;
 
         _mouseSpeedValue.Text = $"{_mouseSpeed.Value}%";
         _scrollSpeedValue.Text = $"{_scrollSpeed.Value}%";
@@ -865,6 +929,10 @@ public sealed class MainForm : Form
         _settings.ClipboardHistoryLimit = (int)_clipboardLimit.Value;
         _settings.CaptureClipboardText = _captureClipboardText.Checked;
         _settings.CaptureClipboardImages = _captureClipboardImages.Checked;
+        _settings.ClipboardSyncEnabled = _clipboardSyncEnabled.Checked;
+        _settings.ClipboardAutoSendText = _clipboardSyncText.Checked;
+        _settings.ClipboardAutoSendImages = _clipboardSyncImages.Checked;
+        _settings.ClipboardBleImageLimitKb = (int)_clipboardBleImageLimit.Value;
 
         _clipboard?.Configure(
             _settings.ClipboardHistoryLimit,
@@ -874,7 +942,7 @@ public sealed class MainForm : Form
         if (save)
         {
             SettingsStore.Save(_settings);
-            Log($"클립보드 기록 설정 저장 · 최대 {_settings.ClipboardHistoryLimit}개");
+            Log($"클립보드 설정 저장 · 최대 {_settings.ClipboardHistoryLimit}개 · 동기화:{_settings.ClipboardSyncEnabled} · BLE 이미지 {_settings.ClipboardBleImageLimitKb} KiB");
         }
     }
 
@@ -1067,10 +1135,65 @@ public sealed class MainForm : Form
         if (epoch != Volatile.Read(ref _epoch) || !_ble.Ready)
             return;
 
+        await SyncLatestClipboardToPhoneAsync();
+
         _pointerScaler.Reset();
         _input.Activate();
 
         Log($"휴대폰 입력 시작 · {HotkeyCatalog.Display(_settings.EmergencyHotkey)}로 즉시 복귀");
+    }
+
+    private async Task SyncLatestClipboardToPhoneAsync()
+    {
+        if (!_settings.ClipboardSyncEnabled ||
+            _clipboardSync is null ||
+            _latestLocalClipboard is null)
+            return;
+
+        var content = _latestLocalClipboard;
+        if (content.Hash == _lastSentClipboardHash)
+            return;
+
+        if (content.Kind == ClipboardContentKind.TextUtf8 && !_settings.ClipboardAutoSendText)
+            return;
+        if (content.Kind != ClipboardContentKind.TextUtf8 && !_settings.ClipboardAutoSendImages)
+            return;
+
+        using var timeout = new CancellationTokenSource(
+            content.Kind == ClipboardContentKind.TextUtf8
+                ? TimeSpan.FromSeconds(5)
+                : TimeSpan.FromSeconds(20));
+
+        if (await _clipboardSync.SendAsync(
+                content,
+                _settings.ClipboardBleImageLimitKb * 1024,
+                timeout.Token))
+            _lastSentClipboardHash = content.Hash;
+    }
+
+    private async Task SendSelectedClipboardToPhoneAsync()
+    {
+        if (!_settings.ClipboardSyncEnabled)
+            throw new InvalidOperationException("기기간 복붙 사용을 먼저 켜 주세요.");
+        if (_clipboardSync is null || _clipboard is null)
+            throw new InvalidOperationException("클립보드 동기화가 아직 준비되지 않았습니다.");
+        if (_clipboardList.SelectedItem is not ClipboardEntry entry ||
+            !_clipboard.TryGetContent(entry.Id, out var content) ||
+            content is null)
+            throw new InvalidOperationException("보낼 클립보드 항목을 선택해 주세요.");
+
+        using var timeout = new CancellationTokenSource(
+            content.Kind == ClipboardContentKind.TextUtf8
+                ? TimeSpan.FromSeconds(5)
+                : TimeSpan.FromSeconds(20));
+
+        if (!await _clipboardSync.SendAsync(
+                content,
+                _settings.ClipboardBleImageLimitKb * 1024,
+                timeout.Token))
+            throw new InvalidOperationException("현재 사용 가능한 Clipboard 전송 경로가 없습니다.");
+
+        _lastSentClipboardHash = content.Hash;
     }
 
     private async Task LockPhoneAndReturnAsync()
@@ -1118,6 +1241,7 @@ public sealed class MainForm : Form
             return;
 
         await _ble.ApproveAsync(peer.Id);
+        _ = ClipboardPairingSecretStore.GetOrCreate(peer.Id);
         Log($"기기 승인 완료 · {HotkeyCatalog.Display(_settings.ToggleHotkey)}로 휴대폰 입력을 시작할 수 있습니다.");
     }
 
@@ -1227,6 +1351,9 @@ public sealed class MainForm : Form
             EmergencyHotkey = HotkeyCatalog.Display(_settings.EmergencyHotkey),
             LockAndReturnHotkey = HotkeyCatalog.Display(_settings.LockAndReturnHotkey),
             ClipboardEntries = _clipboard?.Entries.Count ?? 0,
+            ClipboardSyncEnabled = _settings.ClipboardSyncEnabled,
+            ClipboardBleSubscribers = _clipboardSync?.BleSubscribers ?? 0,
+            ClipboardBleImageLimitKb = _settings.ClipboardBleImageLimitKb,
             Privacy = "진단 파일에는 클립보드 내용, 입력 문자, 기기 이름, Bluetooth 주소를 저장하지 않습니다."
         };
 
@@ -1296,6 +1423,8 @@ public sealed class MainForm : Form
         _lifetime.Cancel();
         _input.Dispose();
         _clipboard?.Dispose();
+        if (_clipboardSync is not null)
+            await _clipboardSync.DisposeAsync();
         _ble.Dispose();
 
         if (_pump is not null)
