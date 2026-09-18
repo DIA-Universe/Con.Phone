@@ -94,7 +94,7 @@ public sealed class BleHidServer : IDisposable
         {
             _running = true;
             _lastOperation = $"Advertising:{_provider.AdvertisementStatus}";
-            Status?.Invoke($"Bluetooth HID 광고 유지 중: {_provider.AdvertisementStatus}");
+            Status?.Invoke($"Bluetooth HID 검색 신호 유지 중: {_provider.AdvertisementStatus}");
             Changed?.Invoke();
             return;
         }
@@ -113,24 +113,24 @@ public sealed class BleHidServer : IDisposable
                 {
                     _everAdvertised = true;
                     _running = true;
-                    Status?.Invoke($"광고 상태: {args.Status}; 결과: {args.Error}");
+                    Status?.Invoke($"검색 신호 상태: {args.Status}; 결과: {args.Error}");
                 }
                 else if (args.Status == GattServiceProviderAdvertisementStatus.Aborted)
                 {
                     if (_everAdvertised)
                     {
                         _running = false;
-                        Status?.Invoke($"광고 중단: {args.Status}; 결과: {args.Error}");
+                        Status?.Invoke($"검색 신호 중단: {args.Status}; 결과: {args.Error}");
                     }
                     else
                     {
                         // Healthy radios can report Aborted once while transitioning to Started.
-                        Status?.Invoke($"광고 준비 중: {args.Status}; 결과: {args.Error}");
+                        Status?.Invoke($"검색 신호 준비 중: {args.Status}; 결과: {args.Error}");
                     }
                 }
                 else
                 {
-                    Status?.Invoke($"광고 상태: {args.Status}; 결과: {args.Error}");
+                    Status?.Invoke($"검색 신호 상태: {args.Status}; 결과: {args.Error}");
                 }
 
                 Changed?.Invoke();
@@ -200,7 +200,7 @@ public sealed class BleHidServer : IDisposable
         {
             _running = false;
             throw new InvalidOperationException(
-                $"Windows Bluetooth가 현재 GATT 광고를 시작할 수 없습니다. 광고:{Advertisement}. Bluetooth를 껐다 켠 뒤 다시 시도해 주세요.",
+                $"Windows Bluetooth가 현재 GATT 검색 신호를 시작할 수 없습니다. 상태:{Advertisement}. Bluetooth를 껐다 켠 뒤 다시 시도해 주세요.",
                 ex);
         }
 
