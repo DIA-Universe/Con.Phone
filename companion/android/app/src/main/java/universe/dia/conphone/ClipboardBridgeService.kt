@@ -73,6 +73,7 @@ class ClipboardBridgeService : Service() {
     @Volatile private var directConfig: DirectConfig? = null
     @Volatile private var relayEndpoint: String? = null
     @Volatile private var relay: RelayChannel? = null
+    @Volatile private var relayGeneration = 0
     @Volatile private var lan: LanChannel? = null
     @Volatile private var scanning = false
     @Volatile private var lanDiscoveryRunning = false
@@ -358,6 +359,7 @@ class ClipboardBridgeService : Service() {
                 val endpoint = parseRelayEndpoint(value)
                 relayEndpoint = endpoint
                 if (endpoint == null) {
+                    relayGeneration++
                     relay?.close()
                     relay = null
                 } else {
@@ -408,7 +410,10 @@ class ClipboardBridgeService : Service() {
         val current = relay
         if (current?.ready == true) return
 
+        val generation = relayGeneration + 1
+        relayGeneration = generation
         current?.close()
+
         val channel = RelayChannel(
             endpoint,
             cred.deviceHash,
@@ -416,10 +421,11 @@ class ClipboardBridgeService : Service() {
             ::onLanFrame,
             ::showStatus
         ) {
-            if (relay === channel) relay = null
+            if (relayGeneration != generation) return@RelayChannel
+            relay = null
             if (!destroyed && relayEndpoint == endpoint) {
                 main.postDelayed({
-                    if (!destroyed && relay == null)
+                    if (!destroyed && relay == null && relayGeneration == generation)
                         startRelay(endpoint)
                 }, 3000)
             }
@@ -790,6 +796,7 @@ class ClipboardBridgeService : Service() {
     override fun onDestroy() {
         destroyed = true
         scanning = false
+        relayGeneration++
         relay?.close()
         relay = null
         lan?.close()
