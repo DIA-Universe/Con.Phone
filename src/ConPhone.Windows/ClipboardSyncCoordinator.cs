@@ -22,7 +22,7 @@ public sealed class ClipboardSyncCoordinator : IAsyncDisposable
         _approvedDeviceId = approvedDeviceId;
         _enabled = enabled;
         _direct = new DirectClipboardLink();
-        _ble = new BleClipboardService(approvedDeviceId, enabled, () => _direct.Config);
+        _ble = new BleClipboardService(approvedDeviceId, enabled, GetDirectLinkConfig);
         _lan = new LanClipboardServer(approvedDeviceId, enabled);
 
         _direct.Status += text => Status?.Invoke(text);
@@ -53,15 +53,6 @@ public sealed class ClipboardSyncCoordinator : IAsyncDisposable
 
         try
         {
-            _direct.Start();
-        }
-        catch (Exception ex)
-        {
-            Status?.Invoke($"Clipboard P2P fast link 시작 실패; LAN/BLE fallback 유지: {ex.Message}");
-        }
-
-        try
-        {
             await _ble.StartAsync().ConfigureAwait(false);
         }
         catch (Exception ex)
@@ -83,6 +74,22 @@ public sealed class ClipboardSyncCoordinator : IAsyncDisposable
         _direct.Stop();
         _lan.Deactivate();
         Status?.Invoke("기기간 복붙 비활성화 · Bluetooth/P2P 연결 중지");
+    }
+
+    private DirectLinkConfig? GetDirectLinkConfig()
+    {
+        if (!_enabled()) return null;
+
+        try
+        {
+            _direct.Start();
+            return _direct.Config;
+        }
+        catch (Exception ex)
+        {
+            Status?.Invoke($"Clipboard P2P fast link 시작 실패; BLE fallback 유지: {ex.Message}");
+            return null;
+        }
     }
 
     public async Task<bool> SendAsync(
@@ -136,8 +143,9 @@ public sealed class ClipboardSyncCoordinator : IAsyncDisposable
             }
             else if (!bleAllowed)
             {
+                _ = GetDirectLinkConfig();
                 Status?.Invoke(
-                    $"이미지 {content.Data.Length / 1024:N0} KiB는 BLE 제한을 초과했습니다. LAN/P2P 연결을 확인합니다.");
+                    $"이미지 {content.Data.Length / 1024:N0} KiB는 BLE 제한을 초과했습니다. P2P 고속 링크를 준비하고 있습니다.");
             }
 
             return false;
