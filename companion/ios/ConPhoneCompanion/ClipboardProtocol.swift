@@ -364,6 +364,11 @@ extension Data {
         Swift.withUnsafeBytes(of: &v) { append(contentsOf: $0) }
     }
 
+    mutating func appendUInt64LE(_ value: UInt64) {
+        var v = value.littleEndian
+        Swift.withUnsafeBytes(of: &v) { append(contentsOf: $0) }
+    }
+
     mutating func appendInt32LE(_ value: Int32) {
         var v = value.littleEndian
         Swift.withUnsafeBytes(of: &v) { append(contentsOf: $0) }
@@ -381,6 +386,13 @@ extension Data {
             $0.loadUnaligned(fromByteOffset: offset, as: UInt32.self)
         }
         return UInt32(littleEndian: value)
+    }
+
+    func uint64LE(at offset: Int) -> UInt64 {
+        let value: UInt64 = self.withUnsafeBytes {
+            $0.loadUnaligned(fromByteOffset: offset, as: UInt64.self)
+        }
+        return UInt64(littleEndian: value)
     }
 
     func int32LE(at offset: Int) -> Int32 {
