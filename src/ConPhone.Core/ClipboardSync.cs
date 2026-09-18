@@ -207,13 +207,14 @@ public sealed class ClipboardReassembler
         }
 
         _pending.Remove(chunk.TransferId);
-        _completed[chunk.TransferId] = at;
         var bytes = output.ToArray();
         if (bytes.Length != pending.TotalLength ||
             !SHA256.HashData(bytes).SequenceEqual(pending.Hash))
             throw new InvalidDataException("Clipboard transfer integrity check failed.");
 
-        return ClipboardContent.Create(pending.Kind, bytes);
+        var content = ClipboardContent.Create(pending.Kind, bytes);
+        _completed[chunk.TransferId] = at;
+        return content;
     }
 
     public void Cleanup(DateTimeOffset now)
