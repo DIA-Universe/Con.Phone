@@ -255,6 +255,10 @@ class ClipboardBridgeService : Service() {
             else if (characteristic.uuid == SECRET_UUID)
                 retrySecretRead(g)
             else if (characteristic.uuid == DIRECT_LINK_UUID) {
+                directConfig = null
+                p2p?.close()
+                p2p = null
+                releaseDirectNetwork()
                 showStatus("현재 비활성 기기 또는 P2P 준비 전 · 활성화 대기")
                 retryDirectLinkRead()
             }
@@ -272,6 +276,10 @@ class ClipboardBridgeService : Service() {
             else if (characteristic.uuid == SECRET_UUID)
                 retrySecretRead(g)
             else if (characteristic.uuid == DIRECT_LINK_UUID) {
+                directConfig = null
+                p2p?.close()
+                p2p = null
+                releaseDirectNetwork()
                 showStatus("현재 비활성 기기 또는 P2P 준비 전 · 활성화 대기")
                 retryDirectLinkRead()
             }
