@@ -104,15 +104,20 @@ final class ClipboardBridge: NSObject, ObservableObject {
                 }
 
                 try ensureSafeImageDimensions(imageData)
-                guard let image = UIImage(data: imageData),
-                      let png = image.pngData() else {
-                    throw ClipboardProtocol.ProtocolError.invalidContent
-                }
 
-                try ensureSafeImageDimensions(
-                    width: Int(image.size.width * image.scale),
-                    height: Int(image.size.height * image.scale))
-                content = try ClipboardProtocol.image(.png, png)
+                if let kind = detectEncodedImageKind(imageData) {
+                    content = try ClipboardProtocol.image(kind, imageData)
+                } else {
+                    guard let image = UIImage(data: imageData),
+                          let png = image.pngData() else {
+                        throw ClipboardProtocol.ProtocolError.invalidContent
+                    }
+
+                    try ensureSafeImageDimensions(
+                        width: Int(image.size.width * image.scale),
+                        height: Int(image.size.height * image.scale))
+                    content = try ClipboardProtocol.image(.png, png)
+                }
             }
 
             try sendOrQueue(content, sharedPayloadId: envelope.id)
@@ -440,6 +445,29 @@ final class ClipboardBridge: NSObject, ObservableObject {
         } catch {
             status = "Clipboard BLE 수신 거부: \(error.localizedDescription)"
         }
+    }
+
+    private func detectEncodedImageKind(_ data: Data) -> ClipboardKind? {
+        if data.count >= 8,
+           Array(data.prefix(8)) == [137, 80, 78, 71, 13, 10, 26, 10] {
+            return .png
+        }
+
+        if data.count >= 4,
+           data[data.startIndex] == 0xFF,
+           data[data.index(after: data.startIndex)] == 0xD8,
+           data[data.index(data.endIndex, offsetBy: -2)] == 0xFF,
+           data[data.index(before: data.endIndex)] == 0xD9 {
+            return .jpeg
+        }
+
+        if data.count >= 12,
+           String(data: data.prefix(4), encoding: .ascii) == "RIFF",
+           String(data: data.dropFirst(8).prefix(4), encoding: .ascii) == "WEBP" {
+            return .webp
+        }
+
+        return nil
     }
 
     private func ensureSafeImageDimensions(width: Int, height: Int) throws {
