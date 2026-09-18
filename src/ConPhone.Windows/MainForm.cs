@@ -273,7 +273,7 @@ public sealed class MainForm : Form
         var devices = CardFlow();
         devices.Controls.Add(ConPhoneTheme.Section("연결된 기기"));
         devices.Controls.Add(ConPhoneTheme.Body("목록에서 본인 휴대폰을 선택한 뒤 승인하세요. 기존 등록이 연결되지 않으면 휴대폰 Bluetooth 설정에서 삭제 후 새로 페어링하세요."));
-        _peers.Width = 720; _peers.Height = 118;
+        _peers.Height = 118; _peers.Tag = "stretch";
         devices.Controls.Add(_peers);
         devices.Controls.Add(Row(
             Button("목록 갱신", () => RefreshPeersAsync(false)),
@@ -317,7 +317,7 @@ public sealed class MainForm : Form
         shortcuts.Controls.Add(ConPhoneTheme.Body("입력칸을 클릭한 뒤 원하는 키 조합을 그대로 누르세요. Ctrl·Alt·Shift·Win 조합을 함께 인식합니다."));
         shortcuts.Controls.Add(HotkeyRow("PC ↔ 휴대폰 전환", _toggleKey, "어느 화면에서든 입력 대상을 전환합니다."));
         shortcuts.Controls.Add(HotkeyRow("비상 노트북 복귀", _emergencyKey, "휴대폰 제어 중 즉시 PC 입력으로 돌아옵니다."));
-        shortcuts.Controls.Add(HotkeyRow("휴대폰 잠금 + 복귀", _lockAndReturnKey, "휴대폰 Power 키를 보내고 즉시 PC로 돌아옵니다."));
+        shortcuts.Controls.Add(HotkeyRow("휴대폰 잠금 + 복귀", _lockAndReturnKey, "Android KEYCODE_POWER로 매핑되는 HID System Power Down을 보내고 즉시 PC로 돌아옵니다. 0.2.1 설치 후 한 번 재페어링해야 합니다."));
         shortcuts.Controls.Add(_shortcutSummary);
         shortcuts.Controls.Add(Row(
             Button("설정 저장", () => { ApplyInputSettings(save: true); return Task.CompletedTask; }, ConPhoneButtonKind.Primary),
@@ -340,10 +340,11 @@ public sealed class MainForm : Form
 
         var history = CardFlow();
         history.Controls.Add(ConPhoneTheme.Section("최근 항목"));
-        _clipboardList.Width = 720; _clipboardList.Height = 260;
+        _clipboardList.Height = 260; _clipboardList.Tag = "stretch";
         history.Controls.Add(_clipboardList);
         history.Controls.Add(_clipboardDetail);
         history.Controls.Add(Row(
+            Button("현재 클립보드 가져오기", () => { CaptureCurrentClipboard(); return Task.CompletedTask; }),
             Button("Windows 클립보드로 복사", () => { RestoreSelectedClipboard(); return Task.CompletedTask; }, ConPhoneButtonKind.Primary),
             Button("항목 삭제", () => { DeleteSelectedClipboard(); return Task.CompletedTask; }, ConPhoneButtonKind.Ghost),
             Button("전체 비우기", () => { ClearClipboardHistory(); return Task.CompletedTask; }, ConPhoneButtonKind.Ghost)));
@@ -370,10 +371,10 @@ public sealed class MainForm : Form
         card.Controls.Add(ConPhoneTheme.Title("진단", 16f));
         card.Controls.Add(ConPhoneTheme.Body("문제가 생기면 이 화면의 상태와 로그를 확인하세요. 진단 파일에는 입력한 문자나 기기 주소를 저장하지 않습니다."));
         card.Controls.Add(ConPhoneTheme.Section("Bluetooth"));
-        _diagnosis.Width = 720; _diagnosis.Height = 120;
+        _diagnosis.Height = 120; _diagnosis.Tag = "stretch";
         card.Controls.Add(_diagnosis);
         card.Controls.Add(ConPhoneTheme.Section("실행 로그"));
-        _events.Width = 720; _events.Height = 250;
+        _events.Height = 250; _events.Tag = "stretch";
         card.Controls.Add(_events);
         card.Controls.Add(Row(
             Button("진단 저장", SaveDiagnosticsAsync, ConPhoneButtonKind.Primary),
@@ -382,27 +383,45 @@ public sealed class MainForm : Form
         return page;
     }
 
-    private static FlowLayoutPanel PageFlow() => new()
+    private static FlowLayoutPanel PageFlow()
     {
-        Dock = DockStyle.Fill,
-        AutoScroll = true,
-        FlowDirection = FlowDirection.TopDown,
-        WrapContents = false,
-        Padding = new Padding(0, 0, 8, 18),
-        BackColor = Color.Transparent
-    };
+        var page = new FlowLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            AutoScroll = true,
+            FlowDirection = FlowDirection.TopDown,
+            WrapContents = false,
+            Padding = new Padding(0, 0, 8, 18),
+            BackColor = Color.Transparent
+        };
+
+        void FitCards()
+        {
+            var width = Math.Max(430, page.ClientSize.Width - SystemInformation.VerticalScrollBarWidth - 14);
+            foreach (Control control in page.Controls)
+            {
+                if (control is not ConPhoneCard card) continue;
+                card.Width = width;
+                card.MaximumSize = new Size(width, 0);
+            }
+        }
+
+        page.SizeChanged += (_, _) => FitCards();
+        page.ControlAdded += (_, _) => FitCards();
+        return page;
+    }
 
     private static ConPhoneCard CardFlow() => new()
     {
-        Width = 790,
-        MaximumSize = new Size(790, 0),
+        Width = 700,
+        MaximumSize = new Size(700, 0),
         AutoSize = true,
         AutoSizeMode = AutoSizeMode.GrowAndShrink
     };
 
     private Control HotkeyRow(string title, HotkeyCaptureBox box, string help)
     {
-        var row = new TableLayoutPanel { AutoSize = true, ColumnCount = 2, Width = 720, Margin = new Padding(0, 8, 0, 8) };
+        var row = new TableLayoutPanel { AutoSize = true, ColumnCount = 2, Width = 640, Margin = new Padding(0, 8, 0, 8), Tag = "stretch" };
         row.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 60));
         row.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 40));
         var labels = new FlowLayoutPanel { AutoSize = true, FlowDirection = FlowDirection.TopDown, WrapContents = false };
@@ -411,6 +430,21 @@ public sealed class MainForm : Form
         row.Controls.Add(labels, 0, 0);
         row.Controls.Add(box, 1, 0);
         return row;
+    }
+
+    private void ApplyCapturedHotkey()
+    {
+        try
+        {
+            ApplyInputSettings(save: true);
+            Log("단축키 변경을 즉시 적용했습니다.");
+        }
+        catch (Exception ex)
+        {
+            System.Media.SystemSounds.Beep.Play();
+            Log($"단축키 적용 실패: {ex.Message}");
+            LoadSettingsToUi();
+        }
     }
 
     private void LoadSettingsToUi()
@@ -485,6 +519,15 @@ public sealed class MainForm : Form
         ApplyInputSettings(save: true);
     }
 
+    private void CaptureCurrentClipboard()
+    {
+        if (_clipboard is null) return;
+        if (_clipboard.CaptureCurrentNow())
+            Log("현재 Windows 클립보드를 확인했습니다.");
+        else
+            Log("클립보드가 잠겨 있어 재시도 중입니다.");
+    }
+
     private void RefreshClipboardList()
     {
         if (_clipboard is null || _closed) return;
@@ -538,7 +581,7 @@ public sealed class MainForm : Form
 
     private static FlowLayoutPanel Row(params Control[] controls)
     {
-        var row = new FlowLayoutPanel { AutoSize = true, WrapContents = true, MaximumSize = new Size(740, 0), BackColor = Color.Transparent, Margin = new Padding(0, 6, 0, 6) };
+        var row = new FlowLayoutPanel { AutoSize = true, WrapContents = true, MaximumSize = new Size(2000, 0), BackColor = Color.Transparent, Margin = new Padding(0, 6, 0, 6), Tag = "stretch" };
         row.Controls.AddRange(controls);
         return row;
     }
