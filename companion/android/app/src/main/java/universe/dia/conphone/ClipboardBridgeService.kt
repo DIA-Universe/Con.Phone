@@ -332,6 +332,7 @@ class ClipboardBridgeService : Service() {
                     value.copyOfRange(32, 64)
                 )
                 showStatus("BLE Clipboard 연결됨 · P2P 고속 링크 확인")
+                flushPendingContent()
                 if (checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT) == PackageManager.PERMISSION_GRANTED)
                     directLinkCharacteristic?.let { gatt?.readCharacteristic(it) }
             }
