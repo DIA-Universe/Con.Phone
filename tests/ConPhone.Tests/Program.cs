@@ -27,10 +27,12 @@ keys.Update(10, false);
 Check("rollover recovery", keys.Snapshot().Skip(2).SequenceEqual(new byte[] { 4, 5, 6, 7, 8, 9 }));
 keys.Clear(); Check("clear state", keys.Snapshot().All(b => b == 0));
 var chunks = Hid.Encode(new PointerPacket(1, 300, -300, 2, -1)).ToArray();
-Check("pointer report length", chunks.All(r => r.Data.Length == 5));
-Check("pointer chunk count", chunks.Length == 3);
-Check("pointer x conserved", chunks.Sum(r => (int)unchecked((sbyte)r.Data[1])) == 300);
-Check("pointer y conserved", chunks.Sum(r => (int)unchecked((sbyte)r.Data[2])) == -300);
+Check("pointer report length", chunks.All(r => r.Data.Length == Hid.MouseReportLength));
+Check("pointer chunk count", chunks.Length == 1);
+static short I16(byte lo, byte hi) => unchecked((short)(lo | (hi << 8)));
+Check("pointer x conserved", chunks.Sum(r => (int)I16(r.Data[1], r.Data[2])) == 300);
+Check("pointer y conserved", chunks.Sum(r => (int)I16(r.Data[3], r.Data[4])) == -300);
+Check("pointer wheel conserved", chunks.Sum(r => (int)unchecked((sbyte)r.Data[5])) == 2);
 Check("drag buttons preserved", chunks.All(r => r.Data[0] == 1));
 Check("release emitted without motion", Hid.Encode(new PointerPacket(0)).Single().Data.All(b => b == 0));
 Check("keyboard no embedded report id", Hid.Encode(new KeyboardPacket(new byte[8])).Single().Data.Length == 8);
@@ -76,6 +78,6 @@ for (int i = 0; i < map.Length;)
 }
 Check("descriptor collections balanced", depth == 0);
 Check("descriptor keyboard input 64 bits", bits[(1, 0x80)] == 64);
-Check("descriptor keyboard output 8 bits", bits[(1, 0x90)] == 8);
-Check("descriptor pointer input 40 bits", bits[(2, 0x80)] == 40);
+Check("descriptor has no output reports", !bits.ContainsKey((1, 0x90)));
+Check("descriptor pointer input 48 bits", bits[(2, 0x80)] == 48);
 Console.WriteLine($"{passed} checks passed. No Windows/Bluetooth/phone hardware has been tested by these checks.");

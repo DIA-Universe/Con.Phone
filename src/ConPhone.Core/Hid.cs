@@ -8,13 +8,15 @@ public sealed record WireReport(bool Keyboard, byte[] Data);
 
 public static class Hid
 {
-    // HOGP: report IDs are in the Report Reference descriptor, NOT in notification values.
-    // ID 1: keyboard (8 input bytes / 1 output byte). ID 2: relative mouse (5 bytes).
+    // HOGP: report IDs live in each Report Reference descriptor, not in notification payloads.
+    // This descriptor intentionally matches the minimal composite layout measured working on Galaxy Android 16.
+    public const int KeyboardReportLength = 8;
+    public const int MouseReportLength = 6;
     public static byte[] ReportMap => Convert.FromHexString(
         "05010906A1018501050719E029E715002501750195088102950175088101" +
-        "95067508150026FF0019002AFF008100050819012905950575019102950175039101C0" +
-        "05010902A10185020901A1000509190129051500250175019505810295038101" +
-        "05010930093109381581257F750895038106050C0A38021581257F750895018106C0C0");
+        "95067508150025650507190029658100C0" +
+        "05010902A10185020901A10005091901290315002501950375018102950175058101" +
+        "05010930093116018026FF7F75109502810609381581257F750895018106C0C0");
 
     public static IEnumerable<WireReport> Encode(InputPacket packet)
     {
@@ -25,16 +27,24 @@ public static class Hid
             yield break;
         }
         var p = (PointerPacket)packet;
-        int x = p.X, y = p.Y, w = p.Wheel, h = p.Pan;
-        if (new[] { x, y, w, h }.Any(v => Math.Abs((long)v) > 32767))
+        int x = p.X, y = p.Y, w = p.Wheel;
+        if (new[] { x, y, w, p.Pan }.Any(v => Math.Abs((long)v) > 32767))
             throw new ArgumentOutOfRangeException(nameof(packet), "Pointer backlog exceeds safety limit.");
         do
         {
-            int dx = Math.Clamp(x, -127, 127), dy = Math.Clamp(y, -127, 127);
-            int dw = Math.Clamp(w, -127, 127), dh = Math.Clamp(h, -127, 127);
-            yield return new(false, [(byte)(p.Buttons & 31), unchecked((byte)dx), unchecked((byte)dy), unchecked((byte)dw), unchecked((byte)dh)]);
-            x -= dx; y -= dy; w -= dw; h -= dh;
-        } while (x != 0 || y != 0 || w != 0 || h != 0);
+            int dx = Math.Clamp(x, short.MinValue + 1, short.MaxValue);
+            int dy = Math.Clamp(y, short.MinValue + 1, short.MaxValue);
+            int dw = Math.Clamp(w, -127, 127);
+            short sx = (short)dx, sy = (short)dy;
+            yield return new(false,
+            [
+                (byte)(p.Buttons & 0x07),
+                (byte)(sx & 0xFF), (byte)((sx >> 8) & 0xFF),
+                (byte)(sy & 0xFF), (byte)((sy >> 8) & 0xFF),
+                unchecked((byte)(sbyte)dw)
+            ]);
+            x -= dx; y -= dy; w -= dw;
+        } while (x != 0 || y != 0 || w != 0);
     }
 
     public static byte Usage(int vk, int scan = 0, bool extended = false)
