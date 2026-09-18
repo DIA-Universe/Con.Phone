@@ -27,7 +27,7 @@ class MainActivity : Activity() {
         })
         root.addView(TextView(this).apply {
             text = "Windows Con.Phone 0.2.1+와 텍스트/이미지 클립보드를 동기화합니다. " +
-                "같은 LAN/P2P가 있으면 자동으로 고속 채널을 사용하고, 없으면 BLE로 fallback합니다.\n\n" +
+                "같은 Wi-Fi를 사용하지 않아도 Windows Direct Wi-Fi/P2P로 연결하고, 사용할 수 없으면 BLE로 fallback합니다.\n\n" +
                 "Android → PC 전송은 Android의 클립보드 개인정보 보호 정책 때문에 이 화면의 전송 버튼을 눌러 실행합니다."
             textSize = 16f
         })
