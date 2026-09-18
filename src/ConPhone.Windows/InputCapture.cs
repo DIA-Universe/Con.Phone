@@ -15,6 +15,8 @@ public sealed class InputCapture : IDisposable
     private nint _keyboardHook, _mouseHook;
     private Sink? _sink;
     private volatile bool _remote;
+    private volatile int _toggleKey = 0x77;
+    private volatile int _emergencyKey = 0x78;
     private byte _buttons;
     private int _wheel, _pan;
     public event Action<InputPacket>? Packet;
@@ -23,6 +25,17 @@ public sealed class InputCapture : IDisposable
     public event Action<string>? Fault;
     public bool IsRemote => _remote;
     public Task Started => _started.Task;
+
+    public void ConfigureHotkeys(HotkeyBinding toggle, HotkeyBinding emergency)
+    {
+        if (!HotkeyCatalog.IsAllowedKey(toggle.Key) || !HotkeyCatalog.IsAllowedKey(emergency.Key))
+            throw new ArgumentOutOfRangeException(nameof(toggle), "지원하지 않는 단축키입니다.");
+        if (toggle.Key == emergency.Key)
+            throw new InvalidOperationException("입력 전환 키와 비상 복귀 키는 서로 달라야 합니다.");
+        // 0.1.6 UI intentionally uses single-key hotkeys. The settings model keeps modifiers for future versions.
+        _toggleKey = toggle.Key;
+        _emergencyKey = emergency.Key;
+    }
 
     public InputCapture()
     {
@@ -62,9 +75,11 @@ public sealed class InputCapture : IDisposable
         lock (_gate)
         {
             if (!_started.Task.IsCompletedSuccessfully) throw new InvalidOperationException("입력 수집이 준비되지 않았습니다.");
+            var toggleKey = _toggleKey;
+            var emergencyKey = _emergencyKey;
             for (int vk = 1; vk < 255; vk++)
-                if (vk is not 0x77 and not 0x78 && (GetAsyncKeyState(vk) & 0x8000) != 0)
-                    throw new InvalidOperationException("누르고 있는 키와 마우스 버튼을 모두 놓은 후 F8을 눌러 주세요.");
+                if (vk != toggleKey && vk != emergencyKey && (GetAsyncKeyState(vk) & 0x8000) != 0)
+                    throw new InvalidOperationException("누르고 있는 키와 마우스 버튼을 모두 놓은 후 입력 전환 키를 눌러 주세요.");
             _keys.Clear(); _buttons = 0; _wheel = 0; _pan = 0; _remote = true;
         }
     }
@@ -80,11 +95,13 @@ public sealed class InputCapture : IDisposable
             var k = Marshal.PtrToStructure<KeyData>(data);
             if ((k.Flags & 0x10) != 0) return CallNextHookEx(0, code, message, data);
             bool up = (k.Flags & 0x80) != 0;
-            if (k.Vk is 0x77 or 0x78)
+            var toggleKey = (uint)_toggleKey;
+            var emergencyKey = (uint)_emergencyKey;
+            if (k.Vk == toggleKey || k.Vk == emergencyKey)
             {
                 if (up)
                 {
-                    if (k.Vk == 0x78) { Deactivate(); Emergency?.Invoke(); }
+                    if (k.Vk == emergencyKey) { Deactivate(); Emergency?.Invoke(); }
                     else Toggle?.Invoke();
                 }
                 return 1;
