@@ -5,6 +5,7 @@ namespace ConPhone.Windows;
 public sealed class ClipboardSyncCoordinator : IAsyncDisposable
 {
     private readonly Func<string?> _approvedDeviceId;
+    private readonly DirectClipboardLink _direct;
     private readonly BleClipboardService _ble;
     private readonly LanClipboardServer _lan;
     private readonly SemaphoreSlim _send = new(1, 1);
@@ -16,9 +17,11 @@ public sealed class ClipboardSyncCoordinator : IAsyncDisposable
     public ClipboardSyncCoordinator(Func<string?> approvedDeviceId)
     {
         _approvedDeviceId = approvedDeviceId;
-        _ble = new BleClipboardService(approvedDeviceId);
+        _direct = new DirectClipboardLink();
+        _ble = new BleClipboardService(approvedDeviceId, () => _direct.Config);
         _lan = new LanClipboardServer(approvedDeviceId);
 
+        _direct.Status += text => Status?.Invoke(text);
         _ble.Status += text => Status?.Invoke(text);
         _lan.Status += text => Status?.Invoke(text);
         _ble.Received += OnReceived;
@@ -31,6 +34,15 @@ public sealed class ClipboardSyncCoordinator : IAsyncDisposable
     {
         if (_started) return;
         _started = true;
+
+        try
+        {
+            _direct.Start();
+        }
+        catch (Exception ex)
+        {
+            Status?.Invoke($"Clipboard P2P fast link 시작 실패; LAN/BLE fallback 유지: {ex.Message}");
+        }
 
         try
         {
@@ -129,6 +141,7 @@ public sealed class ClipboardSyncCoordinator : IAsyncDisposable
     {
         await _lan.DisposeAsync().ConfigureAwait(false);
         _ble.Dispose();
+        _direct.Dispose();
         _send.Dispose();
     }
 }
