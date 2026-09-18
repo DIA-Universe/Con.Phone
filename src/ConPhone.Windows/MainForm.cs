@@ -1397,6 +1397,9 @@ public sealed class MainForm : Form
             ClipboardSyncEnabled = _settings.ClipboardSyncEnabled,
             ClipboardBleSubscribers = _clipboardSync?.BleSubscribers ?? 0,
             ClipboardBleImageLimitKb = _settings.ClipboardBleImageLimitKb,
+            ClipboardP2PLinkRunning = _clipboardSync?.P2PLinkRunning ?? false,
+            ClipboardP2PChannelConnected = _clipboardSync?.P2PChannelConnected ?? false,
+            ClipboardP2PHostReady = !string.IsNullOrWhiteSpace(_clipboardSync?.P2PHostAddress),
             Privacy = "진단 파일에는 클립보드 내용, 입력 문자, 기기 이름, Bluetooth 주소를 저장하지 않습니다."
         };
 
