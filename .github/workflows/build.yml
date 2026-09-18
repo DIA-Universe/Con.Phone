@@ -36,6 +36,18 @@ jobs:
         run: dotnet run --project "$env:RUNNER_TEMP/conphone-src/tests/ConPhone.Tests" -c Release
       - name: Build Windows application
         run: dotnet build "$env:RUNNER_TEMP/conphone-src/src/ConPhone.Windows" -c Release
+      - name: Render UI snapshot
+        run: |
+          $shot = Join-Path $env:RUNNER_TEMP 'ConPhone-ui.png'
+          dotnet run --project "$env:RUNNER_TEMP/conphone-src/src/ConPhone.Windows" -c Release -- --snapshot $shot
+          if (!(Test-Path $shot -PathType Leaf)) { throw 'UI snapshot was not produced.' }
+      - name: Upload UI snapshot
+        uses: actions/upload-artifact@v4
+        with:
+          name: ConPhone-ui-snapshot
+          path: ${{ runner.temp }}/ConPhone-ui.png
+          if-no-files-found: error
+          retention-days: 14
       - name: Publish one self-contained Windows x64 EXE
         run: |
           dotnet publish "$env:RUNNER_TEMP/conphone-src/src/ConPhone.Windows" `
