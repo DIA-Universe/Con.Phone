@@ -17,6 +17,7 @@ final class ShareViewController: UIViewController {
         statusLabel.text = "공유 내용을 확인하고 있습니다…"
 
         doneButton.setTitle("완료", for: .normal)
+        doneButton.isEnabled = false
         doneButton.addTarget(self, action: #selector(complete), for: .touchUpInside)
 
         let stack = UIStackView(arrangedSubviews: [statusLabel, doneButton])
@@ -126,6 +127,8 @@ final class ShareViewController: UIViewController {
 
     private func finishStaging(_ result: Result<Void, Error>) {
         DispatchQueue.main.async {
+            self.doneButton.isEnabled = true
+
             switch result {
             case .success:
                 self.statusLabel.text =
