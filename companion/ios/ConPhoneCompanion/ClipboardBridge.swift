@@ -2,6 +2,7 @@ import Foundation
 import Combine
 import CoreBluetooth
 import NetworkExtension
+import ImageIO
 import UIKit
 
 final class ClipboardBridge: NSObject, ObservableObject {
@@ -58,6 +59,8 @@ final class ClipboardBridge: NSObject, ObservableObject {
             if let text = pasteboard.string, !text.isEmpty {
                 content = try ClipboardProtocol.text(text)
             } else if let image = pasteboard.image, let png = image.pngData() {
+                try ensureSafeImageDimensions(width: Int(image.size.width * image.scale),
+                                              height: Int(image.size.height * image.scale))
                 content = try ClipboardProtocol.image(.png, png)
             } else {
                 status = "텍스트 또는 이미지만 지원합니다."
@@ -286,6 +289,26 @@ final class ClipboardBridge: NSObject, ObservableObject {
         }
     }
 
+    private func ensureSafeImageDimensions(width: Int, height: Int) throws {
+        guard width > 0,
+              height > 0,
+              Int64(width) * Int64(height) <= 40_000_000 else {
+            throw ClipboardProtocol.ProtocolError.tooLarge
+        }
+    }
+
+    private func ensureSafeImageDimensions(_ data: Data) throws {
+        guard let source = CGImageSourceCreateWithData(data as CFData, nil),
+              let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil)
+                as? [CFString: Any],
+              let width = (properties[kCGImagePropertyPixelWidth] as? NSNumber)?.intValue,
+              let height = (properties[kCGImagePropertyPixelHeight] as? NSNumber)?.intValue else {
+            throw ClipboardProtocol.ProtocolError.invalidContent
+        }
+
+        try ensureSafeImageDimensions(width: width, height: height)
+    }
+
     private func apply(_ content: ClipboardContent) {
         do {
             switch content.kind {
@@ -296,6 +319,7 @@ final class ClipboardBridge: NSObject, ObservableObject {
                 UIPasteboard.general.string = text
                 status = "PC 텍스트를 iPhone 클립보드에 받았습니다."
             case .png, .jpeg, .webp:
+                try ensureSafeImageDimensions(content.data)
                 guard let image = UIImage(data: content.data) else {
                     throw ClipboardProtocol.ProtocolError.invalidContent
                 }
