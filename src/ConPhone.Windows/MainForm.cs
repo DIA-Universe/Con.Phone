@@ -263,6 +263,7 @@ public sealed class MainForm : Form
                 () => _ble.ApprovedId,
                 id => _ble.IsTrustedDevice(id),
                 () => _settings.ClipboardSyncEnabled,
+                () => _input.IsRemote,
                 () => _settings.P2PLinkName);
             ConfigureTray();
             ConfigureRuntimeEvents();
