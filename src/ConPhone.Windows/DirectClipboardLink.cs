@@ -42,16 +42,17 @@ public static class DirectLinkCredentialStore
 {
     private const string Resource = "ConPhone.DirectLink";
 
-    public static DirectLinkConfig GetOrCreate()
+    public static DirectLinkConfig GetOrCreate(string linkName)
     {
         var vault = new PasswordVault();
+        var desiredSsid = BuildSsid(linkName);
         try
         {
             var existing = vault.FindAllByResource(Resource).FirstOrDefault();
             if (existing is not null)
             {
                 existing.RetrievePassword();
-                if (!string.IsNullOrWhiteSpace(existing.UserName) &&
+                if (string.Equals(existing.UserName, desiredSsid, StringComparison.Ordinal) &&
                     !string.IsNullOrWhiteSpace(existing.Password))
                     return new DirectLinkConfig(existing.UserName, existing.Password);
             }
@@ -60,8 +61,16 @@ public static class DirectLinkCredentialStore
         {
         }
 
-        var suffix = Convert.ToHexString(RandomNumberGenerator.GetBytes(3));
-        var ssid = $"DIRECT-CP-{suffix}";
+        try
+        {
+            foreach (var old in vault.FindAllByResource(Resource).ToArray())
+                vault.Remove(old);
+        }
+        catch
+        {
+        }
+
+        var ssid = desiredSsid;
         var passphrase = DirectClipboardLink.CreatePassphraseValue();
 
         try
@@ -75,14 +84,34 @@ public static class DirectLinkCredentialStore
 
         return new DirectLinkConfig(ssid, passphrase);
     }
+
+    private static string BuildSsid(string? linkName)
+    {
+        var raw = string.IsNullOrWhiteSpace(linkName) ? "ConPhone" : linkName.Trim();
+        var safe = new string(raw
+            .Where(ch => char.IsLetterOrDigit(ch) || ch is '-' or '_' or '.')
+            .Take(18)
+            .ToArray());
+
+        if (string.IsNullOrWhiteSpace(safe))
+            safe = "ConPhone";
+
+        return $"DIRECT-CP-{safe}";
+    }
 }
 
 public sealed class DirectClipboardLink : IDisposable
 {
+    private readonly Func<string> _linkName;
     private WiFiDirectAdvertisementPublisher? _publisher;
     private DirectLinkConfig? _config;
     private HashSet<string> _baselineIpv4 = [];
     private bool _disposed;
+
+    public DirectClipboardLink(Func<string> linkName)
+    {
+        _linkName = linkName;
+    }
 
     public event Action<string>? Status;
 
@@ -103,7 +132,7 @@ public sealed class DirectClipboardLink : IDisposable
         }
 
         _baselineIpv4 = CurrentIpv4();
-        var config = DirectLinkCredentialStore.GetOrCreate();
+        var config = DirectLinkCredentialStore.GetOrCreate(_linkName());
 
         var publisher = new WiFiDirectAdvertisementPublisher();
         publisher.Advertisement.IsAutonomousGroupOwnerEnabled = true;
