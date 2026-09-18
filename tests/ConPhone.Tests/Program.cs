@@ -133,6 +133,16 @@ ClipboardContent? duplicateResult = null;
 foreach (var frame in clipFrames.Skip(1))
     duplicateResult = duplicateReassembler.Add(ClipboardWireCodec.Decode(frame)) ?? duplicateResult;
 Check("clipboard duplicate chunk reassembly", duplicateResult?.Hash == clipText.Hash);
+bool clipboardReplayRejected = false;
+try
+{
+    duplicateReassembler.Add(ClipboardWireCodec.Decode(clipFrames[0]));
+}
+catch (InvalidDataException)
+{
+    clipboardReplayRejected = true;
+}
+Check("clipboard completed transfer replay rejected", clipboardReplayRejected);
 
 var pngBytes = new byte[] { 137, 80, 78, 71, 13, 10, 26, 10, 1, 2, 3, 4 };
 var clipImage = ClipboardContent.FromImage(ClipboardContentKind.Png, pngBytes);
@@ -150,6 +160,16 @@ byte[]? bleMessage = null;
 foreach (var part in bleParts.Reverse())
     bleMessage = bleReassembler.Add(BleFragmentCodec.Decode(part)) ?? bleMessage;
 Check("ble fragment out-of-order reassembly", bleMessage is not null && bleMessage.SequenceEqual(wholeFrame));
+bool bleReplayRejected = false;
+try
+{
+    bleReassembler.Add(BleFragmentCodec.Decode(bleParts[0]));
+}
+catch (InvalidDataException)
+{
+    bleReplayRejected = true;
+}
+Check("ble completed fragment replay rejected", bleReplayRejected);
 
 var allRoutes = ClipboardTransportPolicy.Candidates(
     clipText,
