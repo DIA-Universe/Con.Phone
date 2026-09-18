@@ -103,9 +103,13 @@ final class ShareViewController: UIViewController {
                     try SharedPayloadStore.saveImageFile(url)
                     self.finishStaging(.success(()))
                     return
-                } catch {
-                    self.finishStaging(.failure(error))
+                } catch SharedPayloadStore.StoreError.tooLarge {
+                    self.finishStaging(.failure(
+                        SharedPayloadStore.StoreError.tooLarge))
                     return
+                } catch {
+                    // Some providers do not expose a reliable file-size/resource
+                    // representation. Fall back to a bounded in-memory representation.
                 }
             }
 
