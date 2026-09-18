@@ -314,13 +314,11 @@ public sealed class BleFragmentReassembler
 
 public enum ClipboardTransportKind
 {
-    Lan,
     PeerToPeer,
     BluetoothLe
 }
 
 public sealed record ClipboardTransportCapabilities(
-    bool Lan,
     bool PeerToPeer,
     bool BluetoothLe);
 
@@ -333,8 +331,7 @@ public static class ClipboardTransportPolicy
         ClipboardTransportCapabilities capabilities,
         int bleImageLimit = DefaultBleImageLimit)
     {
-        var routes = new List<ClipboardTransportKind>(3);
-        if (capabilities.Lan) routes.Add(ClipboardTransportKind.Lan);
+        var routes = new List<ClipboardTransportKind>(2);
         if (capabilities.PeerToPeer) routes.Add(ClipboardTransportKind.PeerToPeer);
 
         var bleAllowed = content.Kind == ClipboardContentKind.TextUtf8 || content.Data.Length <= bleImageLimit;
