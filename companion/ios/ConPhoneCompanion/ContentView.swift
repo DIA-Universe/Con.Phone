@@ -22,7 +22,7 @@ struct ContentView: View {
 
                 Section("동작") {
                     Text("PC에서 iPhone으로 입력을 전환할 때 최신 텍스트/이미지를 Companion이 받아 iOS 클립보드에 넣습니다.")
-                    Text("iPhone → PC는 iOS의 클립보드 개인정보 보호 정책 때문에 이 앱의 전송 버튼을 사용하는 방식으로 시작합니다.")
+                    Text("iPhone → PC는 이 앱의 전송 버튼을 쓰거나, 다른 앱의 공유 메뉴에서 Con.Phone을 선택하면 됩니다. 공유 확장에서 저장된 내용은 Con.Phone이 열릴 때 자동 전송합니다.")
                 }
 
                 Section("전송 경로") {
@@ -30,7 +30,22 @@ struct ContentView: View {
                 }
             }
             .navigationTitle("Con.Phone")
-            .onAppear { bridge.start() }
+            .onAppear {
+                bridge.start()
+                bridge.sendPendingShareIfPresent()
+            }
+            .onOpenURL { url in
+                if url.scheme == "conphone" {
+                    bridge.start()
+                    bridge.sendPendingShareIfPresent()
+                }
+            }
+            .onChange(of: scenePhase) { _, phase in
+                if phase == .active {
+                    bridge.start()
+                    bridge.sendPendingShareIfPresent()
+                }
+            }
         }
     }
 }
