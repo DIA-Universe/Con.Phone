@@ -744,6 +744,12 @@ public sealed class MainForm : Form
             InitializeClipboardHistory();
 
             _diagnosis.Text = await BleHidServer.DiagnoseAsync();
+
+            // Keep the GATT database stable before HID advertising begins. The clipboard
+            // service is defined now but is only advertised/usable after the user opts in.
+            if (_clipboardSync is not null)
+                await _clipboardSync.PrepareBleAsync();
+
             await _ble.StartAsync();
             if (_settings.ClipboardSyncEnabled && _clipboardSync is not null)
                 await _clipboardSync.StartAsync();
