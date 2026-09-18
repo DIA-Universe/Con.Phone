@@ -106,6 +106,19 @@ jobs:
           path: ${{ runner.temp }}/ConPhone.exe.sha256
           if-no-files-found: error
           retention-days: 14
+      - name: Build self-update package
+        run: |
+          $package = Join-Path $env:RUNNER_TEMP 'ConPhone-update-package'
+          New-Item -ItemType Directory -Force -Path $package | Out-Null
+          Copy-Item (Join-Path $env:RUNNER_TEMP 'ConPhone-win-x64\ConPhone.exe') (Join-Path $package 'ConPhone.exe')
+          Copy-Item (Join-Path $env:RUNNER_TEMP 'ConPhone.exe.sha256') (Join-Path $package 'ConPhone.exe.sha256')
+      - name: Upload self-update package
+        uses: actions/upload-artifact@v4
+        with:
+          name: ConPhone-win-x64-update-package
+          path: ${{ runner.temp }}/ConPhone-update-package/*
+          if-no-files-found: error
+          retention-days: 14
       - name: Report successful single-EXE build to PR
         if: success() && github.event_name == 'pull_request'
         env:
