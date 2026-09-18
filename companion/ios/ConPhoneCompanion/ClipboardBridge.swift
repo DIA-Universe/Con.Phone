@@ -122,7 +122,8 @@ final class ClipboardBridge: NSObject, ObservableObject {
 
             try sendOrQueue(content, sharedPayloadId: envelope.id)
         } catch {
-            status = "공유 내용 전송 준비 실패: \(error.localizedDescription)"
+            SharedPayloadStore.clear(envelope.id)
+            status = "공유 내용이 올바르지 않아 대기열에서 제거했습니다: \(error.localizedDescription)"
         }
     }
 
