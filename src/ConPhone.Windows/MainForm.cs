@@ -171,12 +171,13 @@ public sealed class MainForm : Form
         _tray.DoubleClick += (_, _) => { Show(); WindowState = FormWindowState.Normal; Activate(); };
         _input.Packet += packet =>
         {
-            if (_input.IsRemote && !_outbox.TryAdd(new(Volatile.Read(ref _epoch), packet)))
-            { ImmediateLocal(); Dispatch(async () => { await ReleaseAsync(); Log("입력 대기열 초과 — 로컬 복귀"); }); }
+            var outgoing = packet is PointerPacket pointer ? _pointerScaler.Apply(pointer) : packet;
+            if (_input.IsRemote && !_outbox.TryAdd(new(Volatile.Read(ref _epoch), outgoing)))
+            { ImmediateLocal(); DispatchCritical(async () => { await ReleaseAsync(); Log("입력 대기열 초과 — 로컬 복귀"); }); }
         };
-        _input.Toggle += () => Dispatch(ToggleAsync);
-        _input.Emergency += () => { ImmediateLocal(); Dispatch(ReturnLocalAsync); };
-        _input.Fault += text => { ImmediateLocal(); Dispatch(async () => { await ReleaseAsync(); Log(text); }); };
+        _input.Toggle += () => DispatchCritical(ToggleAsync);
+        _input.Emergency += () => { ImmediateLocal(); DispatchCritical(ReturnLocalAsync); };
+        _input.Fault += text => { ImmediateLocal(); DispatchCritical(async () => { await ReleaseAsync(); Log(text); }); };
         _ble.Status += text => Post(() => Log(text));
         _ble.Changed += () =>
         {
@@ -185,8 +186,11 @@ public sealed class MainForm : Form
         _timer.Tick += (_, _) =>
         {
             if (_input.IsRemote && !_ble.Ready) ImmediateLocal();
-            _state.Text = _input.IsRemote ? "휴대폰 조작 중 · F9로 즉시 복귀" : $"노트북 조작 중 · 광고:{_ble.Advertisement} · HID구독 K:{_ble.KeyboardSubscribers} M:{_ble.MouseSubscribers} · 승인:{(_ble.Ready ? "준비됨" : "대기")}";
-            _tray.Text = _input.IsRemote ? "Con.Phone · 휴대폰 입력 / F9 복귀" : "Con.Phone · 노트북 입력";
+            var emergency = HotkeyCatalog.Display(_settings.EmergencyHotkey);
+            _state.Text = _input.IsRemote
+                ? $"휴대폰 조작 중 · {emergency}로 즉시 복귀"
+                : $"노트북 조작 중 · 광고:{_ble.Advertisement} · HID구독 K:{_ble.KeyboardSubscribers} M:{_ble.MouseSubscribers} · 승인:{(_ble.Ready ? "준비됨" : "대기")}";
+            _tray.Text = _input.IsRemote ? $"Con.Phone · 휴대폰 입력 / {emergency} 복귀" : "Con.Phone · 노트북 입력";
         };
         _timer.Start();
         _peerTimer.Tick += (_, _) =>
@@ -207,6 +211,80 @@ public sealed class MainForm : Form
         SystemEvents.SessionSwitch += SessionChanged;
         FormClosing += ClosingAsync;
     }
+    private void LoadSettingsToUi()
+    {
+        _mouseSpeed.Value = _settings.MouseSpeedPercent;
+        _scrollSpeed.Value = _settings.ScrollSpeedPercent;
+        _invertScroll.Checked = _settings.InvertScroll;
+        SelectHotkey(_toggleKey, _settings.ToggleHotkey.Key);
+        SelectHotkey(_emergencyKey, _settings.EmergencyHotkey.Key);
+        UpdateSettingLabels();
+    }
+
+    private static void SelectHotkey(ComboBox box, int key)
+    {
+        for (var i = 0; i < box.Items.Count; i++)
+        {
+            if (box.Items[i] is HotkeyOption option && option.Key == key)
+            {
+                box.SelectedIndex = i;
+                return;
+            }
+        }
+        if (box.Items.Count > 0) box.SelectedIndex = 0;
+    }
+
+    private static int SelectedHotkey(ComboBox box) =>
+        box.SelectedItem is HotkeyOption option ? option.Key : throw new InvalidOperationException("단축키를 선택해 주세요.");
+
+    private void UpdateSettingLabels()
+    {
+        _mouseSpeedValue.Text = $"{_mouseSpeed.Value}%";
+        _scrollSpeedValue.Text = $"{_scrollSpeed.Value}%";
+        _shortcutSummary.Text = $"전환: {HotkeyCatalog.Display(_settings.ToggleHotkey)}   ·   비상 복귀: {HotkeyCatalog.Display(_settings.EmergencyHotkey)}";
+    }
+
+    private void ApplyInputSettings(bool save)
+    {
+        var toggle = SelectedHotkey(_toggleKey);
+        var emergency = SelectedHotkey(_emergencyKey);
+        if (toggle == emergency) throw new InvalidOperationException("입력 전환 키와 비상 복귀 키는 서로 다르게 지정해 주세요.");
+
+        _settings.MouseSpeedPercent = _mouseSpeed.Value;
+        _settings.ScrollSpeedPercent = _scrollSpeed.Value;
+        _settings.InvertScroll = _invertScroll.Checked;
+        _settings.ToggleHotkey = new HotkeyBinding { Key = toggle, Modifiers = HotkeyModifiers.None };
+        _settings.EmergencyHotkey = new HotkeyBinding { Key = emergency, Modifiers = HotkeyModifiers.None };
+
+        _pointerScaler.Configure(_settings.MouseSpeedPercent, _settings.ScrollSpeedPercent, _settings.InvertScroll);
+        _input.ConfigureHotkeys(_settings.ToggleHotkey, _settings.EmergencyHotkey);
+        UpdateSettingLabels();
+
+        if (save)
+        {
+            SettingsStore.Save(_settings);
+            Log($"입력 설정 저장 · 마우스 {_settings.MouseSpeedPercent}% · 스크롤 {_settings.ScrollSpeedPercent}% · 전환 {HotkeyCatalog.Display(_settings.ToggleHotkey)} · 복귀 {HotkeyCatalog.Display(_settings.EmergencyHotkey)}");
+        }
+    }
+
+    private void ResetInputSettings()
+    {
+        _mouseSpeed.Value = 100;
+        _scrollSpeed.Value = 100;
+        _invertScroll.Checked = false;
+        SelectHotkey(_toggleKey, 0x77);
+        SelectHotkey(_emergencyKey, 0x78);
+        ApplyInputSettings(save: true);
+    }
+
+    private static FlowLayoutPanel LabeledRow(string label, Control control)
+    {
+        var row = new FlowLayoutPanel { AutoSize = true, WrapContents = false, MaximumSize = new Size(820, 0) };
+        row.Controls.Add(new Label { Text = label, AutoSize = false, Width = 180, Height = 30, TextAlign = ContentAlignment.MiddleLeft });
+        row.Controls.Add(control);
+        return row;
+    }
+
     private static FlowLayoutPanel Row(params Control[] controls)
     {
         var row = new FlowLayoutPanel { AutoSize = true, WrapContents = true, MaximumSize = new Size(820, 0) };
@@ -226,17 +304,27 @@ public sealed class MainForm : Form
     {
         if (!await _actions.WaitAsync(0)) return;
         try { if (!_closing) await action(); }
-        catch (Exception ex)
-        {
-            ImmediateLocal();
-            _lastError = $"{ex.GetType().Name}:0x{ex.HResult:X8}";
-            var ble = ex.HResult == unchecked((int)0x8000000E)
-                ? $" · BLE:{_ble.LastOperation} · 광고:{_ble.Advertisement}"
-                : "";
-            Log($"{ex.Message} ({_lastError}{ble})");
-        }
+        catch (Exception ex) { HandleActionError(ex); }
         finally { _actions.Release(); }
     });
+
+    private void DispatchCritical(Func<Task> action) => Post(async () =>
+    {
+        await _actions.WaitAsync();
+        try { if (!_closing) await action(); }
+        catch (Exception ex) { HandleActionError(ex); }
+        finally { _actions.Release(); }
+    });
+
+    private void HandleActionError(Exception ex)
+    {
+        ImmediateLocal();
+        _lastError = $"{ex.GetType().Name}:0x{ex.HResult:X8}";
+        var ble = ex.HResult == unchecked((int)0x8000000E)
+            ? $" · BLE:{_ble.LastOperation} · 광고:{_ble.Advertisement}"
+            : "";
+        Log($"{ex.Message} ({_lastError}{ble})");
+    }
     private void Log(string text)
     {
         if (_events.TextLength > 10000) _events.Clear();
@@ -245,6 +333,7 @@ public sealed class MainForm : Form
     private void ImmediateLocal()
     {
         _input.Deactivate();
+        _pointerScaler.Reset();
         Interlocked.Increment(ref _epoch);
         _outbox.Clear();
     }
@@ -252,7 +341,7 @@ public sealed class MainForm : Form
     {
         if (!_ble.Ready) return;
         long epoch = Volatile.Read(ref _epoch);
-        using var timeout = new CancellationTokenSource(TimeSpan.FromMilliseconds(750));
+        using var timeout = new CancellationTokenSource(TimeSpan.FromMilliseconds(300));
         try
         {
             await _ble.SendAsync(new(true, new byte[8]), () => epoch == Volatile.Read(ref _epoch), timeout.Token);
@@ -260,8 +349,8 @@ public sealed class MainForm : Form
         }
         catch (Exception ex)
         {
-            _ble.Stop(); _lastError = $"Release:{ex.GetType().Name}";
-            Log("해제 보고서 전달을 확인하지 못했습니다. 로컬은 복구됐으며, 휴대폰 입력이 남으면 Bluetooth 연결을 끊어 주세요.");
+            _lastError = $"Release:{ex.GetType().Name}:0x{ex.HResult:X8}";
+            Log("휴대폰에 키/버튼 해제 보고서를 확인하지 못했지만 노트북 입력은 즉시 복구했습니다. Bluetooth 서비스는 유지합니다.");
         }
     }
     private async Task ReturnLocalAsync() { ImmediateLocal(); await ReleaseAsync(); }
@@ -273,8 +362,9 @@ public sealed class MainForm : Form
         long epoch = Volatile.Read(ref _epoch);
         await ReleaseAsync();
         if (epoch != Volatile.Read(ref _epoch) || !_ble.Ready) return;
+        _pointerScaler.Reset();
         _input.Activate();
-        Log("휴대폰 입력 시작. F9로 비상 복귀할 수 있습니다.");
+        Log($"휴대폰 입력 시작. {HotkeyCatalog.Display(_settings.EmergencyHotkey)}로 비상 복귀할 수 있습니다.");
     }
     private async Task RefreshPeersAsync(bool silent = false)
     {
@@ -328,9 +418,9 @@ public sealed class MainForm : Form
             catch (OperationCanceledException) when (_lifetime.IsCancellationRequested) { break; }
             catch (Exception ex)
             {
-                ImmediateLocal(); _ble.Stop();
+                ImmediateLocal();
                 _lastError = $"Send:{ex.GetType().Name}:0x{ex.HResult:X8}";
-                Post(() => Log("전송 실패/지연으로 로컬 복귀했습니다. 휴대폰 연결을 해제한 뒤 서비스를 다시 시작하세요."));
+                Post(() => Log("Bluetooth 전송 실패/지연으로 노트북 입력으로 복귀했습니다. 서비스는 유지하므로 연결 상태를 확인한 뒤 다시 전환할 수 있습니다."));
             }
         }
     }
@@ -340,10 +430,12 @@ public sealed class MainForm : Form
         if (dialog.ShowDialog(this) != DialogResult.OK) return;
         var report = new
         {
-            Version = "0.1.5", OS = Environment.OSVersion.Version.ToString(), Runtime = Environment.Version.ToString(),
+            Version = "0.1.6", OS = Environment.OSVersion.Version.ToString(), Runtime = Environment.Version.ToString(),
             TargetProfile = _profile.SelectedIndex == 0 ? "Android" : "iPhone", Bluetooth = await BleHidServer.DiagnoseAsync(),
             Advertisement = _ble.Advertisement, BleLastOperation = _ble.LastOperation, KeyboardSubscribers = _ble.KeyboardSubscribers, MouseSubscribers = _ble.MouseSubscribers, ApprovedAndSubscribed = _ble.Ready,
             SendOperations = Interlocked.Read(ref _sent), Pending = _outbox.Count, LastError = _lastError,
+            MouseSpeedPercent = _settings.MouseSpeedPercent, ScrollSpeedPercent = _settings.ScrollSpeedPercent,
+            ToggleHotkey = HotkeyCatalog.Display(_settings.ToggleHotkey), EmergencyHotkey = HotkeyCatalog.Display(_settings.EmergencyHotkey),
             AndroidHardwareTest = "Not performed by build environment", IPhoneHardwareTest = "Not performed",
             Privacy = "No text, keys, pairing codes, device names or Bluetooth addresses are exported."
         };
