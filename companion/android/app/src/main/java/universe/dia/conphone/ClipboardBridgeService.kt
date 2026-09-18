@@ -74,6 +74,7 @@ class ClipboardBridgeService : Service() {
     @Volatile private var lanDiscoveryRunning = false
     @Volatile private var p2pNetwork: Network? = null
     @Volatile private var directNetworkCallback: ConnectivityManager.NetworkCallback? = null
+    @Volatile private var directConfigReadAttempts = 0
 
     private data class Credential(val deviceHash: ByteArray, val secret: ByteArray)
     private data class DirectConfig(val ssid: String, val passphrase: String)
@@ -316,13 +317,25 @@ class ClipboardBridgeService : Service() {
             DIRECT_LINK_UUID -> {
                 directConfig = parseDirectConfig(value)
                 if (directConfig != null) {
+                    directConfigReadAttempts = 0
                     showStatus("P2P 고속 링크 준비됨 · 현재 LAN 우선 확인")
                     main.postDelayed({
                         if (lan == null) requestDirectNetwork()
                     }, 3500)
+                } else {
+                    retryDirectLinkRead()
                 }
             }
         }
+    }
+
+    private fun retryDirectLinkRead() {
+        if (directConfigReadAttempts >= 8) return
+        directConfigReadAttempts++
+        main.postDelayed({
+            if (checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT) == PackageManager.PERMISSION_GRANTED)
+                directLinkCharacteristic?.let { gatt?.readCharacteristic(it) }
+        }, 1200)
     }
 
     private fun parseDirectConfig(value: ByteArray): DirectConfig? {
