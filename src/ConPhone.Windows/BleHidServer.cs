@@ -39,7 +39,7 @@ public sealed class BleHidServer : IDisposable
     private readonly ConcurrentDictionary<string, GattSession> _sessions = new();
     private readonly ConcurrentDictionary<string, BluetoothLEDevice> _devices = new();
     private readonly ConcurrentDictionary<string, int> _connectionIntervalMs = new();
-    private readonly ConcurrentDictionary<string, BluetoothLEPreferredConnectionParametersRequest> _throughputRequests = new();
+    private readonly ConcurrentDictionary<string, IDisposable> _throughputRequests = new();
     private readonly SemaphoreSlim _send = new(1, 1);
     private readonly SemaphoreSlim _deviceGate = new(1, 1);
 
@@ -431,8 +431,13 @@ public sealed class BleHidServer : IDisposable
             if (_throughputRequests.ContainsKey(id))
                 return;
 
-            var request = device.RequestPreferredConnectionParameters(
-                BluetoothLEPreferredConnectionParameters.ThroughputOptimized);
+            var request = BleConnectionTuning.TryRequestThroughputOptimized(device);
+            if (request is null)
+            {
+                Status?.Invoke(
+                    $"BLE throughput 요청 API를 사용할 수 없어 {MousePacingIntervalMs}ms pacing을 사용합니다.");
+                return;
+            }
 
             if (!_throughputRequests.TryAdd(id, request))
                 request.Dispose();
@@ -452,17 +457,10 @@ public sealed class BleHidServer : IDisposable
     {
         var interval = PointerPacing.FallbackIntervalMs;
 
-        if (OperatingSystem.IsWindowsVersionAtLeast(10, 0, 22000))
-        {
-            try
-            {
-                var parameters = device.GetConnectionParameters();
-                interval = PointerPacing.FromBleConnectionInterval(parameters.ConnectionInterval);
-            }
-            catch (Exception ex) when (ex is InvalidOperationException or ObjectDisposedException or NotSupportedException)
-            {
-            }
-        }
+        if (BleConnectionTuning.TryGetConnectionIntervalUnits(
+                device,
+                out var intervalUnits))
+            interval = PointerPacing.FromBleConnectionInterval(intervalUnits);
 
         _connectionIntervalMs[id] = interval;
     }
