@@ -40,7 +40,7 @@ public sealed class ConPhoneSettings
     public int ClipboardHistoryLimit { get; set; } = 50;
     public bool CaptureClipboardText { get; set; } = true;
     public bool CaptureClipboardImages { get; set; } = true;
-    public bool ClipboardSyncEnabled { get; set; } = true;
+    public bool ClipboardSyncEnabled { get; set; } = false;
     public bool ClipboardAutoSendText { get; set; } = true;
     public bool ClipboardAutoSendImages { get; set; } = true;
     public int ClipboardBleImageLimitKb { get; set; } = 512;
