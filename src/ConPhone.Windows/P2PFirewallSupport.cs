@@ -22,7 +22,7 @@ public static class P2PFirewallSupport
             $"& netsh advfirewall firewall delete rule name=\"$name\" | Out-Null;" +
             $"& netsh advfirewall firewall add rule " +
             $"name=\"$name\" dir=in action=allow protocol=TCP localport={Port} " +
-            $"program=\"$exe\" enable=yes profile=private,public | Out-Null;" +
+            $"program=\"$exe\" remoteip=localsubnet enable=yes profile=private,public | Out-Null;" +
             $"if ($LASTEXITCODE -ne 0) {{ exit $LASTEXITCODE }}";
 
         var start = new ProcessStartInfo
