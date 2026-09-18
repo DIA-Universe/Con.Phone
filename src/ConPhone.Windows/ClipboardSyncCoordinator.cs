@@ -5,6 +5,7 @@ namespace ConPhone.Windows;
 public sealed class ClipboardSyncCoordinator : IAsyncDisposable
 {
     private readonly Func<string?> _approvedDeviceId;
+    private readonly Func<bool> _enabled;
     private readonly DirectClipboardLink _direct;
     private readonly BleClipboardService _ble;
     private readonly LanClipboardServer _lan;
@@ -14,12 +15,15 @@ public sealed class ClipboardSyncCoordinator : IAsyncDisposable
     public event Action<ClipboardContent>? Received;
     public event Action<string>? Status;
 
-    public ClipboardSyncCoordinator(Func<string?> approvedDeviceId)
+    public ClipboardSyncCoordinator(
+        Func<string?> approvedDeviceId,
+        Func<bool> enabled)
     {
         _approvedDeviceId = approvedDeviceId;
+        _enabled = enabled;
         _direct = new DirectClipboardLink();
-        _ble = new BleClipboardService(approvedDeviceId, () => _direct.Config);
-        _lan = new LanClipboardServer(approvedDeviceId);
+        _ble = new BleClipboardService(approvedDeviceId, enabled, () => _direct.Config);
+        _lan = new LanClipboardServer(approvedDeviceId, enabled);
 
         _direct.Status += text => Status?.Invoke(text);
         _ble.Status += text => Status?.Invoke(text);
@@ -70,6 +74,9 @@ public sealed class ClipboardSyncCoordinator : IAsyncDisposable
         int bleImageLimitBytes,
         CancellationToken token)
     {
+        if (!_enabled())
+            return false;
+
         var id = _approvedDeviceId();
         if (id is null)
         {
@@ -127,7 +134,8 @@ public sealed class ClipboardSyncCoordinator : IAsyncDisposable
 
     private void OnReceived(string deviceId, ClipboardContent content)
     {
-        if (!string.Equals(_approvedDeviceId(), deviceId, StringComparison.Ordinal))
+        if (!_enabled() ||
+            !string.Equals(_approvedDeviceId(), deviceId, StringComparison.Ordinal))
             return;
 
         Status?.Invoke($"Clipboard 수신 · {Describe(content)}");
