@@ -14,6 +14,7 @@ final class P2PClipboardChannel {
 
     private var pendingWrites: [Data] = []
     private var writing = false
+    private var sessionKey: Data?
     private var sendSequence: UInt64 = 0
     private var receiveSequence: UInt64 = 0
     private(set) var ready = false
@@ -28,7 +29,7 @@ final class P2PClipboardChannel {
     ) {
         self.deviceHash = deviceHash
         self.secret = secret
-        self.aad = Data("ConPhone-Clipboard-P2P-v1".utf8) + deviceHash
+        self.aad = Data("ConPhone-Clipboard-P2P-v2".utf8) + deviceHash
         self.onFrame = onFrame
         self.onStatus = onStatus
 
@@ -69,6 +70,7 @@ final class P2PClipboardChannel {
     func close() {
         queue.async { [weak self] in
             self?.ready = false
+            self?.sessionKey = nil
             self?.pendingWrites.removeAll()
             self?.connection.cancel()
         }
@@ -80,7 +82,7 @@ final class P2PClipboardChannel {
             _ = SecRandomCopyBytes(kSecRandomDefault, 16, bytes.baseAddress!)
         }
 
-        let hello = Data("CPHELLO1".utf8)
+        let hello = Data("CPHELLO2".utf8)
         let signed = hello + deviceHash + clientNonce
         let mac = hmac(signed)
         let message = signed + mac
@@ -100,7 +102,7 @@ final class P2PClipboardChannel {
                     self.connection.cancel()
                 case .success(let response):
                     guard response.count == 56,
-                          response.prefix(8) == Data("CPREADY1".utf8) else {
+                          response.prefix(8) == Data("CPREADY2".utf8) else {
                         self.onStatus("P2P 인증 응답 형식 오류")
                         self.connection.cancel()
                         return
@@ -109,13 +111,20 @@ final class P2PClipboardChannel {
                     let serverNonce = response.subdata(in: 8..<24)
                     let serverMac = response.subdata(in: 24..<56)
                     let expected = self.hmac(
-                        Data("CPREADY1".utf8) + clientNonce + serverNonce
+                        Data("CPREADY2".utf8) + clientNonce + serverNonce
                     )
                     guard serverMac == expected else {
                         self.onStatus("P2P 인증 실패")
                         self.connection.cancel()
                         return
                     }
+
+                    self.sessionKey = self.hmac(
+                        Data("ConPhone-P2P-Session-v2".utf8) +
+                        self.deviceHash +
+                        clientNonce +
+                        serverNonce
+                    )
 
                     self.ready = true
                     self.onStatus("Clipboard P2P 고속 채널 연결됨")
@@ -136,9 +145,10 @@ final class P2PClipboardChannel {
             var sequenceData = Data()
             sequenceData.appendUInt64LE(sendSequence)
 
+            guard let sessionKey else { throw ChannelError.sessionKey }
             let sealed = try AES.GCM.seal(
                 plaintext,
-                using: SymmetricKey(data: secret),
+                using: SymmetricKey(data: sessionKey),
                 authenticating: aad + sequenceData
             )
             let nonce = Data(sealed.nonce)
@@ -214,9 +224,12 @@ final class P2PClipboardChannel {
                                 ciphertext: ciphertext,
                                 tag: tag
                             )
+                            guard let sessionKey = self.sessionKey else {
+                                throw ChannelError.sessionKey
+                            }
                             let plaintext = try AES.GCM.open(
                                 box,
-                                using: SymmetricKey(data: self.secret),
+                                using: SymmetricKey(data: sessionKey),
                                 authenticating: self.aad + sequenceData
                             )
                             self.receiveSequence = sequence
