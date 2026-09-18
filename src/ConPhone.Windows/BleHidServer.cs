@@ -617,7 +617,7 @@ public sealed class BleHidServer : IDisposable
 
         if (_system is null || client is null)
             throw new NotSupportedException(
-                "휴대폰이 시스템 잠금 HID Report를 구독하지 않았습니다. 0.2.1 HID 프로필로 다시 페어링한 뒤 확인하세요.");
+                "휴대폰이 시스템 잠금 HID Report를 구독하지 않았습니다. 0.2.2 HID 프로필로 다시 페어링한 뒤 확인하세요.");
 
         await _send.WaitAsync(token).ConfigureAwait(false);
         try
