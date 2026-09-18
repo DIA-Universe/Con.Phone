@@ -17,12 +17,17 @@ public sealed class ClipboardSyncCoordinator : IAsyncDisposable
 
     public ClipboardSyncCoordinator(
         Func<string?> approvedDeviceId,
+        Func<string, bool> trustedDevice,
         Func<bool> enabled)
     {
         _approvedDeviceId = approvedDeviceId;
         _enabled = enabled;
         _direct = new DirectClipboardLink();
-        _ble = new BleClipboardService(approvedDeviceId, enabled, GetDirectLinkConfig);
+        _ble = new BleClipboardService(
+            approvedDeviceId,
+            trustedDevice,
+            enabled,
+            GetDirectLinkConfig);
         _lan = new LanClipboardServer(approvedDeviceId, enabled);
 
         _direct.Status += text => Status?.Invoke(text);
@@ -63,6 +68,13 @@ public sealed class ClipboardSyncCoordinator : IAsyncDisposable
             Status?.Invoke($"Clipboard BLE fallback 시작 실패: {ex.Message}");
         }
 
+    }
+
+    public void TargetChanged()
+    {
+        _lan.Deactivate();
+        _direct.Stop();
+        Status?.Invoke("활성 휴대폰 변경 · P2P 채널을 새 대상으로 재설정합니다.");
     }
 
     public async Task SetActiveAsync(bool active)
