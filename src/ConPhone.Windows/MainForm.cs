@@ -212,7 +212,9 @@ public sealed class MainForm : Form
         }
         else
         {
-            _clipboardSync = new ClipboardSyncCoordinator(() => _ble.ApprovedId);
+            _clipboardSync = new ClipboardSyncCoordinator(
+                () => _ble.ApprovedId,
+                () => _settings.ClipboardSyncEnabled);
             ConfigureTray();
             ConfigureRuntimeEvents();
             _pump = Task.Run(PumpAsync);
