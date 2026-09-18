@@ -129,11 +129,11 @@ public sealed class DirectClipboardLink : IDisposable
         try
         {
             publisher.Start();
-            Status?.Invoke("Clipboard P2P 고속 링크 광고 시작.");
+            Status?.Invoke("Clipboard P2P 고속 링크 시작.");
         }
         catch (Exception ex)
         {
-            Status?.Invoke($"Clipboard P2P 시작 불가; LAN/BLE fallback 유지: {ex.Message}");
+            Status?.Invoke($"Clipboard P2P 시작 불가; BLE fallback 유지: {ex.Message}");
             Stop();
         }
     }
