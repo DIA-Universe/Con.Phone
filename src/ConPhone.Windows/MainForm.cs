@@ -173,7 +173,8 @@ public sealed class MainForm : Form
 
     private readonly bool _previewMode;
     private Task? _pump;
-    private long _epoch, _sent;
+    private long _epoch, _sent, _lastPointerSentTicks;
+    private int _lastObservedPointerButtons, _lastSentPointerButtons;
     private bool _closing, _closed, _exitRequested;
     private string _lastError = "None";
 
@@ -679,6 +680,21 @@ public sealed class MainForm : Form
                 ? _pointerScaler.Apply(pointer)
                 : packet;
 
+            if (outgoing is PointerPacket scaled)
+            {
+                var previousButtons = (byte)Interlocked.Exchange(
+                    ref _lastObservedPointerButtons,
+                    scaled.Buttons);
+                var buttonTransition = scaled.Buttons != previousButtons;
+
+                if (!buttonTransition &&
+                    scaled.X == 0 &&
+                    scaled.Y == 0 &&
+                    scaled.Wheel == 0 &&
+                    scaled.Pan == 0)
+                    return;
+            }
+
             if (_input.IsRemote &&
                 !_outbox.TryAdd(new Envelope(Volatile.Read(ref _epoch), outgoing)))
             {
@@ -1123,7 +1139,11 @@ public sealed class MainForm : Form
     private void ImmediateLocal()
     {
         _input.Deactivate();
+        _ble.SetInteractiveMode(false);
         _pointerScaler.Reset();
+        Interlocked.Exchange(ref _lastPointerSentTicks, 0);
+        Interlocked.Exchange(ref _lastObservedPointerButtons, 0);
+        Interlocked.Exchange(ref _lastSentPointerButtons, 0);
         Interlocked.Increment(ref _epoch);
         _outbox.Clear();
     }
@@ -1181,9 +1201,12 @@ public sealed class MainForm : Form
         await SyncLatestClipboardToPhoneAsync();
 
         _pointerScaler.Reset();
+        _ble.SetInteractiveMode(true);
         _input.Activate();
 
-        Log($"휴대폰 입력 시작 · {HotkeyCatalog.Display(_settings.EmergencyHotkey)}로 즉시 복귀");
+        Log(
+            $"휴대폰 입력 시작 · 마우스 pacing {_ble.MousePacingIntervalMs}ms · " +
+            $"{HotkeyCatalog.Display(_settings.EmergencyHotkey)}로 즉시 복귀");
     }
 
     private async Task SyncLatestClipboardToPhoneAsync()
@@ -1324,6 +1347,34 @@ public sealed class MainForm : Form
             Log("HID 구독 기기가 없습니다. 휴대폰 Bluetooth 페어링과 '입력 장치' 상태를 확인하세요.");
     }
 
+    private async Task PacePointerAsync(
+        PointerPacket pointer,
+        CancellationToken token)
+    {
+        var previousButtons = (byte)Volatile.Read(ref _lastSentPointerButtons);
+        var urgent =
+            pointer.Buttons != previousButtons ||
+            pointer.Wheel != 0 ||
+            pointer.Pan != 0;
+
+        if (urgent || (pointer.X == 0 && pointer.Y == 0))
+            return;
+
+        var last = Interlocked.Read(ref _lastPointerSentTicks);
+        if (last == 0) return;
+
+        var elapsedMs =
+            (System.Diagnostics.Stopwatch.GetTimestamp() - last) *
+            1000.0 /
+            System.Diagnostics.Stopwatch.Frequency;
+
+        var delayMs = _ble.MousePacingIntervalMs - elapsedMs;
+        if (delayMs > 0.5)
+            await Task.Delay(
+                TimeSpan.FromMilliseconds(Math.Ceiling(delayMs)),
+                token).ConfigureAwait(false);
+    }
+
     private async Task PumpAsync()
     {
         while (!_lifetime.IsCancellationRequested)
@@ -1331,6 +1382,10 @@ public sealed class MainForm : Form
             try
             {
                 var envelope = await _outbox.TakeAsync(_lifetime.Token);
+                var pointer = envelope.Packet as PointerPacket;
+
+                if (pointer is not null)
+                    await PacePointerAsync(pointer, _lifetime.Token).ConfigureAwait(false);
 
                 foreach (var report in Hid.Encode(envelope.Packet))
                 {
@@ -1345,6 +1400,14 @@ public sealed class MainForm : Form
                         timeout.Token);
 
                     Interlocked.Increment(ref _sent);
+                }
+
+                if (pointer is not null)
+                {
+                    Volatile.Write(ref _lastSentPointerButtons, pointer.Buttons);
+                    Interlocked.Exchange(
+                        ref _lastPointerSentTicks,
+                        System.Diagnostics.Stopwatch.GetTimestamp());
                 }
             }
             catch (OperationCanceledException) when (_lifetime.IsCancellationRequested)
@@ -1390,6 +1453,7 @@ public sealed class MainForm : Form
             LastError = _lastError,
             MouseSpeedPercent = _settings.MouseSpeedPercent,
             ScrollSpeedPercent = _settings.ScrollSpeedPercent,
+            MousePacingIntervalMs = _ble.MousePacingIntervalMs,
             ToggleHotkey = HotkeyCatalog.Display(_settings.ToggleHotkey),
             EmergencyHotkey = HotkeyCatalog.Display(_settings.EmergencyHotkey),
             LockAndReturnHotkey = HotkeyCatalog.Display(_settings.LockAndReturnHotkey),
