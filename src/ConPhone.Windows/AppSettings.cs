@@ -40,6 +40,10 @@ public sealed class ConPhoneSettings
     public int ClipboardHistoryLimit { get; set; } = 50;
     public bool CaptureClipboardText { get; set; } = true;
     public bool CaptureClipboardImages { get; set; } = true;
+    public bool ClipboardSyncEnabled { get; set; } = true;
+    public bool ClipboardAutoSendText { get; set; } = true;
+    public bool ClipboardAutoSendImages { get; set; } = true;
+    public int ClipboardBleImageLimitKb { get; set; } = 512;
 }
 
 public static class SettingsStore
@@ -83,6 +87,7 @@ public static class SettingsStore
         settings.MouseSpeedPercent = Math.Clamp(settings.MouseSpeedPercent, 25, 300);
         settings.ScrollSpeedPercent = Math.Clamp(settings.ScrollSpeedPercent, 25, 300);
         settings.ClipboardHistoryLimit = Math.Clamp(settings.ClipboardHistoryLimit, 10, 200);
+        settings.ClipboardBleImageLimitKb = Math.Clamp(settings.ClipboardBleImageLimitKb, 64, 4096);
 
         settings.ToggleHotkey ??= DefaultToggle();
         settings.EmergencyHotkey ??= DefaultEmergency();
