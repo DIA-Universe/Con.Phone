@@ -84,7 +84,7 @@ public sealed class MainForm : Form
 
     private readonly Label _mouseSpeedValue = new() { AutoSize = true, Width = 70, ForeColor = Secondary };
     private readonly Label _scrollSpeedValue = new() { AutoSize = true, Width = 70, ForeColor = Secondary };
-    private readonly CheckBox _invertScroll = new() { Text = "스크롤 방향 반전", AutoSize = true, ForeColor = Text };
+    private readonly CheckBox _invertScroll = new() { Text = "스크롤 방향 반전", AutoSize = true, ForeColor = TextColor };
 
     private readonly TextBox _toggleHotkeyBox = HotkeyBox();
     private readonly TextBox _emergencyHotkeyBox = HotkeyBox();
@@ -153,7 +153,7 @@ public sealed class MainForm : Form
         StartPosition = FormStartPosition.CenterScreen;
         Font = new Font("Segoe UI", 10);
         BackColor = Bg;
-        ForeColor = Text;
+        ForeColor = TextColor;
         AutoScaleMode = AutoScaleMode.Dpi;
 
         LoadSettingsToUi();
