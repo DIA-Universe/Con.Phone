@@ -3,7 +3,6 @@ import UniformTypeIdentifiers
 
 final class ShareViewController: UIViewController {
     private let statusLabel = UILabel()
-    private let openButton = UIButton(type: .system)
     private let doneButton = UIButton(type: .system)
     private var processed = false
 
@@ -17,14 +16,10 @@ final class ShareViewController: UIViewController {
         statusLabel.textAlignment = .center
         statusLabel.text = "공유 내용을 확인하고 있습니다…"
 
-        openButton.setTitle("Con.Phone 열기", for: .normal)
-        openButton.isEnabled = false
-        openButton.addTarget(self, action: #selector(openContainingApp), for: .touchUpInside)
-
         doneButton.setTitle("완료", for: .normal)
         doneButton.addTarget(self, action: #selector(complete), for: .touchUpInside)
 
-        let stack = UIStackView(arrangedSubviews: [statusLabel, openButton, doneButton])
+        let stack = UIStackView(arrangedSubviews: [statusLabel, doneButton])
         stack.axis = .vertical
         stack.spacing = 14
         stack.translatesAutoresizingMaskIntoConstraints = false
@@ -135,27 +130,9 @@ final class ShareViewController: UIViewController {
             case .success:
                 self.statusLabel.text =
                     "PC 전송 대기열에 추가했습니다. Con.Phone 앱을 열면 자동으로 전송합니다."
-                self.openButton.isEnabled = true
-                self.openContainingApp()
             case .failure(let error):
                 self.statusLabel.text =
                     "공유 준비 실패: \(error.localizedDescription)"
-                self.openButton.isEnabled = false
-            }
-        }
-    }
-
-    @objc private func openContainingApp() {
-        guard let url = URL(string: "conphone://share") else { return }
-
-        extensionContext?.open(url) { opened in
-            DispatchQueue.main.async {
-                if opened {
-                    self.complete()
-                } else {
-                    self.statusLabel.text =
-                        "공유 내용은 저장했습니다. Con.Phone 앱을 직접 열면 PC로 전송합니다."
-                }
             }
         }
     }
