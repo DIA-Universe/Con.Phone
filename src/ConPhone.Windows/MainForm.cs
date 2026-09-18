@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Text.Json;
 using ConPhone.Core;
 using Microsoft.Win32;
@@ -38,7 +39,7 @@ public sealed class MainForm : Form
     private Panel? _contentHost;
     private readonly NotifyIcon _tray = new() { Text = "Con.Phone · 로컬 입력", Icon = SystemIcons.Application, Visible = true };
     private readonly System.Windows.Forms.Timer _timer = new() { Interval = 400 };
-    private readonly System.Windows.Forms.Timer _peerTimer = new() { Interval = 1500 };
+    private readonly System.Windows.Forms.Timer _peerTimer = new() { Interval = 5000 };
     private Task? _pump;
     private long _epoch, _sent;
     private bool _closing, _closed, _exitRequested;
@@ -46,9 +47,10 @@ public sealed class MainForm : Form
 
     public MainForm()
     {
-        Text = "Con.Phone 0.2.0 · Bluetooth 입력 허브";
-        Width = 1080; Height = 760; MinimumSize = new Size(920, 680);
+        Text = "Con.Phone 0.2.1 · Bluetooth 입력 허브";
+        Width = 1080; Height = 740; MinimumSize = new Size(860, 600);
         StartPosition = FormStartPosition.CenterScreen;
+        AutoScaleMode = AutoScaleMode.Dpi;
         Font = ConPhoneTheme.Font(10f);
         BackColor = ConPhoneTheme.Basement;
 
@@ -71,6 +73,7 @@ public sealed class MainForm : Form
             _settings.CaptureClipboardText,
             _settings.CaptureClipboardImages);
         _clipboard.Changed += () => Post(RefreshClipboardList);
+        _clipboard.Status += text => Post(() => Log(text));
 
         LoadSettingsToUi();
         ApplyInputSettings(save: false);
@@ -80,6 +83,12 @@ public sealed class MainForm : Form
         _mouseSpeed.ValueChanged += (_, _) => _mouseSpeedValue.Text = $"{_mouseSpeed.Value}%";
         _scrollSpeed.ValueChanged += (_, _) => _scrollSpeedValue.Text = $"{_scrollSpeed.Value}%";
         _clipboardList.SelectedIndexChanged += (_, _) => UpdateClipboardDetail();
+
+        foreach (var box in new[] { _toggleKey, _emergencyKey, _lockAndReturnKey })
+        {
+            box.CaptureStateChanged += active => _input.SetHotkeysEnabled(!active);
+            box.BindingChanged += _ => ApplyCapturedHotkey();
+        }
 
         var menu = new ContextMenuStrip();
         menu.Items.Add("창 열기", null, (_, _) => { Show(); WindowState = FormWindowState.Normal; Activate(); });
@@ -108,13 +117,14 @@ public sealed class MainForm : Form
             var emergency = HotkeyCatalog.Display(_settings.EmergencyHotkey);
             _state.Text = _input.IsRemote
                 ? $"휴대폰 조작 중 · {emergency}로 즉시 복귀"
-                : $"노트북 조작 중 · 광고:{_ble.Advertisement} · HID구독 K:{_ble.KeyboardSubscribers} M:{_ble.MouseSubscribers} · 승인:{(_ble.Ready ? "준비됨" : "대기")}";
+                : $"노트북 조작 중 · 광고:{_ble.Advertisement} · HID K:{_ble.KeyboardSubscribers} M:{_ble.MouseSubscribers} S:{_ble.SystemSubscribers} · 승인:{(_ble.Ready ? "준비됨" : "대기")}";
             _tray.Text = _input.IsRemote ? $"Con.Phone · 휴대폰 입력 / {emergency} 복귀" : "Con.Phone · 노트북 입력";
         };
         _timer.Start();
         _peerTimer.Tick += (_, _) =>
         {
-            if (_ble.Advertisement is "Started" or "StartedWithoutAllAdvertisementData")
+            if (!_input.IsRemote && _ble.ApprovedId is null &&
+                _ble.Advertisement is "Started" or "StartedWithoutAllAdvertisementData")
                 Dispatch(() => RefreshPeersAsync(true));
         };
         _peerTimer.Start();
@@ -123,7 +133,7 @@ public sealed class MainForm : Form
             await _input.Started;
             _diagnosis.Text = await BleHidServer.DiagnoseAsync();
             await _ble.StartAsync();
-            Log("Bluetooth HID 광고를 자동 시작했습니다. 이전 등록이 연결 실패하면 휴대폰에서 삭제 후 이 PC를 새로 검색해 페어링하세요.");
+            Log("Bluetooth HID 광고를 시작했습니다. 0.2.1의 휴대폰 잠금 기능은 HID Report가 추가되어 기존 페어링에서는 동작하지 않을 수 있습니다. 잠금 기능을 쓰려면 휴대폰의 PC 등록을 삭제하고 한 번 다시 페어링하세요.");
         });
         _pump = Task.Run(PumpAsync);
         SystemEvents.PowerModeChanged += PowerChanged;
@@ -181,7 +191,7 @@ public sealed class MainForm : Form
         {
             Dock = DockStyle.Bottom,
             Height = 54,
-            Text = "0.2.0\r\n설정은 이 PC에만 저장됩니다.",
+            Text = "0.2.1\r\n설정은 이 PC에만 저장됩니다.",
             Font = ConPhoneTheme.Font(8.5f),
             ForeColor = ConPhoneTheme.TextTertiary,
             TextAlign = ContentAlignment.BottomLeft,
