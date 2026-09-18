@@ -299,7 +299,7 @@ final class BleReassembler {
     }
 }
 
-private extension Data {
+extension Data {
     mutating func appendUInt16LE(_ value: UInt16) {
         var v = value.littleEndian
         Swift.withUnsafeBytes(of: &v) { append(contentsOf: $0) }
