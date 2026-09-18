@@ -26,9 +26,6 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
-      - name: Install relay dependencies
+      - name: Standalone relay integration test
         working-directory: relay
-        run: npm install --package-lock-only && npm ci
-      - name: Relay integration test
-        working-directory: relay
-        run: npm test
+        run: node test-standalone.mjs
