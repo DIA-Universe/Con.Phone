@@ -11,9 +11,11 @@ import android.widget.TextView
 
 class MainActivity : Activity() {
     private val requestCode = 7001
+    private var pendingServiceIntent: Intent? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        capturePendingServiceIntent(intent)
 
         val padding = (20 * resources.displayMetrics.density).toInt()
         val root = LinearLayout(this).apply {
@@ -40,14 +42,10 @@ class MainActivity : Activity() {
         root.addView(Button(this).apply {
             text = "현재 텍스트/이미지를 PC로 보내기"
             setOnClickListener {
-                if (hasBluetoothPermissions()) {
-                    startForegroundService(
-                        Intent(this@MainActivity, ClipboardBridgeService::class.java)
-                            .setAction(ClipboardBridgeService.ACTION_SEND)
-                    )
-                } else {
-                    requestPermissions()
-                }
+                pendingServiceIntent =
+                    Intent(this@MainActivity, ClipboardBridgeService::class.java)
+                        .setAction(ClipboardBridgeService.ACTION_SEND)
+                ensurePermissionsAndStart()
             }
         })
 
@@ -81,6 +79,33 @@ class MainActivity : Activity() {
             Intent(this, ClipboardBridgeService::class.java)
                 .setAction(ClipboardBridgeService.ACTION_START)
         )
+
+        pendingServiceIntent?.let { pending ->
+            pendingServiceIntent = null
+            startForegroundService(pending)
+        }
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        capturePendingServiceIntent(intent)
+        ensurePermissionsAndStart()
+    }
+
+    private fun capturePendingServiceIntent(source: Intent?) {
+        val action = source?.action ?: return
+        if (action != ClipboardBridgeService.ACTION_SEND &&
+            action != ClipboardBridgeService.ACTION_SEND_SHARED_TEXT &&
+            action != ClipboardBridgeService.ACTION_SEND_SHARED_IMAGE)
+            return
+
+        pendingServiceIntent =
+            Intent(this, ClipboardBridgeService::class.java)
+                .setAction(action)
+                .also { target ->
+                    source.extras?.let { target.putExtras(it) }
+                }
     }
 
     private fun hasBluetoothPermissions(): Boolean =
