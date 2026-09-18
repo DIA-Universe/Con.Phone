@@ -50,8 +50,10 @@ object ClipboardProtocol {
     const val MAX_IMAGE = 32 * 1024 * 1024
     const val BLE_HEADER = 10
     const val WIRE_HEADER = 70
+    const val MIN_CHUNK = 256
     const val MAX_CHUNK = 1024 * 1024
     const val MAX_WIRE_FRAME = WIRE_HEADER + MAX_CHUNK
+    const val MAX_INFLIGHT = 8
     private val magic = byteArrayOf('C'.code.toByte(), 'P'.code.toByte(), 'H'.code.toByte(), '1'.code.toByte())
     private val random = SecureRandom()
 
@@ -99,7 +101,7 @@ object ClipboardProtocol {
     }
 
     fun encode(content: ClipboardContent, chunkSize: Int = 64 * 1024): List<ByteArray> {
-        require(chunkSize in 256..MAX_CHUNK)
+        require(chunkSize in MIN_CHUNK..MAX_CHUNK)
         validate(content.kind, content.data)
 
         val transferId = ByteArray(16).also(random::nextBytes)
@@ -209,6 +211,9 @@ class ClipboardWireReassembler {
         require(!completed.containsKey(id)) { "Clipboard transfer replay rejected." }
         val state = pending.compute(id) { _, current ->
             if (current == null) {
+                require(pending.size < ClipboardProtocol.MAX_INFLIGHT) {
+                    "Too many clipboard transfers are in flight."
+                }
                 Pending(chunk.kind, chunk.count, chunk.totalLength, chunk.hash.copyOf())
             } else {
                 require(
@@ -274,14 +279,24 @@ class BleReassembler {
         }
 
         val state = pending.compute(fragment.transferId) { _, current ->
-            if (current == null) Pending(fragment.count)
+            if (current == null) {
+                require(pending.size < ClipboardProtocol.MAX_INFLIGHT) {
+                    "Too many BLE clipboard frames are in flight."
+                }
+                Pending(fragment.count)
+            }
             else {
                 require(current.count == fragment.count) { "BLE fragment count changed." }
                 current
             }
         }!!
 
-        if (!state.parts.containsKey(fragment.index)) {
+        val existing = state.parts[fragment.index]
+        if (existing != null) {
+            require(existing.contentEquals(fragment.payload)) {
+                "BLE duplicate fragment payload changed."
+            }
+        } else {
             require(state.bytes.toLong() + fragment.payload.size <= ClipboardProtocol.MAX_WIRE_FRAME) {
                 "BLE clipboard frame exceeds the wire-frame safety limit."
             }
