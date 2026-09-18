@@ -49,6 +49,9 @@ object ClipboardProtocol {
     const val MAX_TEXT = 1024 * 1024
     const val MAX_IMAGE = 32 * 1024 * 1024
     const val BLE_HEADER = 10
+    const val WIRE_HEADER = 70
+    const val MAX_CHUNK = 1024 * 1024
+    const val MAX_WIRE_FRAME = WIRE_HEADER + MAX_CHUNK
     private val magic = byteArrayOf('C'.code.toByte(), 'P'.code.toByte(), 'H'.code.toByte(), '1'.code.toByte())
     private val random = SecureRandom()
 
@@ -96,7 +99,7 @@ object ClipboardProtocol {
     }
 
     fun encode(content: ClipboardContent, chunkSize: Int = 64 * 1024): List<ByteArray> {
-        require(chunkSize in 256..1024 * 1024)
+        require(chunkSize in 256..MAX_CHUNK)
         validate(content.kind, content.data)
 
         val transferId = ByteArray(16).also(random::nextBytes)
@@ -125,7 +128,7 @@ object ClipboardProtocol {
     }
 
     fun decode(frame: ByteArray): ClipboardWireChunk {
-        require(frame.size >= 70) { "Clipboard frame too short." }
+        require(frame.size in WIRE_HEADER..MAX_WIRE_FRAME) { "Clipboard frame size is invalid." }
         require(frame.copyOfRange(0, 4).contentEquals(magic) && frame[4].toInt() == 1) {
             "Unsupported clipboard frame."
         }
@@ -141,7 +144,7 @@ object ClipboardProtocol {
         val payloadLength = b.int
 
         require(count > 0 && index in 0 until count && total > 0)
-        require(payloadLength >= 0 && b.remaining() == payloadLength)
+        require(payloadLength in 0..MAX_CHUNK && b.remaining() == payloadLength)
         val payload = ByteArray(payloadLength).also(b::get)
 
         return ClipboardWireChunk(transfer, kind, index, count, total, hash, payload)
@@ -190,7 +193,8 @@ class ClipboardWireReassembler {
         val total: Int,
         val hash: ByteArray,
         val parts: MutableMap<Int, ByteArray> = mutableMapOf(),
-        val created: Long = System.currentTimeMillis()
+        val created: Long = System.currentTimeMillis(),
+        var bytes: Int = 0
     )
 
     private val pending = ConcurrentHashMap<String, Pending>()
@@ -244,7 +248,8 @@ class BleReassembler {
     private data class Pending(
         val count: Int,
         val parts: MutableMap<Int, ByteArray> = mutableMapOf(),
-        val created: Long = System.currentTimeMillis()
+        val created: Long = System.currentTimeMillis(),
+        var bytes: Int = 0
     )
 
     private val pending = ConcurrentHashMap<UInt, Pending>()
@@ -266,7 +271,14 @@ class BleReassembler {
             }
         }!!
 
-        state.parts.putIfAbsent(fragment.index, fragment.payload.copyOf())
+        if (!state.parts.containsKey(fragment.index)) {
+            require(state.bytes.toLong() + fragment.payload.size <= ClipboardProtocol.MAX_WIRE_FRAME) {
+                "BLE clipboard frame exceeds the wire-frame safety limit."
+            }
+            val copy = fragment.payload.copyOf()
+            state.parts[fragment.index] = copy
+            state.bytes += copy.size
+        }
         if (state.parts.size != state.count) return null
 
         val output = ByteArrayOutputStream()
