@@ -23,8 +23,93 @@ public sealed class HotkeyBinding
     public HotkeyBinding Clone() => new() { Key = Key, Modifiers = Modifiers };
 }
 
+public enum TargetProfile
+{
+    Android = 0,
+    IPhoneIPad = 1,
+    Mac = 2
+}
+
+public enum SpecialKeyAction
+{
+    None = 0,
+    PlayPause,
+    FastForward,
+    Rewind,
+    NextTrack,
+    PreviousTrack,
+    Stop,
+    Eject,
+    Mute,
+    VolumeUp,
+    VolumeDown,
+    Search,
+    Home,
+    Back,
+    PowerPlus
+}
+
+public sealed class SpecialKeyBinding
+{
+    public int SourceKey { get; set; }
+
+    [JsonConverter(typeof(JsonStringEnumConverter))]
+    public SpecialKeyAction Action { get; set; }
+}
+
+public static class SpecialKeyCatalog
+{
+    public static List<SpecialKeyBinding> Defaults() =>
+        Enumerable.Range((int)Keys.F1, 12)
+            .Select(key => new SpecialKeyBinding { SourceKey = key, Action = SpecialKeyAction.None })
+            .ToList();
+
+    public static string Display(SpecialKeyAction action) => action switch
+    {
+        SpecialKeyAction.None => "없음",
+        SpecialKeyAction.PlayPause => "재생 / 일시정지",
+        SpecialKeyAction.FastForward => "빨리 감기",
+        SpecialKeyAction.Rewind => "되감기",
+        SpecialKeyAction.NextTrack => "다음 트랙",
+        SpecialKeyAction.PreviousTrack => "이전 트랙",
+        SpecialKeyAction.Stop => "정지",
+        SpecialKeyAction.Eject => "Eject / 화면 키보드",
+        SpecialKeyAction.Mute => "음소거",
+        SpecialKeyAction.VolumeUp => "볼륨 올림",
+        SpecialKeyAction.VolumeDown => "볼륨 내림",
+        SpecialKeyAction.Search => "검색",
+        SpecialKeyAction.Home => "Home",
+        SpecialKeyAction.Back => "Back",
+        SpecialKeyAction.PowerPlus => "Power+ / 잠금 후 PC 복귀",
+        _ => action.ToString()
+    };
+
+    public static ushort ConsumerUsage(SpecialKeyAction action) => action switch
+    {
+        SpecialKeyAction.PlayPause => 0x00CD,
+        SpecialKeyAction.FastForward => 0x00B3,
+        SpecialKeyAction.Rewind => 0x00B4,
+        SpecialKeyAction.NextTrack => 0x00B5,
+        SpecialKeyAction.PreviousTrack => 0x00B6,
+        SpecialKeyAction.Stop => 0x00B7,
+        SpecialKeyAction.Eject => 0x00B8,
+        SpecialKeyAction.Mute => 0x00E2,
+        SpecialKeyAction.VolumeUp => 0x00E9,
+        SpecialKeyAction.VolumeDown => 0x00EA,
+        SpecialKeyAction.Search => 0x0221,
+        SpecialKeyAction.Home => 0x0223,
+        SpecialKeyAction.Back => 0x0224,
+        _ => 0
+    };
+}
+
 public sealed class ConPhoneSettings
 {
+    [JsonConverter(typeof(JsonStringEnumConverter))]
+    public TargetProfile TargetProfile { get; set; } = TargetProfile.Android;
+    public bool AppleSwapCommandOption { get; set; }
+    public List<SpecialKeyBinding> SpecialKeys { get; set; } = SpecialKeyCatalog.Defaults();
+
     public int MouseSpeedPercent { get; set; } = 100;
     public int ScrollSpeedPercent { get; set; } = 100;
     public bool InvertScroll { get; set; }
@@ -83,6 +168,23 @@ public static class SettingsStore
         settings.MouseSpeedPercent = Math.Clamp(settings.MouseSpeedPercent, 25, 300);
         settings.ScrollSpeedPercent = Math.Clamp(settings.ScrollSpeedPercent, 25, 300);
         settings.ClipboardHistoryLimit = Math.Clamp(settings.ClipboardHistoryLimit, 10, 200);
+
+        var configuredSpecialKeys = settings.SpecialKeys ?? [];
+        settings.SpecialKeys = SpecialKeyCatalog.Defaults()
+            .Select(defaultBinding =>
+            {
+                var configured = configuredSpecialKeys.FirstOrDefault(x =>
+                    x.SourceKey == defaultBinding.SourceKey &&
+                    Enum.IsDefined(x.Action));
+                return configured is null
+                    ? defaultBinding
+                    : new SpecialKeyBinding
+                    {
+                        SourceKey = configured.SourceKey,
+                        Action = configured.Action
+                    };
+            })
+            .ToList();
 
         settings.ToggleHotkey ??= DefaultToggle();
         settings.EmergencyHotkey ??= DefaultEmergency();
