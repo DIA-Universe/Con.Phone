@@ -11,10 +11,9 @@ public sealed class P2PClipboardServer : IAsyncDisposable
 {
     public const int DataPort = 47911;
 
-    private static readonly byte[] Hello = "CPHELLO2"u8.ToArray();
-    private static readonly byte[] Ready = "CPREADY2"u8.ToArray();
-    private static readonly byte[] AadPrefix = "ConPhone-Clipboard-P2P-v2"u8.ToArray();
-    private static readonly byte[] SessionLabel = "ConPhone-P2P-Session-v2"u8.ToArray();
+    private static readonly byte[] Hello = P2PSecurity.HelloMagic.ToArray();
+    private static readonly byte[] Ready = P2PSecurity.ReadyMagic.ToArray();
+    private static readonly byte[] AadPrefix = P2PSecurity.AadPrefix.ToArray();
 
     private readonly Func<string?> _approvedDeviceId;
     private readonly Func<bool> _enabled;
@@ -127,7 +126,7 @@ public sealed class P2PClipboardServer : IAsyncDisposable
             serverMac.CopyTo(ready, 24);
             await stream.WriteAsync(ready, token).ConfigureAwait(false);
 
-            var sessionKey = DeriveSessionKey(
+            var sessionKey = P2PSecurity.DeriveSessionKey(
                 secret,
                 approvedHash,
                 clientNonce,
@@ -211,37 +210,6 @@ public sealed class P2PClipboardServer : IAsyncDisposable
 
         client?.Close();
         Status?.Invoke("Clipboard P2P 연결 종료.");
-    }
-
-    private static byte[] DeriveSessionKey(
-        ReadOnlySpan<byte> secret,
-        ReadOnlySpan<byte> deviceHash,
-        ReadOnlySpan<byte> clientNonce,
-        ReadOnlySpan<byte> serverNonce)
-    {
-        var material = new byte[
-            SessionLabel.Length +
-            deviceHash.Length +
-            clientNonce.Length +
-            serverNonce.Length];
-
-        var offset = 0;
-        SessionLabel.CopyTo(material, offset);
-        offset += SessionLabel.Length;
-        deviceHash.CopyTo(material.AsSpan(offset));
-        offset += deviceHash.Length;
-        clientNonce.CopyTo(material.AsSpan(offset));
-        offset += clientNonce.Length;
-        serverNonce.CopyTo(material.AsSpan(offset));
-
-        try
-        {
-            return HMACSHA256.HashData(secret, material);
-        }
-        finally
-        {
-            CryptographicOperations.ZeroMemory(material);
-        }
     }
 
     private static async Task<bool> ReadExactAsync(Stream stream, Memory<byte> buffer, CancellationToken token)
