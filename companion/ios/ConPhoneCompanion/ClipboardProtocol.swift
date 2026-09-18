@@ -1,5 +1,6 @@
 import Foundation
 import CryptoKit
+import Security
 
 enum ClipboardKind: UInt8 {
     case text = 1
