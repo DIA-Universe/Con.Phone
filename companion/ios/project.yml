@@ -1,0 +1,24 @@
+name: ConPhoneCompanion
+options:
+  bundleIdPrefix: universe.dia
+targets:
+  ConPhoneCompanion:
+    type: application
+    platform: iOS
+    deploymentTarget: "17.0"
+    sources:
+      - ConPhoneCompanion
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: universe.dia.conphone.ios
+        SWIFT_VERSION: "5.0"
+        CODE_SIGNING_ALLOWED: NO
+    info:
+      path: ConPhoneCompanion/Info.plist
+      properties:
+        CFBundleDisplayName: Con.Phone Companion
+        UILaunchScreen: {}
+        NSBluetoothAlwaysUsageDescription: Con.Phone PC와 텍스트 및 이미지를 Bluetooth로 동기화합니다.
+        NSLocalNetworkUsageDescription: 같은 LAN 또는 P2P 연결이 있을 때 클립보드를 더 빠르게 전송하기 위해 사용합니다.
+        UIBackgroundModes:
+          - bluetooth-central
