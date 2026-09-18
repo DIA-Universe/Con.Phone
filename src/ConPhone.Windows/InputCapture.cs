@@ -15,6 +15,7 @@ public sealed class InputCapture : IDisposable
     private nint _keyboardHook, _mouseHook;
     private Sink? _sink;
     private volatile bool _remote;
+    private volatile bool _hotkeysEnabled = true;
     private HotkeyBinding _toggleHotkey = new() { Key = 0x77 };
     private HotkeyBinding _emergencyHotkey = new() { Key = 0x78 };
     private HotkeyBinding _lockAndReturnHotkey = new() { Key = (int)Keys.L, Modifiers = HotkeyModifiers.Control | HotkeyModifiers.Alt };
@@ -30,6 +31,20 @@ public sealed class InputCapture : IDisposable
     public event Action<string>? Fault;
     public bool IsRemote => _remote;
     public Task Started => _started.Task;
+
+    public void SetHotkeysEnabled(bool enabled)
+    {
+        _hotkeysEnabled = enabled;
+        if (!enabled)
+        {
+            lock (_gate)
+            {
+                _downKeys.Clear();
+                _suppressUntilUp.Clear();
+                _localPassthroughUntilUp.Clear();
+            }
+        }
+    }
 
     public void ConfigureHotkeys(HotkeyBinding toggle, HotkeyBinding emergency, HotkeyBinding lockAndReturn)
     {
@@ -114,6 +129,7 @@ public sealed class InputCapture : IDisposable
             bool up = (k.Flags & 0x80) != 0;
             bool firstDown;
             HotkeyBinding toggle, emergency, lockAndReturn;
+            HotkeyModifiers modifiers;
 
             lock (_gate)
             {
@@ -128,11 +144,11 @@ public sealed class InputCapture : IDisposable
                 toggle = _toggleHotkey.Clone();
                 emergency = _emergencyHotkey.Clone();
                 lockAndReturn = _lockAndReturnHotkey.Clone();
+                modifiers = ModifiersFromDownKeysLocked();
             }
 
-            if (!up && firstDown)
+            if (_hotkeysEnabled && !up && firstDown)
             {
-                var modifiers = CurrentModifiers();
                 if (Matches(toggle, key, modifiers))
                 {
                     lock (_gate) _suppressUntilUp.Add(key);
@@ -176,13 +192,16 @@ public sealed class InputCapture : IDisposable
     private static bool Matches(HotkeyBinding binding, int key, HotkeyModifiers modifiers) =>
         binding.Key == key && binding.Modifiers == modifiers;
 
-    private static HotkeyModifiers CurrentModifiers()
+    private HotkeyModifiers ModifiersFromDownKeysLocked()
     {
         HotkeyModifiers modifiers = HotkeyModifiers.None;
-        if ((GetAsyncKeyState(0x11) & 0x8000) != 0) modifiers |= HotkeyModifiers.Control;
-        if ((GetAsyncKeyState(0x12) & 0x8000) != 0) modifiers |= HotkeyModifiers.Alt;
-        if ((GetAsyncKeyState(0x10) & 0x8000) != 0) modifiers |= HotkeyModifiers.Shift;
-        if ((GetAsyncKeyState(0x5B) & 0x8000) != 0 || (GetAsyncKeyState(0x5C) & 0x8000) != 0)
+        if (_downKeys.Contains(0x11) || _downKeys.Contains(0xA2) || _downKeys.Contains(0xA3))
+            modifiers |= HotkeyModifiers.Control;
+        if (_downKeys.Contains(0x12) || _downKeys.Contains(0xA4) || _downKeys.Contains(0xA5))
+            modifiers |= HotkeyModifiers.Alt;
+        if (_downKeys.Contains(0x10) || _downKeys.Contains(0xA0) || _downKeys.Contains(0xA1))
+            modifiers |= HotkeyModifiers.Shift;
+        if (_downKeys.Contains(0x5B) || _downKeys.Contains(0x5C))
             modifiers |= HotkeyModifiers.Windows;
         return modifiers;
     }
