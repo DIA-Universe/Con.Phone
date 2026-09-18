@@ -7,6 +7,25 @@ internal static class Program
     {
         ApplicationConfiguration.Initialize();
 
+        if (args.Length >= 3 &&
+            args[0].Equals("--apply-update", StringComparison.OrdinalIgnoreCase) &&
+            int.TryParse(args[2], out var oldProcessId))
+        {
+            try
+            {
+                LocalUpdateService.ApplyFromStagedProcess(args[1], oldProcessId);
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show(
+                    $"Con.Phone 업데이트 적용 실패.\r\n{ex.Message}",
+                    "업데이트",
+                    MessageBoxButtons.OK,
+                    MessageBoxIcon.Error);
+            }
+            return;
+        }
+
         if (args.Length >= 2 && args[0].Equals("--snapshot", StringComparison.OrdinalIgnoreCase))
         {
             var directory = Path.GetFullPath(args[1]);
