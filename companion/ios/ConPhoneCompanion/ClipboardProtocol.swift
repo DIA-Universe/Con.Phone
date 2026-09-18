@@ -40,8 +40,10 @@ enum ClipboardProtocol {
     static let maxImage = 32 * 1024 * 1024
     static let bleHeader = 10
     static let wireHeader = 70
+    static let minChunk = 256
     static let maxChunk = 1024 * 1024
     static let maxWireFrame = wireHeader + maxChunk
+    static let maxInflight = 8
     private static let magic = Data("CPH1".utf8)
 
     static func text(_ value: String) throws -> ClipboardContent {
@@ -89,7 +91,7 @@ enum ClipboardProtocol {
     }
 
     static func encode(_ content: ClipboardContent, chunkSize: Int = 64 * 1024) throws -> [Data] {
-        guard (256...maxChunk).contains(chunkSize) else {
+        guard (minChunk...maxChunk).contains(chunkSize) else {
             throw ProtocolError.invalidFrame
         }
         try validate(content.kind, content.data)
@@ -235,6 +237,11 @@ final class ClipboardWireReassembler {
             throw ClipboardProtocol.ProtocolError.invalidFrame
         }
 
+        if pending[chunk.transferId] == nil &&
+            pending.count >= ClipboardProtocol.maxInflight {
+            throw ClipboardProtocol.ProtocolError.tooLarge
+        }
+
         var state = pending[chunk.transferId] ?? Pending(
             kind: chunk.kind,
             count: chunk.count,
@@ -308,13 +315,23 @@ final class BleReassembler {
             throw ClipboardProtocol.ProtocolError.invalidFrame
         }
 
+        if pending[fragment.transferId] == nil &&
+            pending.count >= ClipboardProtocol.maxInflight {
+            throw ClipboardProtocol.ProtocolError.tooLarge
+        }
+
         var state = pending[fragment.transferId] ?? Pending(count: fragment.count)
         guard state.count == fragment.count else {
             pending.removeValue(forKey: fragment.transferId)
             throw ClipboardProtocol.ProtocolError.invalidFrame
         }
 
-        if state.parts[fragment.index] == nil {
+        if let existing = state.parts[fragment.index] {
+            guard existing == fragment.payload else {
+                pending.removeValue(forKey: fragment.transferId)
+                throw ClipboardProtocol.ProtocolError.invalidFrame
+            }
+        } else {
             guard state.bytes + fragment.payload.count <= ClipboardProtocol.maxWireFrame else {
                 pending.removeValue(forKey: fragment.transferId)
                 throw ClipboardProtocol.ProtocolError.tooLarge
