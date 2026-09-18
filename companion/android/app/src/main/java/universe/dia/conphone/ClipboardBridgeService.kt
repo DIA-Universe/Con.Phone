@@ -254,8 +254,10 @@ class ClipboardBridgeService : Service() {
                 handleCharacteristicRead(characteristic, characteristic.value ?: byteArrayOf())
             else if (characteristic.uuid == SECRET_UUID)
                 retrySecretRead(g)
-            else if (characteristic.uuid == DIRECT_LINK_UUID)
-                showStatus("P2P 설정 읽기 실패 · BLE fallback 유지")
+            else if (characteristic.uuid == DIRECT_LINK_UUID) {
+                showStatus("현재 비활성 기기 또는 P2P 준비 전 · 활성화 대기")
+                retryDirectLinkRead()
+            }
 
         }
 
@@ -269,8 +271,10 @@ class ClipboardBridgeService : Service() {
                 handleCharacteristicRead(characteristic, value)
             else if (characteristic.uuid == SECRET_UUID)
                 retrySecretRead(g)
-            else if (characteristic.uuid == DIRECT_LINK_UUID)
-                showStatus("P2P 설정 읽기 실패 · BLE fallback 유지")
+            else if (characteristic.uuid == DIRECT_LINK_UUID) {
+                showStatus("현재 비활성 기기 또는 P2P 준비 전 · 활성화 대기")
+                retryDirectLinkRead()
+            }
 
         }
 
