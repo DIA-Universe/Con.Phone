@@ -255,7 +255,7 @@ class ClipboardBridgeService : Service() {
             else if (characteristic.uuid == SECRET_UUID)
                 retrySecretRead(g)
             else if (characteristic.uuid == DIRECT_LINK_UUID)
-                showStatus("P2P 설정 읽기 실패 · LAN/BLE fallback 유지")
+                showStatus("P2P 설정 읽기 실패 · BLE fallback 유지")
 
         }
 
@@ -270,7 +270,7 @@ class ClipboardBridgeService : Service() {
             else if (characteristic.uuid == SECRET_UUID)
                 retrySecretRead(g)
             else if (characteristic.uuid == DIRECT_LINK_UUID)
-                showStatus("P2P 설정 읽기 실패 · LAN/BLE fallback 유지")
+                showStatus("P2P 설정 읽기 실패 · BLE fallback 유지")
 
         }
 
@@ -705,7 +705,7 @@ class ClipboardBridgeService : Service() {
                 credential.secret,
                 "CPREADY1".toByteArray(Charsets.US_ASCII) + clientNonce + serverNonce
             )
-            require(MessageDigest.isEqual(serverMac, expected)) { "LAN authentication failed." }
+            require(MessageDigest.isEqual(serverMac, expected)) { "P2P authentication failed." }
         }
 
         fun sendFrame(plaintext: ByteArray) {
