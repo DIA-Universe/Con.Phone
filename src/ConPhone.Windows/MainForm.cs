@@ -46,133 +46,41 @@ public sealed class MainForm : Form
 
     public MainForm()
     {
-        Text = "Con.Phone 0.1.6 · Bluetooth 키보드/마우스 공유";
-        Width = 920; Height = 760; MinimumSize = new Size(820, 680);
+        Text = "Con.Phone 0.2.0 · Bluetooth 입력 허브";
+        Width = 1080; Height = 760; MinimumSize = new Size(920, 680);
         StartPosition = FormStartPosition.CenterScreen;
-        Font = new Font("Segoe UI", 10);
-        BackColor = Color.FromArgb(246, 248, 252);
+        Font = ConPhoneTheme.Font(10f);
+        BackColor = ConPhoneTheme.Basement;
 
-        _profile.Items.AddRange(["갤럭시 / Android", "iPhone (실기기 검증 전)"]); _profile.SelectedIndex = 0;
-        foreach (var option in HotkeyCatalog.Options)
-        {
-            _toggleKey.Items.Add(option);
-            _emergencyKey.Items.Add(option);
-        }
+        _state.Font = ConPhoneTheme.Font(11f, FontStyle.Bold);
+        _state.ForeColor = ConPhoneTheme.Text;
+        _diagnosis.BackColor = ConPhoneTheme.Fill;
+        _diagnosis.ForeColor = ConPhoneTheme.TextSecondary;
+        _events.BackColor = ConPhoneTheme.Fill;
+        _events.ForeColor = ConPhoneTheme.TextSecondary;
+        _peers.BackColor = ConPhoneTheme.Surface;
+        _peers.ForeColor = ConPhoneTheme.Text;
+        _clipboardList.BackColor = ConPhoneTheme.Surface;
+        _clipboardList.ForeColor = ConPhoneTheme.Text;
+
+        _profile.Items.AddRange(["갤럭시 / Android", "iPhone (실기기 검증 전)"]);
+        _profile.SelectedIndex = 0;
+
+        _clipboard = new ClipboardHistoryService(
+            _settings.ClipboardHistoryLimit,
+            _settings.CaptureClipboardText,
+            _settings.CaptureClipboardImages);
+        _clipboard.Changed += () => Post(RefreshClipboardList);
+
         LoadSettingsToUi();
         ApplyInputSettings(save: false);
-
-        var root = new TableLayoutPanel
-        {
-            Dock = DockStyle.Fill, Padding = new Padding(16), ColumnCount = 1, RowCount = 3,
-            BackColor = BackColor
-        };
-        root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-        root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-        root.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-        Controls.Add(root);
-
-        var header = new FlowLayoutPanel { AutoSize = true, Dock = DockStyle.Fill, FlowDirection = FlowDirection.TopDown, WrapContents = false };
-        header.Controls.Add(new Label { Text = "Con.Phone", Font = new Font("Segoe UI", 25, FontStyle.Bold), AutoSize = true });
-        header.Controls.Add(new Label { Text = "노트북의 키보드·마우스를 Bluetooth HID로 휴대폰에 전달", AutoSize = true, ForeColor = Color.DimGray });
-        root.Controls.Add(header, 0, 0);
-
-        _state.Margin = new Padding(0, 8, 0, 8);
-        root.Controls.Add(_state, 0, 1);
-
-        var tabs = new TabControl { Dock = DockStyle.Fill };
-        root.Controls.Add(tabs, 0, 2);
-
-        var connectionTab = new TabPage("연결");
-        var connection = new FlowLayoutPanel
-        {
-            Dock = DockStyle.Fill, FlowDirection = FlowDirection.TopDown, WrapContents = false,
-            AutoScroll = true, Padding = new Padding(14)
-        };
-        connectionTab.Controls.Add(connection);
-        connection.Controls.Add(new Label { Text = "대상 프로필", Font = new Font(Font, FontStyle.Bold), AutoSize = true });
-        connection.Controls.Add(_profile);
-        connection.Controls.Add(Row(
-            Button("Bluetooth 다시 검사", async () => _diagnosis.Text = await BleHidServer.DiagnoseAsync()),
-            Button("Bluetooth 광고 확인/시작", async () => { await _ble.StartAsync(); Log("Bluetooth HID 광고 상태를 확인했습니다."); }),
-            Button("서비스 중지", async () => { await ReturnLocalAsync(); _ble.Stop(); })));
-        connection.Controls.Add(new Label
-        {
-            Text = "휴대폰에서 이 PC를 페어링한 뒤 아래 목록에서 본인 기기를 승인하세요. 기존 등록이 연결되지 않으면 휴대폰에서 삭제 후 새로 페어링하세요.",
-            AutoSize = true, MaximumSize = new Size(820, 0), ForeColor = Color.DimGray, Margin = new Padding(3, 12, 3, 8)
-        });
-        connection.Controls.Add(_peers);
-        connection.Controls.Add(Row(
-            Button("연결 목록 갱신", () => RefreshPeersAsync(false)),
-            Button("선택한 기기 승인", async () =>
-            {
-                await ReturnLocalAsync();
-                if (_peers.SelectedItem is not Peer peer) throw new InvalidOperationException("기기를 먼저 선택해 주세요.");
-                if (MessageBox.Show(this, $"본인 휴대폰이 맞습니까?\r\n{peer}", "입력 대상 승인", MessageBoxButtons.YesNo, MessageBoxIcon.Question) != DialogResult.Yes) return;
-                await _ble.ApproveAsync(peer.Id);
-                Log($"기기 승인 완료. {HotkeyCatalog.Display(_settings.ToggleHotkey)} 키로 휴대폰 입력을 시작하세요.");
-            }),
-            Button("승인 해제", async () => { await ReturnLocalAsync(); _ble.Revoke(); })));
-        connection.Controls.Add(Row(
-            Button("입력 전환", ToggleAsync),
-            Button("노트북 즉시 복귀", ReturnLocalAsync)));
-        connection.Controls.Add(_shortcutSummary);
-        connection.Controls.Add(new Label
-        {
-            Text = "창의 X를 눌러도 Bluetooth 연결 유지를 위해 트레이에서 계속 실행됩니다.",
-            AutoSize = true, ForeColor = Color.DimGray, Margin = new Padding(3, 12, 3, 3)
-        });
-        tabs.TabPages.Add(connectionTab);
-
-        var inputTab = new TabPage("입력 설정");
-        var input = new FlowLayoutPanel
-        {
-            Dock = DockStyle.Fill, FlowDirection = FlowDirection.TopDown, WrapContents = false,
-            AutoScroll = true, Padding = new Padding(14)
-        };
-        inputTab.Controls.Add(input);
-
-        input.Controls.Add(new Label { Text = "마우스 감도", Font = new Font(Font, FontStyle.Bold), AutoSize = true });
-        input.Controls.Add(new Label
-        {
-            Text = "휴대폰에서 PC와 체감 속도가 다를 때 조절합니다. 100%가 원본 Raw Input 속도입니다.",
-            AutoSize = true, MaximumSize = new Size(820, 0), ForeColor = Color.DimGray
-        });
-        input.Controls.Add(Row(_mouseSpeed, _mouseSpeedValue));
-
-        input.Controls.Add(new Label { Text = "스크롤 감도", Font = new Font(Font, FontStyle.Bold), AutoSize = true, Margin = new Padding(3, 16, 3, 3) });
-        input.Controls.Add(Row(_scrollSpeed, _scrollSpeedValue, _invertScroll));
-
-        input.Controls.Add(new Label { Text = "전환 단축키", Font = new Font(Font, FontStyle.Bold), AutoSize = true, Margin = new Padding(3, 18, 3, 3) });
-        input.Controls.Add(LabeledRow("PC ↔ 휴대폰 전환", _toggleKey));
-        input.Controls.Add(LabeledRow("비상 노트북 복귀", _emergencyKey));
-        input.Controls.Add(new Label
-        {
-            Text = "0.1.6에서는 단일 키 단축키를 사용합니다. 두 키는 서로 다르게 지정해야 합니다.",
-            AutoSize = true, MaximumSize = new Size(820, 0), ForeColor = Color.DimGray
-        });
-        input.Controls.Add(Row(
-            Button("설정 적용/저장", () => { ApplyInputSettings(save: true); return Task.CompletedTask; }),
-            Button("기본값 복원", () => { ResetInputSettings(); return Task.CompletedTask; })));
-        tabs.TabPages.Add(inputTab);
-
-        var diagnosticsTab = new TabPage("진단");
-        var diagnostics = new FlowLayoutPanel
-        {
-            Dock = DockStyle.Fill, FlowDirection = FlowDirection.TopDown, WrapContents = false,
-            AutoScroll = true, Padding = new Padding(14)
-        };
-        diagnosticsTab.Controls.Add(diagnostics);
-        diagnostics.Controls.Add(new Label { Text = "Bluetooth 상태", Font = new Font(Font, FontStyle.Bold), AutoSize = true });
-        diagnostics.Controls.Add(_diagnosis);
-        diagnostics.Controls.Add(new Label { Text = "실행 로그", Font = new Font(Font, FontStyle.Bold), AutoSize = true, Margin = new Padding(3, 12, 3, 3) });
-        _events.Height = 220;
-        diagnostics.Controls.Add(_events);
-        diagnostics.Controls.Add(Row(Button("진단 저장", SaveDiagnosticsAsync), Button("로그 지우기", () => { _events.Clear(); return Task.CompletedTask; })));
-        diagnostics.Controls.Add(new Label { Text = $"설정 파일: {SettingsStore.FilePath}", AutoSize = true, ForeColor = Color.DimGray, MaximumSize = new Size(820, 0) });
-        tabs.TabPages.Add(diagnosticsTab);
+        BuildShell();
+        RefreshClipboardList();
 
         _mouseSpeed.ValueChanged += (_, _) => _mouseSpeedValue.Text = $"{_mouseSpeed.Value}%";
         _scrollSpeed.ValueChanged += (_, _) => _scrollSpeedValue.Text = $"{_scrollSpeed.Value}%";
+        _clipboardList.SelectedIndexChanged += (_, _) => UpdateClipboardDetail();
+
         var menu = new ContextMenuStrip();
         menu.Items.Add("창 열기", null, (_, _) => { Show(); WindowState = FormWindowState.Normal; Activate(); });
         menu.Items.Add("노트북 복귀", null, (_, _) => Dispatch(ReturnLocalAsync));
