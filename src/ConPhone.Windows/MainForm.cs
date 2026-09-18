@@ -794,15 +794,15 @@ public sealed class MainForm : Form
         if (e.Mode == PowerModes.Suspend)
         {
             ImmediateLocal();
-            _ble.Revoke();
-            _ble.Stop();
+            _ble.Stop(preserveTrusted: true);
         }
         else if (e.Mode == PowerModes.Resume)
         {
             Dispatch(async () =>
             {
                 await _ble.StartAsync();
-                Log("절전 모드에서 복귀해 Bluetooth HID 광고를 다시 확인했습니다.");
+                _ble.RestoreTrustedApproval();
+                Log("절전 모드에서 복귀해 Bluetooth HID 광고와 기존 승인 기기 복구를 시도했습니다.");
             });
         }
     }
@@ -811,8 +811,12 @@ public sealed class MainForm : Form
         if (e.Reason == SessionSwitchReason.SessionLock)
         {
             ImmediateLocal();
-            _ble.Revoke();
-            Log("Windows 잠금 감지 — 입력 대상 승인을 해제했지만 Bluetooth HID 광고는 유지합니다.");
+            _ble.SuspendApproval();
+            Log("Windows 잠금 감지 — 입력은 차단하고 승인 기기 정보는 재연결을 위해 유지합니다.");
+        }
+        else if (e.Reason == SessionSwitchReason.SessionUnlock)
+        {
+            _ble.RestoreTrustedApproval();
         }
         else if (e.Reason == SessionSwitchReason.SessionLogoff)
         {
