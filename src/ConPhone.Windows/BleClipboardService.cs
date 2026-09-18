@@ -71,6 +71,7 @@ public sealed class BleClipboardService : IDisposable
     public static readonly Guid DirectLinkUuid = Guid.Parse("67A7F006-7E5B-4A2E-9B8B-1C9A5B6D1001");
 
     private readonly Func<string?> _approvedDeviceId;
+    private readonly Func<bool> _enabled;
     private readonly Func<DirectLinkConfig?> _directLinkConfig;
     private readonly SemaphoreSlim _sendGate = new(1, 1);
     private readonly ConcurrentDictionary<string, BleFragmentReassembler> _bleReassemblers = new();
@@ -89,9 +90,11 @@ public sealed class BleClipboardService : IDisposable
 
     public BleClipboardService(
         Func<string?> approvedDeviceId,
+        Func<bool> enabled,
         Func<DirectLinkConfig?> directLinkConfig)
     {
         _approvedDeviceId = approvedDeviceId;
+        _enabled = enabled;
         _directLinkConfig = directLinkConfig;
     }
 
@@ -380,6 +383,7 @@ public sealed class BleClipboardService : IDisposable
     }
 
     private bool IsApproved(string id) =>
+        _enabled() &&
         !string.IsNullOrWhiteSpace(id) &&
         string.Equals(_approvedDeviceId(), id, StringComparison.Ordinal);
 
