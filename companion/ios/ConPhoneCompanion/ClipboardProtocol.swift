@@ -215,9 +215,14 @@ final class ClipboardWireReassembler {
     }
 
     private var pending: [Data: Pending] = [:]
+    private var completed: [Data: Date] = [:]
 
     func add(_ chunk: ClipboardWireChunk) throws -> ClipboardContent? {
         cleanup()
+
+        guard completed[chunk.transferId] == nil else {
+            throw ClipboardProtocol.ProtocolError.invalidFrame
+        }
 
         var state = pending[chunk.transferId] ?? Pending(
             kind: chunk.kind,
@@ -248,6 +253,7 @@ final class ClipboardWireReassembler {
             result.append(part)
         }
         pending.removeValue(forKey: chunk.transferId)
+        completed[chunk.transferId] = Date()
 
         guard result.count == state.total,
               Data(SHA256.hash(data: result)) == state.hash else {
@@ -261,6 +267,7 @@ final class ClipboardWireReassembler {
     private func cleanup() {
         let cutoff = Date().addingTimeInterval(-30)
         pending = pending.filter { $0.value.created >= cutoff }
+        completed = completed.filter { $0.value >= cutoff }
     }
 }
 
@@ -272,10 +279,16 @@ final class BleReassembler {
     }
 
     private var pending: [UInt32: Pending] = [:]
+    private var completed: [UInt32: Date] = [:]
 
     func add(_ fragment: BleFragment) throws -> Data? {
         let cutoff = Date().addingTimeInterval(-30)
         pending = pending.filter { $0.value.created >= cutoff }
+        completed = completed.filter { $0.value >= cutoff }
+
+        guard completed[fragment.transferId] == nil else {
+            throw ClipboardProtocol.ProtocolError.invalidFrame
+        }
 
         var state = pending[fragment.transferId] ?? Pending(count: fragment.count)
         guard state.count == fragment.count else {
@@ -295,6 +308,7 @@ final class BleReassembler {
             result.append(part)
         }
         pending.removeValue(forKey: fragment.transferId)
+        completed[fragment.transferId] = Date()
         return result
     }
 }
