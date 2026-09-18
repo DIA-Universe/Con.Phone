@@ -58,6 +58,11 @@ public sealed class BleHidServer : IDisposable
     public string? ApprovedId => _approved;
     public bool Ready => _running && _approved is { } id && IsReady(id);
 
+    public BleHidServer()
+    {
+        _approved = TrustedDeviceStore.Load();
+    }
+
     private static Guid Uuid(ushort n) => new($"0000{n:x4}-0000-1000-8000-00805f9b34fb");
 
     public static async Task<string> DiagnoseAsync()
@@ -572,6 +577,7 @@ public sealed class BleHidServer : IDisposable
         _mouseValue = new byte[Hid.MouseReportLength];
         _systemValue = new byte[Hid.SystemReportLength];
         _approved = id;
+        TrustedDeviceStore.Save(id);
 
         if (_sessions.TryGetValue(id, out var session))
             TryMaintainConnection(session);
@@ -581,10 +587,13 @@ public sealed class BleHidServer : IDisposable
         Changed?.Invoke();
     }
 
-    public void Revoke()
+    public string? Revoke()
     {
+        var previous = _approved;
         _approved = null;
+        TrustedDeviceStore.Clear();
         Changed?.Invoke();
+        return previous;
     }
 
     public async Task SendSystemLockAsync(CancellationToken token)
