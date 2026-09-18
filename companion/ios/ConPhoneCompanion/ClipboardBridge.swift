@@ -43,6 +43,7 @@ final class ClipboardBridge: NSObject, ObservableObject {
     private var writeQueue: [Data] = []
     private var writeInFlight = false
     private var pendingContent: ClipboardContent?
+    private var pendingSharedPayloadId: UUID?
     private var pendingGeneration = 0
 
     func start() {
@@ -71,14 +72,14 @@ final class ClipboardBridge: NSObject, ObservableObject {
                 return
             }
 
-            try sendOrQueue(content)
+            try sendOrQueue(content, sharedPayloadId: envelope.id)
         } catch {
             status = "클립보드 전송 준비 실패: \(error.localizedDescription)"
         }
     }
 
     func sendPendingShareIfPresent() {
-        guard let (envelope, imageData) = SharedPayloadStore.consume() else {
+        guard let (envelope, imageData) = SharedPayloadStore.peek() else {
             return
         }
 
@@ -115,9 +116,15 @@ final class ClipboardBridge: NSObject, ObservableObject {
         }
     }
 
-    private func sendOrQueue(_ content: ClipboardContent) throws {
+    private func sendOrQueue(
+        _ content: ClipboardContent,
+        sharedPayloadId: UUID? = nil
+    ) throws {
         if let p2p, p2p.ready {
             p2p.send(frames: try ClipboardProtocol.encode(content))
+            if let sharedPayloadId {
+                SharedPayloadStore.clear(sharedPayloadId)
+            }
             return
         }
 
@@ -130,6 +137,9 @@ final class ClipboardBridge: NSObject, ObservableObject {
            rx != nil,
            credential != nil {
             try enqueueBle(content, peripheral: peripheral)
+            if let sharedPayloadId {
+                SharedPayloadStore.clear(sharedPayloadId)
+            }
             return
         }
 
@@ -181,6 +191,7 @@ final class ClipboardBridge: NSObject, ObservableObject {
 
     private func setPendingContent(_ content: ClipboardContent) {
         pendingContent = content
+        pendingSharedPayloadId = sharedPayloadId
         pendingGeneration += 1
         let generation = pendingGeneration
 
