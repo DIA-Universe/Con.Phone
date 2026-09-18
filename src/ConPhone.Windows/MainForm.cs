@@ -332,6 +332,9 @@ public sealed class MainForm : Form
         connect.Controls.Add(SectionTitle("Bluetooth 연결"));
         connect.Controls.Add(Help(
             "0.2.2는 한/영 LANG1·LANG2와 Consumer Control 특수키 Report를 포함합니다. HID descriptor가 바뀌므로 이 버전 첫 사용 시 기존 PC 등록을 삭제하고 한 번 다시 페어링해 주세요."));
+        connect.Controls.Add(Help(
+            "Bluetooth 표시 이름은 Windows Bluetooth 스택이 관리합니다. 내장 GATT Server 방식에서는 EasyBlue 동글처럼 앱이 광고 이름을 임의 변경할 수 없습니다.",
+            Tertiary));
         connect.Controls.Add(Row(
             ActionButton("Bluetooth 다시 검사", async () => _diagnosis.Text = await BleHidServer.DiagnoseAsync()),
             ActionButton("광고 확인 / 시작", async () =>
