@@ -194,10 +194,12 @@ class ClipboardWireReassembler {
     )
 
     private val pending = ConcurrentHashMap<String, Pending>()
+    private val completed = ConcurrentHashMap<String, Long>()
 
     fun add(chunk: ClipboardWireChunk): ClipboardContent? {
         cleanup()
         val id = chunk.transferId.joinToString("") { "%02x".format(it) }
+        require(!completed.containsKey(id)) { "Clipboard transfer replay rejected." }
         val state = pending.compute(id) { _, current ->
             if (current == null) {
                 Pending(chunk.kind, chunk.count, chunk.totalLength, chunk.hash.copyOf())
@@ -221,6 +223,7 @@ class ClipboardWireReassembler {
         }
 
         pending.remove(id)
+        completed[id] = System.currentTimeMillis()
         val bytes = output.toByteArray()
         require(bytes.size == state.total && sha256(bytes).contentEquals(state.hash)) {
             "Clipboard integrity check failed."
@@ -232,6 +235,7 @@ class ClipboardWireReassembler {
     private fun cleanup() {
         val now = System.currentTimeMillis()
         pending.entries.removeIf { now - it.value.created > 30_000 }
+        completed.entries.removeIf { now - it.value > 30_000 }
     }
 }
 
@@ -243,10 +247,15 @@ class BleReassembler {
     )
 
     private val pending = ConcurrentHashMap<UInt, Pending>()
+    private val completed = ConcurrentHashMap<UInt, Long>()
 
     fun add(fragment: BleFragment): ByteArray? {
         val now = System.currentTimeMillis()
         pending.entries.removeIf { now - it.value.created > 30_000 }
+        completed.entries.removeIf { now - it.value > 30_000 }
+        require(!completed.containsKey(fragment.transferId)) {
+            "BLE clipboard fragment replay rejected."
+        }
 
         val state = pending.compute(fragment.transferId) { _, current ->
             if (current == null) Pending(fragment.count)
@@ -262,6 +271,7 @@ class BleReassembler {
         val output = ByteArrayOutputStream()
         for (i in 0 until state.count) output.write(state.parts[i] ?: return null)
         pending.remove(fragment.transferId)
+        completed[fragment.transferId] = now
         return output.toByteArray()
     }
 }
