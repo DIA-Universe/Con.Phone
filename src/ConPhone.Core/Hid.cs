@@ -88,6 +88,23 @@ public static class Hid
         } while (x != 0 || y != 0 || w != 0);
     }
 
+    public static byte MapModifierUsage(
+        byte usage,
+        ModifierProfile profile)
+    {
+        if (profile != ModifierProfile.MacCtrlCommandSwap)
+            return usage;
+
+        return usage switch
+        {
+            0xE0 => 0xE3,
+            0xE4 => 0xE7,
+            0xE3 => 0xE0,
+            0xE7 => 0xE4,
+            _ => usage
+        };
+    }
+
     public static byte Usage(int vk, int scan = 0, bool extended = false)
     {
         if (vk is >= 0x41 and <= 0x5A) return (byte)(vk - 0x41 + 4);
