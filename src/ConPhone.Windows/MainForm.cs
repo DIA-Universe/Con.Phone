@@ -95,6 +95,7 @@ public sealed class MainForm : Form
         };
         _input.Toggle += () => DispatchCritical(ToggleAsync);
         _input.Emergency += () => { ImmediateLocal(); DispatchCritical(ReturnLocalAsync); };
+        _input.LockAndReturn += () => DispatchCritical(LockPhoneAndReturnAsync);
         _input.Fault += text => { ImmediateLocal(); DispatchCritical(async () => { await ReleaseAsync(); Log(text); }); };
         _ble.Status += text => Post(() => Log(text));
         _ble.Changed += () =>
@@ -594,6 +595,30 @@ public sealed class MainForm : Form
         }
     }
     private async Task ReturnLocalAsync() { ImmediateLocal(); await ReleaseAsync(); }
+
+    private async Task LockPhoneAndReturnAsync()
+    {
+        ImmediateLocal();
+        if (!_ble.Ready)
+        {
+            Log("휴대폰 잠금 요청을 보낼 연결이 없어 노트북 입력으로만 복귀했습니다.");
+            return;
+        }
+
+        using var timeout = new CancellationTokenSource(TimeSpan.FromMilliseconds(900));
+        try
+        {
+            await _ble.TapKeyboardUsageAsync(Hid.KeyboardPowerUsage, timeout.Token);
+            await _ble.SendAsync(new(false, new byte[Hid.MouseReportLength]), () => true, timeout.Token);
+            Log("휴대폰에 Power 키를 보내고 노트북 입력으로 복귀했습니다. 기기에서 Power HID를 지원하지 않으면 화면은 그대로일 수 있습니다.");
+        }
+        catch (Exception ex)
+        {
+            _lastError = $"LockReturn:{ex.GetType().Name}:0x{ex.HResult:X8}";
+            Log("노트북 입력으로는 복귀했지만 휴대폰 화면 잠금 전송을 확인하지 못했습니다.");
+        }
+    }
+
     private async Task ToggleAsync()
     {
         if (_input.IsRemote) { await ReturnLocalAsync(); return; }
