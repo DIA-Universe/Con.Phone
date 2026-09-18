@@ -326,14 +326,25 @@ class ClipboardBridgeService : Service() {
     }
 
     private fun parseDirectConfig(value: ByteArray): DirectConfig? {
-        if (value.isEmpty() || value[0].toInt() != 1 || value.size < 3) return null
+        if (value.size < 3) return null
+        val version = value[0].toInt() and 0xFF
+        if (version !in 1..2) return null
+
         val ssidLength = value[1].toInt() and 0xFF
         val passLength = value[2].toInt() and 0xFF
-        if (ssidLength !in 1..32 || passLength !in 8..63 ||
-            value.size != 3 + ssidLength + passLength) return null
+        val header = if (version == 2) 4 else 3
+        val hostLength = if (version == 2) value[3].toInt() and 0xFF else 0
 
-        val ssid = value.copyOfRange(3, 3 + ssidLength).toString(Charsets.UTF_8)
-        val passphrase = value.copyOfRange(3 + ssidLength, value.size).toString(Charsets.UTF_8)
+        if (ssidLength !in 1..32 ||
+            passLength !in 8..63 ||
+            hostLength > 45 ||
+            value.size != header + ssidLength + passLength + hostLength) return null
+
+        val ssidStart = header
+        val passStart = ssidStart + ssidLength
+        val passEnd = passStart + passLength
+        val ssid = value.copyOfRange(ssidStart, passStart).toString(Charsets.UTF_8)
+        val passphrase = value.copyOfRange(passStart, passEnd).toString(Charsets.UTF_8)
         return DirectConfig(ssid, passphrase)
     }
 
