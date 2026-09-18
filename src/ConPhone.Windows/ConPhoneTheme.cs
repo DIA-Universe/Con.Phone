@@ -142,7 +142,7 @@ public sealed class ConPhoneCard : FlowLayoutPanel
     protected override void OnControlAdded(ControlEventArgs e)
     {
         base.OnControlAdded(e);
-        FitChild(e.Control);
+        if (e.Control is not null) FitChild(e.Control);
     }
 
     protected override void OnSizeChanged(EventArgs e)
