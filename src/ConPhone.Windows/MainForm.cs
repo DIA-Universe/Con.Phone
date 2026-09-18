@@ -745,7 +745,7 @@ public sealed class MainForm : Form
 
             _diagnosis.Text = await BleHidServer.DiagnoseAsync();
             await _ble.StartAsync();
-            if (_clipboardSync is not null)
+            if (_settings.ClipboardSyncEnabled && _clipboardSync is not null)
                 await _clipboardSync.StartAsync();
 
             Log("Bluetooth HID 광고를 시작했습니다.");
@@ -943,6 +943,8 @@ public sealed class MainForm : Form
         {
             SettingsStore.Save(_settings);
             Log($"클립보드 설정 저장 · 최대 {_settings.ClipboardHistoryLimit}개 · 동기화:{_settings.ClipboardSyncEnabled} · BLE 이미지 {_settings.ClipboardBleImageLimitKb} KiB");
+            if (_settings.ClipboardSyncEnabled && _clipboardSync is not null)
+                Dispatch(() => _clipboardSync.StartAsync());
         }
     }
 
