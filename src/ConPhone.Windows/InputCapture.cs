@@ -15,26 +15,37 @@ public sealed class InputCapture : IDisposable
     private nint _keyboardHook, _mouseHook;
     private Sink? _sink;
     private volatile bool _remote;
-    private volatile int _toggleKey = 0x77;
-    private volatile int _emergencyKey = 0x78;
+    private HotkeyBinding _toggleHotkey = new() { Key = 0x77 };
+    private HotkeyBinding _emergencyHotkey = new() { Key = 0x78 };
+    private HotkeyBinding _lockAndReturnHotkey = new() { Key = (int)Keys.L, Modifiers = HotkeyModifiers.Control | HotkeyModifiers.Alt };
+    private readonly HashSet<int> _downKeys = [];
+    private readonly HashSet<int> _suppressUntilUp = [];
+    private readonly HashSet<int> _localPassthroughUntilUp = [];
     private byte _buttons;
     private int _wheel, _pan;
     public event Action<InputPacket>? Packet;
     public event Action? Toggle;
     public event Action? Emergency;
+    public event Action? LockAndReturn;
     public event Action<string>? Fault;
     public bool IsRemote => _remote;
     public Task Started => _started.Task;
 
-    public void ConfigureHotkeys(HotkeyBinding toggle, HotkeyBinding emergency)
+    public void ConfigureHotkeys(HotkeyBinding toggle, HotkeyBinding emergency, HotkeyBinding lockAndReturn)
     {
-        if (!HotkeyCatalog.IsAllowedKey(toggle.Key) || !HotkeyCatalog.IsAllowedKey(emergency.Key))
+        if (!HotkeyCatalog.IsAllowedKey(toggle.Key) || !HotkeyCatalog.IsAllowedKey(emergency.Key) ||
+            !HotkeyCatalog.IsAllowedKey(lockAndReturn.Key))
             throw new ArgumentOutOfRangeException(nameof(toggle), "지원하지 않는 단축키입니다.");
-        if (toggle.Key == emergency.Key)
-            throw new InvalidOperationException("입력 전환 키와 비상 복귀 키는 서로 달라야 합니다.");
-        // 0.1.6 UI intentionally uses single-key hotkeys. The settings model keeps modifiers for future versions.
-        _toggleKey = toggle.Key;
-        _emergencyKey = emergency.Key;
+        if (HotkeyCatalog.Same(toggle, emergency) || HotkeyCatalog.Same(toggle, lockAndReturn) ||
+            HotkeyCatalog.Same(emergency, lockAndReturn))
+            throw new InvalidOperationException("각 동작의 단축키 조합은 서로 다르게 지정해 주세요.");
+
+        lock (_gate)
+        {
+            _toggleHotkey = toggle.Clone();
+            _emergencyHotkey = emergency.Clone();
+            _lockAndReturnHotkey = lockAndReturn.Clone();
+        }
     }
 
     public InputCapture()
@@ -75,11 +86,15 @@ public sealed class InputCapture : IDisposable
         lock (_gate)
         {
             if (!_started.Task.IsCompletedSuccessfully) throw new InvalidOperationException("입력 수집이 준비되지 않았습니다.");
-            var toggleKey = _toggleKey;
-            var emergencyKey = _emergencyKey;
+            var allowed = HotkeyPhysicalKeys(_toggleHotkey);
+            _localPassthroughUntilUp.Clear();
             for (int vk = 1; vk < 255; vk++)
-                if (vk != toggleKey && vk != emergencyKey && (GetAsyncKeyState(vk) & 0x8000) != 0)
-                    throw new InvalidOperationException("누르고 있는 키와 마우스 버튼을 모두 놓은 후 입력 전환 키를 눌러 주세요.");
+            {
+                if ((GetAsyncKeyState(vk) & 0x8000) == 0) continue;
+                if (!allowed.Contains(vk))
+                    throw new InvalidOperationException("입력 전환 단축키 외의 키와 마우스 버튼을 모두 놓아 주세요.");
+                if (vk != _toggleHotkey.Key) _localPassthroughUntilUp.Add(vk);
+            }
             _keys.Clear(); _buttons = 0; _wheel = 0; _pan = 0; _remote = true;
         }
     }
@@ -94,28 +109,94 @@ public sealed class InputCapture : IDisposable
         {
             var k = Marshal.PtrToStructure<KeyData>(data);
             if ((k.Flags & 0x10) != 0) return CallNextHookEx(0, code, message, data);
+
+            int key = (int)k.Vk;
             bool up = (k.Flags & 0x80) != 0;
-            var toggleKey = (uint)_toggleKey;
-            var emergencyKey = (uint)_emergencyKey;
-            if (k.Vk == toggleKey || k.Vk == emergencyKey)
+            bool firstDown;
+            HotkeyBinding toggle, emergency, lockAndReturn;
+
+            lock (_gate)
             {
-                if (up)
-                {
-                    if (k.Vk == emergencyKey) { Deactivate(); Emergency?.Invoke(); }
-                    else Toggle?.Invoke();
-                }
-                return 1;
+                firstDown = !up && _downKeys.Add(key);
+                if (up) _downKeys.Remove(key);
+
+                if (up && _suppressUntilUp.Remove(key))
+                    return 1;
+                if (up && _localPassthroughUntilUp.Remove(key))
+                    return CallNextHookEx(0, code, message, data);
+
+                toggle = _toggleHotkey.Clone();
+                emergency = _emergencyHotkey.Clone();
+                lockAndReturn = _lockAndReturnHotkey.Clone();
             }
+
+            if (!up && firstDown)
+            {
+                var modifiers = CurrentModifiers();
+                if (Matches(toggle, key, modifiers))
+                {
+                    lock (_gate) _suppressUntilUp.Add(key);
+                    Toggle?.Invoke();
+                    return 1;
+                }
+
+                if (_remote && Matches(emergency, key, modifiers))
+                {
+                    lock (_gate) _suppressUntilUp.Add(key);
+                    Deactivate();
+                    Emergency?.Invoke();
+                    return 1;
+                }
+
+                if (_remote && Matches(lockAndReturn, key, modifiers))
+                {
+                    lock (_gate) _suppressUntilUp.Add(key);
+                    Deactivate();
+                    LockAndReturn?.Invoke();
+                    return 1;
+                }
+            }
+
             lock (_gate)
             {
                 if (!_remote) return CallNextHookEx(0, code, message, data);
-                var report = _keys.Update(Hid.Usage((int)k.Vk, (int)k.Scan, (k.Flags & 1) != 0), !up);
+                var report = _keys.Update(Hid.Usage(key, (int)k.Scan, (k.Flags & 1) != 0), !up);
                 if (report is not null) Packet?.Invoke(new KeyboardPacket(report));
                 return _remote ? 1 : CallNextHookEx(0, code, message, data);
             }
         }
-        catch (Exception) { Deactivate(); Fault?.Invoke("키보드 처리 오류 — 로컬 복귀"); return CallNextHookEx(0, code, message, data); }
+        catch (Exception)
+        {
+            Deactivate();
+            Fault?.Invoke("키보드 처리 오류 — 로컬 복귀");
+            return CallNextHookEx(0, code, message, data);
+        }
     }
+
+    private static bool Matches(HotkeyBinding binding, int key, HotkeyModifiers modifiers) =>
+        binding.Key == key && binding.Modifiers == modifiers;
+
+    private static HotkeyModifiers CurrentModifiers()
+    {
+        HotkeyModifiers modifiers = HotkeyModifiers.None;
+        if ((GetAsyncKeyState(0x11) & 0x8000) != 0) modifiers |= HotkeyModifiers.Control;
+        if ((GetAsyncKeyState(0x12) & 0x8000) != 0) modifiers |= HotkeyModifiers.Alt;
+        if ((GetAsyncKeyState(0x10) & 0x8000) != 0) modifiers |= HotkeyModifiers.Shift;
+        if ((GetAsyncKeyState(0x5B) & 0x8000) != 0 || (GetAsyncKeyState(0x5C) & 0x8000) != 0)
+            modifiers |= HotkeyModifiers.Windows;
+        return modifiers;
+    }
+
+    private static HashSet<int> HotkeyPhysicalKeys(HotkeyBinding binding)
+    {
+        var keys = new HashSet<int> { binding.Key };
+        if (binding.Modifiers.HasFlag(HotkeyModifiers.Control)) { keys.Add(0x11); keys.Add(0xA2); keys.Add(0xA3); }
+        if (binding.Modifiers.HasFlag(HotkeyModifiers.Alt)) { keys.Add(0x12); keys.Add(0xA4); keys.Add(0xA5); }
+        if (binding.Modifiers.HasFlag(HotkeyModifiers.Shift)) { keys.Add(0x10); keys.Add(0xA0); keys.Add(0xA1); }
+        if (binding.Modifiers.HasFlag(HotkeyModifiers.Windows)) { keys.Add(0x5B); keys.Add(0x5C); }
+        return keys;
+    }
+
     private nint MouseHook(int code, nint message, nint data)
     {
         if (code < 0 || !_remote) return CallNextHookEx(0, code, message, data);

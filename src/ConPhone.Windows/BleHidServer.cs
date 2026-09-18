@@ -385,6 +385,15 @@ public sealed class BleHidServer
     }
     public void Revoke() { _approved = null; Changed?.Invoke(); }
 
+    public async Task TapKeyboardUsageAsync(byte usage, CancellationToken token)
+    {
+        if (!Ready) throw new InvalidOperationException("승인된 키보드 연결이 없습니다.");
+        await SendAsync(new WireReport(true, Hid.KeyboardReport()), () => true, token).ConfigureAwait(false);
+        await SendAsync(new WireReport(true, Hid.KeyboardReport(usage)), () => true, token).ConfigureAwait(false);
+        await Task.Delay(45, token).ConfigureAwait(false);
+        await SendAsync(new WireReport(true, Hid.KeyboardReport()), () => true, token).ConfigureAwait(false);
+    }
+
     public async Task SendAsync(WireReport report, Func<bool> current, CancellationToken token)
     {
         await _send.WaitAsync(token).ConfigureAwait(false);
