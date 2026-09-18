@@ -1,9 +1,10 @@
 using System.ComponentModel;
-using System.Drawing.Drawing2D;
 
 namespace ConPhone.Windows;
 
-// Product-facing implementation of the uploaded design.md. Names intentionally stay product-neutral.
+// Stable WinForms interpretation of design.md.
+// It uses the token palette, spacing and type hierarchy but avoids custom painting/layout tricks
+// that can break at non-100% Windows display scaling.
 public static class ConPhoneTheme
 {
     public static readonly Color Basement = ColorTranslator.FromHtml("#F3F4F5");
@@ -27,25 +28,14 @@ public static class ConPhoneTheme
     public static Font Font(float size = 10f, FontStyle style = FontStyle.Regular) =>
         new("Segoe UI", size, style, GraphicsUnit.Point);
 
-    public static GraphicsPath Rounded(Rectangle bounds, int radius)
-    {
-        int d = Math.Max(2, radius * 2);
-        var path = new GraphicsPath();
-        path.AddArc(bounds.X, bounds.Y, d, d, 180, 90);
-        path.AddArc(bounds.Right - d, bounds.Y, d, d, 270, 90);
-        path.AddArc(bounds.Right - d, bounds.Bottom - d, d, d, 0, 90);
-        path.AddArc(bounds.X, bounds.Bottom - d, d, d, 90, 90);
-        path.CloseFigure();
-        return path;
-    }
-
     public static Label Title(string text, float size = 20f) => new()
     {
         Text = text,
         AutoSize = true,
         Font = Font(size, FontStyle.Bold),
         ForeColor = Text,
-        BackColor = Color.Transparent
+        BackColor = Color.Transparent,
+        Margin = new Padding(0, 0, 0, 8)
     };
 
     public static Label Body(string text, Color? color = null, int maxWidth = 760) => new()
@@ -55,7 +45,8 @@ public static class ConPhoneTheme
         MaximumSize = new Size(maxWidth, 0),
         Font = Font(10f),
         ForeColor = color ?? TextSecondary,
-        BackColor = Color.Transparent
+        BackColor = Color.Transparent,
+        Margin = new Padding(0, 0, 0, 8)
     };
 
     public static Label Section(string text) => new()
@@ -64,7 +55,8 @@ public static class ConPhoneTheme
         AutoSize = true,
         Font = Font(11f, FontStyle.Bold),
         ForeColor = Text,
-        BackColor = Color.Transparent
+        BackColor = Color.Transparent,
+        Margin = new Padding(0, 8, 0, 6)
     };
 }
 
@@ -73,69 +65,54 @@ public enum ConPhoneButtonKind { Primary, Secondary, Ghost, Danger }
 public sealed class ConPhoneButton : Button
 {
     private ConPhoneButtonKind _kind;
-    private bool _hover;
-    private bool _pressed;
 
     [Browsable(false)]
     [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
     public ConPhoneButtonKind Kind
     {
         get => _kind;
-        set { _kind = value; Invalidate(); }
+        set { _kind = value; ApplyVisual(); }
     }
 
     public ConPhoneButton()
     {
         AutoSize = true;
+        AutoSizeMode = AutoSizeMode.GrowAndShrink;
         MinimumSize = new Size(88, 38);
-        Padding = new Padding(13, 5, 13, 5);
+        Padding = new Padding(12, 5, 12, 5);
         Font = ConPhoneTheme.Font(9.5f, FontStyle.Bold);
         FlatStyle = FlatStyle.Flat;
-        FlatAppearance.BorderSize = 0;
+        FlatAppearance.BorderSize = 1;
         Cursor = Cursors.Hand;
-        TabStop = true;
-        SetStyle(ControlStyles.UserPaint | ControlStyles.AllPaintingInWmPaint |
-                 ControlStyles.OptimizedDoubleBuffer | ControlStyles.ResizeRedraw, true);
+        UseVisualStyleBackColor = false;
+        ApplyVisual();
     }
 
-    protected override void OnMouseEnter(EventArgs e) { _hover = true; Invalidate(); base.OnMouseEnter(e); }
-    protected override void OnMouseLeave(EventArgs e) { _hover = false; _pressed = false; Invalidate(); base.OnMouseLeave(e); }
-    protected override void OnMouseDown(MouseEventArgs e) { _pressed = true; Invalidate(); base.OnMouseDown(e); }
-    protected override void OnMouseUp(MouseEventArgs e) { _pressed = false; Invalidate(); base.OnMouseUp(e); }
-
-    protected override void OnPaint(PaintEventArgs e)
+    private void ApplyVisual()
     {
-        e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
-        var rect = new Rectangle(0, 0, Width - 1, Height - 1);
-        using var path = ConPhoneTheme.Rounded(rect, 10);
-
-        Color bg, fg, stroke;
-        switch (Kind)
+        switch (_kind)
         {
             case ConPhoneButtonKind.Primary:
-                bg = _pressed ? ConPhoneTheme.BrandPressed : _hover ? Color.FromArgb(255, 117, 31) : ConPhoneTheme.Brand;
-                fg = Color.White; stroke = bg; break;
+                BackColor = ConPhoneTheme.Brand;
+                ForeColor = Color.White;
+                FlatAppearance.BorderColor = ConPhoneTheme.Brand;
+                break;
             case ConPhoneButtonKind.Danger:
-                bg = _pressed ? ColorTranslator.FromHtml("#CA1D13") : _hover ? ColorTranslator.FromHtml("#FE6A66") : ConPhoneTheme.Critical;
-                fg = Color.White; stroke = bg; break;
+                BackColor = ConPhoneTheme.Critical;
+                ForeColor = Color.White;
+                FlatAppearance.BorderColor = ConPhoneTheme.Critical;
+                break;
             case ConPhoneButtonKind.Ghost:
-                bg = _pressed ? ConPhoneTheme.FillPressed : _hover ? ConPhoneTheme.Fill : Color.Transparent;
-                fg = ConPhoneTheme.TextSecondary; stroke = Color.Transparent; break;
+                BackColor = ConPhoneTheme.Surface;
+                ForeColor = ConPhoneTheme.TextSecondary;
+                FlatAppearance.BorderColor = ConPhoneTheme.Surface;
+                break;
             default:
-                bg = _pressed ? ConPhoneTheme.FillPressed : _hover ? ConPhoneTheme.Fill : ConPhoneTheme.Surface;
-                fg = ConPhoneTheme.Text; stroke = ConPhoneTheme.Stroke; break;
+                BackColor = ConPhoneTheme.Surface;
+                ForeColor = ConPhoneTheme.Text;
+                FlatAppearance.BorderColor = ConPhoneTheme.Stroke;
+                break;
         }
-
-        using var bgBrush = new SolidBrush(bg);
-        e.Graphics.FillPath(bgBrush, path);
-        if (stroke.A > 0)
-        {
-            using var pen = new Pen(stroke, 1);
-            e.Graphics.DrawPath(pen, path);
-        }
-
-        TextRenderer.DrawText(e.Graphics, Text, Font, rect, Enabled ? fg : ConPhoneTheme.TextTertiary,
-            TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.SingleLine);
     }
 }
 
@@ -143,7 +120,7 @@ public sealed class ConPhoneCard : FlowLayoutPanel
 {
     [Browsable(false)]
     [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
-    public int Radius { get; set; } = 16;
+    public int Radius { get; set; } = 0; // retained for source compatibility; standard WinForms border is used.
 
     [Browsable(false)]
     [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
@@ -158,56 +135,38 @@ public sealed class ConPhoneCard : FlowLayoutPanel
         WrapContents = false;
         AutoSize = true;
         AutoSizeMode = AutoSizeMode.GrowAndShrink;
-        SetStyle(ControlStyles.UserPaint | ControlStyles.AllPaintingInWmPaint |
-                 ControlStyles.OptimizedDoubleBuffer | ControlStyles.ResizeRedraw, true);
-    }
-
-    protected override void OnPaintBackground(PaintEventArgs e)
-    {
-        if (Width < 4 || Height < 4) { base.OnPaintBackground(e); return; }
-        e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
-        var rect = new Rectangle(0, 0, Width - 1, Height - 1);
-        using var path = ConPhoneTheme.Rounded(rect, Math.Min(Radius, Math.Min(Width, Height) / 2));
-        using var brush = new SolidBrush(BackColor);
-        e.Graphics.FillPath(brush, path);
-        using var pen = new Pen(BorderColor, 1);
-        e.Graphics.DrawPath(pen, path);
+        BorderStyle = BorderStyle.FixedSingle;
     }
 }
 
 public sealed class ConPhoneNavButton : Button
 {
     private bool _selected;
+
     [Browsable(false)]
     [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
     public bool Selected
     {
         get => _selected;
-        set { _selected = value; Invalidate(); }
+        set
+        {
+            _selected = value;
+            BackColor = value ? ConPhoneTheme.BrandWeak : ConPhoneTheme.Surface;
+            ForeColor = value ? ConPhoneTheme.BrandPressed : ConPhoneTheme.TextSecondary;
+        }
     }
 
     public ConPhoneNavButton()
     {
         Height = 44;
-        Dock = DockStyle.Top;
         FlatStyle = FlatStyle.Flat;
         FlatAppearance.BorderSize = 0;
         TextAlign = ContentAlignment.MiddleLeft;
         Padding = new Padding(16, 0, 10, 0);
         Font = ConPhoneTheme.Font(10f, FontStyle.Bold);
         Cursor = Cursors.Hand;
-        SetStyle(ControlStyles.UserPaint | ControlStyles.OptimizedDoubleBuffer, true);
-    }
-
-    protected override void OnPaint(PaintEventArgs e)
-    {
-        e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
-        var rect = new Rectangle(4, 3, Width - 8, Height - 6);
-        using var path = ConPhoneTheme.Rounded(rect, 10);
-        using var brush = new SolidBrush(Selected ? ConPhoneTheme.BrandWeak : BackColor);
-        e.Graphics.FillPath(brush, path);
-        var fg = Selected ? ConPhoneTheme.BrandPressed : ConPhoneTheme.TextSecondary;
-        TextRenderer.DrawText(e.Graphics, Text, Font, new Rectangle(18, 0, Width - 24, Height), fg,
-            TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.SingleLine);
+        UseVisualStyleBackColor = false;
+        BackColor = ConPhoneTheme.Surface;
+        ForeColor = ConPhoneTheme.TextSecondary;
     }
 }
