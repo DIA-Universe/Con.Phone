@@ -156,6 +156,22 @@ public sealed class MainForm : Form
         Width = 90
     };
 
+    private readonly CheckBox _clipboardRelayEnabled = new()
+    {
+        Text = "인터넷 Relay fallback (E2E 암호화)",
+        AutoSize = true,
+        ForeColor = TextColor
+    };
+
+    private readonly TextBox _clipboardRelayUrl = new()
+    {
+        Width = 520,
+        BackColor = Color.White,
+        ForeColor = TextColor,
+        BorderStyle = BorderStyle.FixedSingle,
+        PlaceholderText = "https://relay.example.com"
+    };
+
     private ClipboardHistoryService? _clipboard;
     private ClipboardSyncCoordinator? _clipboardSync;
     private ClipboardContent? _latestLocalClipboard;
@@ -214,7 +230,9 @@ public sealed class MainForm : Form
         {
             _clipboardSync = new ClipboardSyncCoordinator(
                 () => _ble.ApprovedId,
-                () => _settings.ClipboardSyncEnabled);
+                () => _settings.ClipboardSyncEnabled,
+                () => _settings.ClipboardRelayEnabled,
+                () => _settings.ClipboardRelayUrl);
             ConfigureTray();
             ConfigureRuntimeEvents();
             _pump = Task.Run(PumpAsync);
@@ -410,7 +428,7 @@ public sealed class MainForm : Form
         var info = Section(180, InfoWeak);
         info.Controls.Add(SectionTitle("텍스트 · 이미지 기기간 복붙"));
         info.Controls.Add(Help(
-            "PC에서 복사한 텍스트/이미지는 휴대폰으로 전환할 때 Companion으로 전달합니다. 같은 LAN/P2P가 있으면 암호화 고속 채널을 우선 사용하고, 없으면 텍스트와 작은 이미지를 Bluetooth LE로 보냅니다.",
+            "PC에서 복사한 텍스트/이미지는 휴대폰으로 전환할 때 Companion으로 전달합니다. LAN/P2P → Bluetooth LE → 선택적 인터넷 Relay 순서로 자동 fallback합니다.",
             TextColor));
         info.Controls.Add(Help(
             "동일 Wi-Fi는 필수가 아닙니다. 휴대폰에는 Con.Phone Companion이 필요하며 파일/폴더 복사는 지원하지 않습니다.",
@@ -445,12 +463,17 @@ public sealed class MainForm : Form
             })));
         flow.Controls.Add(history);
 
-        var options = Section(245);
+        var options = Section(330);
         options.Controls.Add(SectionTitle("클립보드 · 동기화 설정"));
         options.Controls.Add(Row(_captureClipboardText, _captureClipboardImages));
         options.Controls.Add(Row(_clipboardSyncEnabled, _clipboardSyncText, _clipboardSyncImages));
         options.Controls.Add(LabeledRow("최대 저장 개수", _clipboardLimit));
         options.Controls.Add(LabeledRow("BLE 이미지 한도 (KiB)", _clipboardBleImageLimit));
+        options.Controls.Add(Row(_clipboardRelayEnabled));
+        options.Controls.Add(LabeledRow("Relay URL", _clipboardRelayUrl));
+        options.Controls.Add(Help(
+            "Relay는 기본 OFF입니다. 켜도 서버에는 E2E 암호화된 프레임만 전달되며 https/wss 주소만 허용합니다.",
+            Secondary));
         options.Controls.Add(ActionButton("클립보드 설정 저장", () =>
         {
             ApplyClipboardSettings(save: true);
@@ -811,6 +834,8 @@ public sealed class MainForm : Form
         _clipboardSyncText.Checked = _settings.ClipboardAutoSendText;
         _clipboardSyncImages.Checked = _settings.ClipboardAutoSendImages;
         _clipboardBleImageLimit.Value = _settings.ClipboardBleImageLimitKb;
+        _clipboardRelayEnabled.Checked = _settings.ClipboardRelayEnabled;
+        _clipboardRelayUrl.Text = _settings.ClipboardRelayUrl;
 
         _mouseSpeedValue.Text = $"{_mouseSpeed.Value}%";
         _scrollSpeedValue.Text = $"{_scrollSpeed.Value}%";
@@ -941,6 +966,15 @@ public sealed class MainForm : Form
         _settings.ClipboardAutoSendText = _clipboardSyncText.Checked;
         _settings.ClipboardAutoSendImages = _clipboardSyncImages.Checked;
         _settings.ClipboardBleImageLimitKb = (int)_clipboardBleImageLimit.Value;
+        _settings.ClipboardRelayEnabled = _clipboardRelayEnabled.Checked;
+        _settings.ClipboardRelayUrl = _clipboardRelayUrl.Text.Trim();
+
+        if (_settings.ClipboardRelayEnabled)
+        {
+            if (!Uri.TryCreate(_settings.ClipboardRelayUrl, UriKind.Absolute, out var relayUri) ||
+                relayUri.Scheme is not ("https" or "wss"))
+                throw new InvalidOperationException("인터넷 Relay를 사용하려면 https:// 또는 wss:// 주소를 입력해 주세요.");
+        }
 
         _clipboard?.Configure(
             _settings.ClipboardHistoryLimit,
@@ -950,7 +984,7 @@ public sealed class MainForm : Form
         if (save)
         {
             SettingsStore.Save(_settings);
-            Log($"클립보드 설정 저장 · 최대 {_settings.ClipboardHistoryLimit}개 · 동기화:{_settings.ClipboardSyncEnabled} · BLE 이미지 {_settings.ClipboardBleImageLimitKb} KiB");
+            Log($"클립보드 설정 저장 · 최대 {_settings.ClipboardHistoryLimit}개 · 동기화:{_settings.ClipboardSyncEnabled} · BLE 이미지 {_settings.ClipboardBleImageLimitKb} KiB · Relay:{_settings.ClipboardRelayEnabled}");
 
             if (_clipboardSync is not null)
             {
@@ -970,7 +1004,9 @@ public sealed class MainForm : Form
         try
         {
             await _clipboardSync.StartAsync();
-            Log("기기간 복붙 서비스 시작 · LAN/P2P 우선, BLE fallback");
+            Log(_settings.ClipboardRelayEnabled
+                ? "기기간 복붙 서비스 시작 · LAN/P2P → BLE → E2E Relay"
+                : "기기간 복붙 서비스 시작 · LAN/P2P → BLE");
         }
         catch (Exception ex)
         {
@@ -1387,6 +1423,11 @@ public sealed class MainForm : Form
             ClipboardSyncEnabled = _settings.ClipboardSyncEnabled,
             ClipboardBleSubscribers = _clipboardSync?.BleSubscribers ?? 0,
             ClipboardBleImageLimitKb = _settings.ClipboardBleImageLimitKb,
+            ClipboardRelayEnabled = _settings.ClipboardRelayEnabled,
+            ClipboardRelayConnected = _clipboardSync?.RelayConnected ?? false,
+            ClipboardRelayHost = Uri.TryCreate(_settings.ClipboardRelayUrl, UriKind.Absolute, out var relayDiagnosticUri)
+                ? relayDiagnosticUri.Host
+                : "",
             Privacy = "진단 파일에는 클립보드 내용, 입력 문자, 기기 이름, Bluetooth 주소를 저장하지 않습니다."
         };
 
