@@ -709,7 +709,13 @@ public sealed class MainForm : Form
             _clipboardSync.Received += content => Post(() =>
             {
                 if (_clipboard?.ApplyRemote(content) == true)
+                {
+                    // Treat the remote value as the current clipboard generation so a later
+                    // PC -> phone switch cannot overwrite it with an older local copy.
+                    _latestLocalClipboard = content;
+                    _lastSentClipboardHash = content.Hash;
                     Log("휴대폰 클립보드를 Windows에 적용했습니다.");
+                }
             });
         }
 
