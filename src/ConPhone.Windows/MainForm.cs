@@ -237,6 +237,7 @@ public sealed class MainForm : Form
         {
             _clipboardSync = new ClipboardSyncCoordinator(
                 () => _ble.ApprovedId,
+                id => _ble.IsTrustedDevice(id),
                 () => _settings.ClipboardSyncEnabled);
             ConfigureTray();
             ConfigureRuntimeEvents();
@@ -350,24 +351,17 @@ public sealed class MainForm : Form
             })));
         flow.Controls.Add(connect);
 
-        var devices = Section(245);
+        var devices = Section(285);
         devices.Controls.Add(SectionTitle("연결된 휴대폰"));
         devices.Controls.Add(Help(
-            "휴대폰을 선택하고 한 번 승인하세요. K/M은 키보드·마우스 구독, LOCK은 화면 잠금 Report 구독 상태입니다."));
+            $"최대 {TrustedDeviceStore.MaxDevices}대까지 등록할 수 있습니다. ▶ 표시가 현재 활성 대상입니다. " +
+            "K/M은 키보드·마우스 구독, LOCK은 보조 System Control 구독 상태입니다."));
         devices.Controls.Add(_peers);
         devices.Controls.Add(Row(
             ActionButton("목록 갱신", () => RefreshPeersAsync(false)),
-            ActionButton("선택한 기기 승인", ApproveSelectedAsync, primary: true),
-            ActionButton("승인 해제", async () =>
-            {
-                await ReturnLocalAsync();
-                var revokedId = _ble.Revoke();
-                if (revokedId is not null)
-                    ClipboardPairingSecretStore.Forget(revokedId);
-                if (_clipboardSync is not null)
-                    await _clipboardSync.SetActiveAsync(false);
-                Log("기기 승인과 기기간 복붙 인증키를 해제했습니다.");
-            })));
+            ActionButton("등록 / 활성화", ApproveSelectedAsync, primary: true),
+            ActionButton("활성 대상 전환", SelectSelectedTargetAsync),
+            ActionButton("선택 기기 해제", RevokeSelectedAsync)));
         flow.Controls.Add(devices);
 
         var quick = Section(150);
@@ -1374,7 +1368,48 @@ public sealed class MainForm : Form
 
         await _ble.ApproveAsync(peer.Id);
         _ = ClipboardPairingSecretStore.GetOrCreate(peer.Id);
-        Log($"기기 승인 완료 · {HotkeyCatalog.Display(_settings.ToggleHotkey)}로 휴대폰 입력을 시작할 수 있습니다.");
+        _clipboardSync?.TargetChanged();
+        await RefreshPeersAsync(true);
+
+        Log(
+            $"기기 등록/활성화 완료 · 등록 {_ble.TrustedDeviceCount}/{TrustedDeviceStore.MaxDevices} · " +
+            $"{HotkeyCatalog.Display(_settings.ToggleHotkey)}로 휴대폰 입력을 시작할 수 있습니다.");
+    }
+
+    private async Task SelectSelectedTargetAsync()
+    {
+        await ReturnLocalAsync();
+
+        if (_peers.SelectedItem is not Peer peer)
+            throw new InvalidOperationException("활성 대상으로 바꿀 기기를 선택해 주세요.");
+        if (!peer.Trusted)
+            throw new InvalidOperationException("먼저 이 기기를 등록해 주세요.");
+
+        await _ble.SelectTargetAsync(peer.Id);
+        _clipboardSync?.TargetChanged();
+        await RefreshPeersAsync(true);
+
+        Log($"활성 휴대폰 전환 완료 · {peer.Name} [{peer.Fingerprint}]");
+    }
+
+    private async Task RevokeSelectedAsync()
+    {
+        await ReturnLocalAsync();
+
+        if (_peers.SelectedItem is not Peer peer)
+            throw new InvalidOperationException("해제할 기기를 선택해 주세요.");
+        if (!peer.Trusted)
+            throw new InvalidOperationException("선택한 기기는 등록된 신뢰 기기가 아닙니다.");
+
+        var revokedId = _ble.Revoke(peer.Id);
+        if (revokedId is not null)
+            ClipboardPairingSecretStore.Forget(revokedId);
+
+        _clipboardSync?.TargetChanged();
+        await RefreshPeersAsync(true);
+
+        Log(
+            $"기기 해제 완료 · 남은 등록 {_ble.TrustedDeviceCount}/{TrustedDeviceStore.MaxDevices}");
     }
 
     private async Task RefreshPeersAsync(bool silent = false)
@@ -1514,6 +1549,11 @@ public sealed class MainForm : Form
             MouseSubscribers = _ble.MouseSubscribers,
             SystemSubscribers = _ble.SystemSubscribers,
             ApprovedAndSubscribed = _ble.Ready,
+            TrustedDeviceCount = _ble.TrustedDeviceCount,
+            ActiveDeviceFingerprint = _ble.ApprovedId is { } activeDeviceId
+                ? Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(
+                    System.Text.Encoding.UTF8.GetBytes(activeDeviceId)))[..8]
+                : "",
             SendOperations = Interlocked.Read(ref _sent),
             Pending = _outbox.Count,
             LastError = _lastError,
