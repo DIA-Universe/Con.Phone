@@ -6,6 +6,7 @@ enum SharedPayloadKind: String, Codable {
 }
 
 struct SharedPayloadEnvelope: Codable {
+    let id: UUID
     let kind: SharedPayloadKind
     let text: String?
     let fileName: String?
@@ -26,6 +27,7 @@ enum SharedPayloadStore {
         }
 
         try saveEnvelope(SharedPayloadEnvelope(
+            id: UUID(),
             kind: .text,
             text: text,
             fileName: nil,
@@ -47,6 +49,7 @@ enum SharedPayloadStore {
         try FileManager.default.copyItem(at: source, to: destination)
 
         try saveEnvelope(SharedPayloadEnvelope(
+            id: UUID(),
             kind: .image,
             text: nil,
             fileName: fileName,
@@ -67,6 +70,7 @@ enum SharedPayloadStore {
         try data.write(to: destination, options: .atomic)
 
         try saveEnvelope(SharedPayloadEnvelope(
+            id: UUID(),
             kind: .image,
             text: nil,
             fileName: fileName,
@@ -74,7 +78,7 @@ enum SharedPayloadStore {
         ))
     }
 
-    static func consume() -> (SharedPayloadEnvelope, Data?)? {
+    static func peek() -> (SharedPayloadEnvelope, Data?)? {
         guard let defaults = UserDefaults(suiteName: appGroup),
               let data = defaults.data(forKey: defaultsKey),
               let envelope = try? JSONDecoder().decode(
@@ -83,14 +87,8 @@ enum SharedPayloadStore {
             return nil
         }
 
-        defaults.removeObject(forKey: defaultsKey)
-
         if Date().timeIntervalSince(envelope.createdAt) > 24 * 60 * 60 {
-            if let name = envelope.fileName,
-               let directory = try? sharedDirectory() {
-                try? FileManager.default.removeItem(
-                    at: directory.appendingPathComponent(name))
-            }
+            clear(envelope.id)
             return nil
         }
 
@@ -102,13 +100,35 @@ enum SharedPayloadStore {
                   let directory = try? sharedDirectory() else {
                 return nil
             }
+
             let file = directory.appendingPathComponent(name)
-            defer { try? FileManager.default.removeItem(at: file) }
             guard let imageData = try? Data(contentsOf: file),
+                  !imageData.isEmpty,
                   imageData.count <= maxImageBytes else {
+                clear(envelope.id)
                 return nil
             }
+
             return (envelope, imageData)
+        }
+    }
+
+    static func clear(_ id: UUID) {
+        guard let defaults = UserDefaults(suiteName: appGroup),
+              let data = defaults.data(forKey: defaultsKey),
+              let envelope = try? JSONDecoder().decode(
+                SharedPayloadEnvelope.self,
+                from: data),
+              envelope.id == id else {
+            return
+        }
+
+        defaults.removeObject(forKey: defaultsKey)
+
+        if let name = envelope.fileName,
+           let directory = try? sharedDirectory() {
+            try? FileManager.default.removeItem(
+                at: directory.appendingPathComponent(name))
         }
     }
 
