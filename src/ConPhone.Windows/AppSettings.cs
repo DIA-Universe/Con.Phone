@@ -46,6 +46,7 @@ public sealed class ConPhoneSettings
     public bool ClipboardAutoSendText { get; set; } = true;
     public bool ClipboardAutoSendImages { get; set; } = true;
     public int ClipboardBleImageLimitKb { get; set; } = 512;
+    public string P2PLinkName { get; set; } = "ConPhone";
 }
 
 public static class SettingsStore
@@ -90,6 +91,7 @@ public static class SettingsStore
         settings.ScrollSpeedPercent = Math.Clamp(settings.ScrollSpeedPercent, 25, 300);
         settings.ClipboardHistoryLimit = Math.Clamp(settings.ClipboardHistoryLimit, 10, 200);
         settings.ClipboardBleImageLimitKb = Math.Clamp(settings.ClipboardBleImageLimitKb, 64, 4096);
+        settings.P2PLinkName = NormalizeP2PLinkName(settings.P2PLinkName);
         if (!Enum.IsDefined(typeof(HangulKeyMode), settings.HangulKeyMode))
             settings.HangulKeyMode = HangulKeyMode.RightAlt;
         if (!Enum.IsDefined(typeof(ModifierProfile), settings.ModifierProfile))
@@ -113,6 +115,16 @@ public static class SettingsStore
         }
 
         return settings;
+    }
+
+    private static string NormalizeP2PLinkName(string? value)
+    {
+        var text = string.IsNullOrWhiteSpace(value) ? "ConPhone" : value.Trim();
+        var safe = new string(text
+            .Where(ch => char.IsLetterOrDigit(ch) || ch is '-' or '_' or '.')
+            .Take(18)
+            .ToArray());
+        return string.IsNullOrWhiteSpace(safe) ? "ConPhone" : safe;
     }
 
     public static HotkeyBinding DefaultToggle() => new() { Key = (int)Keys.F8 };
