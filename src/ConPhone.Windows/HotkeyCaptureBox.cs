@@ -15,11 +15,18 @@ public sealed class HotkeyCaptureBox : Button
     public bool Recording { get; private set; }
     public HotkeyCaptureBox()
     {
-        AutoSize=false; Height=40; MinimumSize=new Size(180,40); FlatStyle=FlatStyle.Flat;
+        AutoSize=false; Height=40; MinimumSize=new Size(0,40); FlatStyle=FlatStyle.Flat;
         FlatAppearance.BorderColor=Color.FromArgb(220,222,227);
         BackColor=Color.White; ForeColor=Color.FromArgb(26,28,32); TabStop=true;
         AccessibleDescription="클릭 또는 Enter를 누른 뒤 키 조합을 입력하고 다른 곳을 클릭하세요. Esc로 취소합니다.";
         Click += (_,_) => StartRecording();
+    }
+    protected override void OnParentChanged(EventArgs e)
+    {
+        base.OnParentChanged(e);
+        // A width minimum can exceed a percentage column on a small desktop at high DPI.
+        // Keep the touch/keyboard height; let DockStyle.Fill determine available width.
+        if (Parent is TableLayoutPanel) MinimumSize=new Size(0,MinimumSize.Height);
     }
     public void Attach(InputCapture input) => _input=input;
     internal void StartRecording()
