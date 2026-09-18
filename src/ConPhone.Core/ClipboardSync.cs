@@ -93,11 +93,14 @@ public sealed record ClipboardChunk(
 public static class ClipboardWireCodec
 {
     private static readonly byte[] Magic = "CPH1"u8.ToArray();
+    public const int HeaderSize = 70;
+    public const int MaxChunkSize = 1024 * 1024;
+    public const int MaxEncodedFrameBytes = HeaderSize + MaxChunkSize;
     public const int DefaultChunkSize = 64 * 1024;
 
     public static IReadOnlyList<byte[]> Encode(ClipboardContent content, int chunkSize = DefaultChunkSize)
     {
-        if (chunkSize is < 256 or > 1024 * 1024)
+        if (chunkSize is < 256 or > MaxChunkSize)
             throw new ArgumentOutOfRangeException(nameof(chunkSize));
 
         ClipboardContent.Validate(content.Kind, content.Data);
@@ -110,7 +113,7 @@ public static class ClipboardWireCodec
         {
             var offset = index * chunkSize;
             var length = Math.Min(chunkSize, content.Data.Length - offset);
-            var frame = new byte[4 + 1 + 16 + 1 + 4 + 4 + 4 + 32 + 4 + length];
+            var frame = new byte[HeaderSize + length];
             var span = frame.AsSpan();
             Magic.CopyTo(span);
             span[4] = 1;
@@ -130,7 +133,8 @@ public static class ClipboardWireCodec
 
     public static ClipboardChunk Decode(ReadOnlySpan<byte> frame)
     {
-        if (frame.Length < 70 || !frame[..4].SequenceEqual(Magic) || frame[4] != 1)
+        if (frame.Length is < HeaderSize or > MaxEncodedFrameBytes ||
+            !frame[..4].SequenceEqual(Magic) || frame[4] != 1)
             throw new InvalidDataException("Unsupported clipboard frame.");
 
         var transfer = new Guid(frame.Slice(5, 16));
@@ -142,10 +146,11 @@ public static class ClipboardWireCodec
         var payloadLength = BinaryPrimitives.ReadInt32LittleEndian(frame.Slice(66, 4));
 
         if (count <= 0 || index < 0 || index >= count || total <= 0 ||
-            payloadLength < 0 || frame.Length != 70 + payloadLength)
+            payloadLength < 0 || payloadLength > MaxChunkSize ||
+            frame.Length != HeaderSize + payloadLength)
             throw new InvalidDataException("Invalid clipboard frame metadata.");
 
-        return new ClipboardChunk(transfer, kind, index, count, total, hash, frame.Slice(70).ToArray());
+        return new ClipboardChunk(transfer, kind, index, count, total, hash, frame.Slice(HeaderSize).ToArray());
     }
 }
 
