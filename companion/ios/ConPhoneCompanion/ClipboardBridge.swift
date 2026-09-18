@@ -39,7 +39,8 @@ final class ClipboardBridge: NSObject, ObservableObject {
     }
 
     private let bleReassembler = BleReassembler()
-    private let wireReassembler = ClipboardWireReassembler()
+    private let bleWireReassembler = ClipboardWireReassembler()
+    private let p2pWireReassembler = ClipboardWireReassembler()
     private var writeQueue: [Data] = []
     private var writeInFlight = false
     private var pendingContent: ClipboardContent?
@@ -353,7 +354,7 @@ final class ClipboardBridge: NSObject, ObservableObject {
     private func receiveP2P(_ frame: Data) {
         do {
             let chunk = try ClipboardProtocol.decode(frame)
-            guard let content = try wireReassembler.add(chunk) else { return }
+            guard let content = try p2pWireReassembler.add(chunk) else { return }
             apply(content)
         } catch {
             status = "P2P Clipboard 수신 거부: \(error.localizedDescription)"
@@ -434,7 +435,7 @@ final class ClipboardBridge: NSObject, ObservableObject {
             let fragment = try ClipboardProtocol.decodeBle(value)
             guard let frame = try bleReassembler.add(fragment) else { return }
             let chunk = try ClipboardProtocol.decode(frame)
-            guard let content = try wireReassembler.add(chunk) else { return }
+            guard let content = try bleWireReassembler.add(chunk) else { return }
             apply(content)
         } catch {
             status = "Clipboard BLE 수신 거부: \(error.localizedDescription)"
