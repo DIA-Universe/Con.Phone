@@ -50,6 +50,7 @@ class ClipboardBridgeService : Service() {
         private val RX_UUID = UUID.fromString("67A7F003-7E5B-4A2E-9B8B-1C9A5B6D1001")
         private val SECRET_UUID = UUID.fromString("67A7F004-7E5B-4A2E-9B8B-1C9A5B6D1001")
         private val DIRECT_LINK_UUID = UUID.fromString("67A7F006-7E5B-4A2E-9B8B-1C9A5B6D1001")
+        private val RELAY_CONFIG_UUID = UUID.fromString("67A7F007-7E5B-4A2E-9B8B-1C9A5B6D1001")
         private val CCCD_UUID = UUID.fromString("00002902-0000-1000-8000-00805f9b34fb")
     }
 
@@ -65,16 +66,20 @@ class ClipboardBridgeService : Service() {
     @Volatile private var rx: BluetoothGattCharacteristic? = null
     @Volatile private var secretCharacteristic: BluetoothGattCharacteristic? = null
     @Volatile private var directLinkCharacteristic: BluetoothGattCharacteristic? = null
+    @Volatile private var relayConfigCharacteristic: BluetoothGattCharacteristic? = null
     @Volatile private var mtu = 23
     @Volatile private var bleWriting = false
     @Volatile private var credential: Credential? = null
     @Volatile private var directConfig: DirectConfig? = null
+    @Volatile private var relayEndpoint: String? = null
+    @Volatile private var relay: RelayChannel? = null
     @Volatile private var lan: LanChannel? = null
     @Volatile private var scanning = false
     @Volatile private var lanDiscoveryRunning = false
     @Volatile private var p2pNetwork: Network? = null
     @Volatile private var directNetworkCallback: ConnectivityManager.NetworkCallback? = null
     @Volatile private var directConfigReadAttempts = 0
+    @Volatile private var destroyed = false
 
     private data class Credential(val deviceHash: ByteArray, val secret: ByteArray)
     private data class DirectConfig(val ssid: String, val passphrase: String)
@@ -174,12 +179,20 @@ class ClipboardBridgeService : Service() {
                 rx = null
                 secretCharacteristic = null
                 directLinkCharacteristic = null
-                credential = null
-                directConfig = null
-                releaseDirectNetwork()
-                lan?.close()
-                lan = null
-                showStatus("PC 연결 끊김 · 재연결 대기")
+                relayConfigCharacteristic = null
+
+                val dataPlaneAlive = lan?.ready == true || relay?.ready == true
+                if (!dataPlaneAlive) {
+                    credential = null
+                    directConfig = null
+                    relayEndpoint = null
+                    releaseDirectNetwork()
+                }
+
+                showStatus(if (dataPlaneAlive)
+                    "Bluetooth 연결 끊김 · 기존 Clipboard 데이터 채널 유지"
+                else
+                    "PC 연결 끊김 · 재연결 대기")
                 runCatching { g.close() }
                 main.postDelayed({ beginScan() }, 2500)
             }
@@ -204,6 +217,7 @@ class ClipboardBridgeService : Service() {
             rx = service.getCharacteristic(RX_UUID)
             secretCharacteristic = service.getCharacteristic(SECRET_UUID)
             directLinkCharacteristic = service.getCharacteristic(DIRECT_LINK_UUID)
+            relayConfigCharacteristic = service.getCharacteristic(RELAY_CONFIG_UUID)
 
             val txLocal = tx ?: return
             if (checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT) != PackageManager.PERMISSION_GRANTED) return
@@ -252,6 +266,10 @@ class ClipboardBridgeService : Service() {
                 retrySecretRead(g)
             else if (characteristic.uuid == DIRECT_LINK_UUID)
                 showStatus("P2P 설정 읽기 실패 · LAN/BLE fallback 유지")
+            else if (characteristic.uuid == RELAY_CONFIG_UUID) {
+                showStatus("Relay 설정 읽기 실패 · 로컬 경로 유지")
+                scheduleRelayConfigRefresh()
+            }
         }
 
         override fun onCharacteristicRead(
@@ -266,6 +284,10 @@ class ClipboardBridgeService : Service() {
                 retrySecretRead(g)
             else if (characteristic.uuid == DIRECT_LINK_UUID)
                 showStatus("P2P 설정 읽기 실패 · LAN/BLE fallback 유지")
+            else if (characteristic.uuid == RELAY_CONFIG_UUID) {
+                showStatus("Relay 설정 읽기 실패 · 로컬 경로 유지")
+                scheduleRelayConfigRefresh()
+            }
         }
 
         @Suppress("DEPRECATION")
@@ -311,8 +333,13 @@ class ClipboardBridgeService : Service() {
                 credential = Credential(value.copyOfRange(0, 32), value.copyOfRange(32, 64))
                 showStatus("BLE Clipboard 연결됨 · LAN/P2P 승격 확인")
                 startLanDiscovery()
-                if (checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT) == PackageManager.PERMISSION_GRANTED)
-                    directLinkCharacteristic?.let { gatt?.readCharacteristic(it) }
+                if (checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT) == PackageManager.PERMISSION_GRANTED) {
+                    val direct = directLinkCharacteristic
+                    if (direct != null)
+                        gatt?.readCharacteristic(direct)
+                    else
+                        readRelayConfig()
+                }
             }
             DIRECT_LINK_UUID -> {
                 directConfig = parseDirectConfig(value)
@@ -320,11 +347,23 @@ class ClipboardBridgeService : Service() {
                     directConfigReadAttempts = 0
                     showStatus("P2P 고속 링크 준비됨 · 현재 LAN 우선 확인")
                     main.postDelayed({
-                        if (lan == null) requestDirectNetwork()
+                        if (lan?.ready != true) requestDirectNetwork()
                     }, 3500)
                 } else {
                     retryDirectLinkRead()
                 }
+                readRelayConfig()
+            }
+            RELAY_CONFIG_UUID -> {
+                val endpoint = parseRelayEndpoint(value)
+                relayEndpoint = endpoint
+                if (endpoint == null) {
+                    relay?.close()
+                    relay = null
+                } else {
+                    startRelay(endpoint)
+                }
+                scheduleRelayConfigRefresh()
             }
         }
     }
@@ -336,6 +375,57 @@ class ClipboardBridgeService : Service() {
             if (checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT) == PackageManager.PERMISSION_GRANTED)
                 directLinkCharacteristic?.let { gatt?.readCharacteristic(it) }
         }, 1200)
+    }
+
+    private fun readRelayConfig() {
+        if (checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT) != PackageManager.PERMISSION_GRANTED)
+            return
+        relayConfigCharacteristic?.let { gatt?.readCharacteristic(it) }
+    }
+
+    private fun scheduleRelayConfigRefresh() {
+        if (destroyed) return
+        main.postDelayed({
+            if (!destroyed && gatt != null)
+                readRelayConfig()
+        }, 15_000)
+    }
+
+    private fun parseRelayEndpoint(value: ByteArray): String? {
+        if (value.size < 4 || value[0].toInt() != 1) return null
+        if (value[1].toInt() != 1) return null
+        val length = (value[2].toInt() and 0xFF) or ((value[3].toInt() and 0xFF) shl 8)
+        if (length <= 0 || length > 1024 || value.size != 4 + length) return null
+        val endpoint = value.copyOfRange(4, value.size).toString(Charsets.UTF_8).trim()
+        return if (endpoint.startsWith("https://", true) || endpoint.startsWith("wss://", true))
+            endpoint
+        else
+            null
+    }
+
+    private fun startRelay(endpoint: String) {
+        val cred = credential ?: return
+        val current = relay
+        if (current?.ready == true) return
+
+        current?.close()
+        val channel = RelayChannel(
+            endpoint,
+            cred.deviceHash,
+            cred.secret,
+            ::onLanFrame,
+            ::showStatus
+        ) {
+            if (relay === channel) relay = null
+            if (!destroyed && relayEndpoint == endpoint) {
+                main.postDelayed({
+                    if (!destroyed && relay == null)
+                        startRelay(endpoint)
+                }, 3000)
+            }
+        }
+        relay = channel
+        channel.start()
     }
 
     private fun parseDirectConfig(value: ByteArray): DirectConfig? {
@@ -554,7 +644,7 @@ class ClipboardBridgeService : Service() {
 
     private fun sendContent(content: ClipboardContent) {
         val fast = lan
-        if (fast != null) {
+        if (fast?.ready == true) {
             executor.execute {
                 runCatching {
                     ClipboardProtocol.encode(content).forEach(fast::sendFrame)
@@ -562,25 +652,50 @@ class ClipboardBridgeService : Service() {
                     showStatus("Clipboard 전송 완료 · LAN/P2P")
                 }.onFailure {
                     fast.close()
-                    lan = null
-                    enqueueBle(content)
+                    if (lan === fast) lan = null
+                    sendViaBleOrRelay(content)
                 }
             }
-        } else {
-            enqueueBle(content)
+            return
         }
+
+        sendViaBleOrRelay(content)
+    }
+
+    private fun sendViaBleOrRelay(content: ClipboardContent) {
+        val bleAllowed = content.kind == ClipboardKind.TEXT || content.data.size <= 512 * 1024
+        val bleAvailable = gatt != null && rx != null && credential != null
+
+        if (bleAllowed && bleAvailable) {
+            enqueueBle(content)
+            return
+        }
+
+        val relayLocal = relay
+        if (relayLocal?.ready == true) {
+            val frames = ClipboardProtocol.encode(content)
+            if (!relayLocal.sendFrames(frames))
+                toast("Relay 전송을 시작하지 못했습니다.")
+            return
+        }
+
+        toast(
+            if (!bleAllowed)
+                "큰 이미지를 보낼 LAN/P2P/Relay 경로가 없습니다."
+            else
+                "PC Clipboard 연결이 없습니다."
+        )
     }
 
     private fun enqueueBle(content: ClipboardContent) {
         val g = gatt
         val rxLocal = rx
         if (g == null || rxLocal == null || credential == null) {
-            toast("PC Clipboard 연결이 없습니다.")
-            return
-        }
-
-        if (content.kind != ClipboardKind.TEXT && content.data.size > 512 * 1024) {
-            toast("512 KiB 초과 이미지는 LAN/P2P 연결 후 전송해 주세요.")
+            val relayLocal = relay
+            if (relayLocal?.ready == true)
+                relayLocal.sendFrames(ClipboardProtocol.encode(content))
+            else
+                toast("PC Clipboard 연결이 없습니다.")
             return
         }
 
@@ -673,7 +788,10 @@ class ClipboardBridgeService : Service() {
         main.post { Toast.makeText(this, text, Toast.LENGTH_SHORT).show() }
 
     override fun onDestroy() {
+        destroyed = true
         scanning = false
+        relay?.close()
+        relay = null
         lan?.close()
         lan = null
         releaseDirectNetwork()
@@ -694,6 +812,7 @@ class ClipboardBridgeService : Service() {
         private val output = BufferedOutputStream(socket.getOutputStream())
         private val sendLock = Any()
         @Volatile private var closed = false
+        val ready: Boolean get() = !closed && socket.isConnected
 
         private val aad = "ConPhone-Clipboard-LAN-v1".toByteArray(Charsets.US_ASCII) + credential.deviceHash
 
