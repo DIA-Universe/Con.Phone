@@ -1,0 +1,32 @@
+name: Relay build and integration test
+on:
+  push:
+    paths:
+      - 'relay/**'
+      - '.github/workflows/relay.yml'
+  pull_request:
+    paths:
+      - 'relay/**'
+      - '.github/workflows/relay.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: relay/package-lock.json
+      - name: Install relay dependencies
+        working-directory: relay
+        run: npm install --package-lock-only && npm ci
+      - name: Relay integration test
+        working-directory: relay
+        run: npm test
