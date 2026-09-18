@@ -26,7 +26,7 @@ final class LanClipboardChannel {
     ) {
         self.deviceHash = deviceHash
         self.secret = secret
-        self.aad = Data("ConPhone-Clipboard-LAN-v1".utf8) + deviceHash
+        self.aad = Data("ConPhone-Clipboard-P2P-v1".utf8) + deviceHash
         self.onFrame = onFrame
         self.onStatus = onStatus
 
