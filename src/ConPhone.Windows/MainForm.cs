@@ -92,6 +92,12 @@ public sealed class MainForm : Form
         Width = 240
     };
 
+    private readonly ComboBox _modifierProfile = new()
+    {
+        DropDownStyle = ComboBoxStyle.DropDownList,
+        Width = 240
+    };
+
     private readonly TextBox _toggleHotkeyBox = HotkeyBox();
     private readonly TextBox _emergencyHotkeyBox = HotkeyBox();
     private readonly TextBox _lockHotkeyBox = HotkeyBox();
@@ -211,6 +217,11 @@ public sealed class MainForm : Form
             "HID LANG1",
             "Ctrl+Space",
             "Shift+Space"
+        ]);
+        _modifierProfile.Items.AddRange(
+        [
+            "표준 Windows/Android",
+            "Mac/iPad · Ctrl ↔ Command"
         ]);
 
         LoadSettingsToUi();
@@ -404,11 +415,12 @@ public sealed class MainForm : Form
             })));
         flow.Controls.Add(pointer);
 
-        var keyboard = Section(185);
+        var keyboard = Section(230);
         keyboard.Controls.Add(SectionTitle("키보드 / 한영키"));
         keyboard.Controls.Add(Help(
             "Galaxy 기본값은 Right Alt입니다. 기기에서 한영 전환이 안 되면 LANG1, Ctrl+Space, Shift+Space 순서로 바꿔 테스트할 수 있습니다."));
         keyboard.Controls.Add(LabeledRow("한영키 전송 방식", _hangulMode));
+        keyboard.Controls.Add(LabeledRow("수정키 프로필", _modifierProfile));
         keyboard.Controls.Add(Row(
             ActionButton("키보드 설정 저장", () =>
             {
@@ -870,6 +882,34 @@ public sealed class MainForm : Form
         }
     }
 
+    private void LoadActiveDeviceProfileToUi()
+    {
+        var hangul = _settings.HangulKeyMode;
+        var modifiers = _settings.ModifierProfile;
+
+        if (_ble.ApprovedId is { } deviceId)
+        {
+            var profile = DeviceProfileStore.Get(
+                deviceId,
+                hangul,
+                modifiers);
+            hangul = profile.HangulKeyMode;
+            modifiers = profile.ModifierProfile;
+        }
+
+        _hangulMode.SelectedIndex = hangul switch
+        {
+            HangulKeyMode.RightAlt => 0,
+            HangulKeyMode.Lang1 => 1,
+            HangulKeyMode.CtrlSpace => 2,
+            HangulKeyMode.ShiftSpace => 3,
+            _ => 0
+        };
+
+        _modifierProfile.SelectedIndex =
+            modifiers == ModifierProfile.MacCtrlCommandSwap ? 1 : 0;
+    }
+
     private void RefreshHotkeyUi()
     {
         _toggleHotkeyBox.Text = HotkeyCatalog.Display(_settings.ToggleHotkey);
@@ -886,14 +926,7 @@ public sealed class MainForm : Form
         _mouseSpeed.Value = _settings.MouseSpeedPercent;
         _scrollSpeed.Value = _settings.ScrollSpeedPercent;
         _invertScroll.Checked = _settings.InvertScroll;
-        _hangulMode.SelectedIndex = _settings.HangulKeyMode switch
-        {
-            HangulKeyMode.RightAlt => 0,
-            HangulKeyMode.Lang1 => 1,
-            HangulKeyMode.CtrlSpace => 2,
-            HangulKeyMode.ShiftSpace => 3,
-            _ => 0
-        };
+        LoadActiveDeviceProfileToUi();
 
         RefreshHotkeyUi();
 
@@ -921,6 +954,9 @@ public sealed class MainForm : Form
             3 => HangulKeyMode.ShiftSpace,
             _ => HangulKeyMode.RightAlt
         };
+        _settings.ModifierProfile = _modifierProfile.SelectedIndex == 1
+            ? ModifierProfile.MacCtrlCommandSwap
+            : ModifierProfile.Standard;
 
         _pointerScaler.Configure(
             _settings.MouseSpeedPercent,
@@ -931,7 +967,9 @@ public sealed class MainForm : Form
             _settings.ToggleHotkey,
             _settings.EmergencyHotkey,
             _settings.LockAndReturnHotkey);
-        _input.ConfigureKeyboard(_settings.HangulKeyMode);
+        _input.ConfigureKeyboard(
+            _settings.HangulKeyMode,
+            _settings.ModifierProfile);
 
         _mouseSpeedValue.Text = $"{_mouseSpeed.Value}%";
         _scrollSpeedValue.Text = $"{_scrollSpeed.Value}%";
@@ -940,9 +978,19 @@ public sealed class MainForm : Form
         if (save)
         {
             SettingsStore.Save(_settings);
+
+            if (_ble.ApprovedId is { } deviceId)
+            {
+                DeviceProfileStore.Save(
+                    deviceId,
+                    _settings.HangulKeyMode,
+                    _settings.ModifierProfile);
+            }
+
             Log(
                 $"입력 설정 저장 · 마우스 {_settings.MouseSpeedPercent}% · " +
-                $"스크롤 {_settings.ScrollSpeedPercent}% · 한영키 {_settings.HangulKeyMode}");
+                $"스크롤 {_settings.ScrollSpeedPercent}% · 한영키 {_settings.HangulKeyMode} · " +
+                $"수정키 {_settings.ModifierProfile}");
         }
     }
 
@@ -1394,6 +1442,8 @@ public sealed class MainForm : Form
         await _ble.ApproveAsync(peer.Id);
         _ = ClipboardPairingSecretStore.GetOrCreate(peer.Id);
         _clipboardSync?.TargetChanged();
+        LoadActiveDeviceProfileToUi();
+        ApplyInputSettings(save: false);
         await RefreshPeersAsync(true);
 
         Log(
@@ -1412,6 +1462,8 @@ public sealed class MainForm : Form
 
         await _ble.SelectTargetAsync(peer.Id);
         _clipboardSync?.TargetChanged();
+        LoadActiveDeviceProfileToUi();
+        ApplyInputSettings(save: false);
         await RefreshPeersAsync(true);
 
         Log($"활성 휴대폰 전환 완료 · {peer.Name} [{peer.Fingerprint}]");
@@ -1428,9 +1480,14 @@ public sealed class MainForm : Form
 
         var revokedId = _ble.Revoke(peer.Id);
         if (revokedId is not null)
+        {
             ClipboardPairingSecretStore.Forget(revokedId);
+            DeviceProfileStore.Remove(revokedId);
+        }
 
         _clipboardSync?.TargetChanged();
+        LoadActiveDeviceProfileToUi();
+        ApplyInputSettings(save: false);
         await RefreshPeersAsync(true);
 
         Log(
@@ -1587,6 +1644,7 @@ public sealed class MainForm : Form
             ScrollSpeedPercent = _settings.ScrollSpeedPercent,
             MousePacingIntervalMs = _ble.MousePacingIntervalMs,
             HangulKeyMode = _settings.HangulKeyMode.ToString(),
+            ModifierProfile = _settings.ModifierProfile.ToString(),
             ToggleHotkey = HotkeyCatalog.Display(_settings.ToggleHotkey),
             EmergencyHotkey = HotkeyCatalog.Display(_settings.EmergencyHotkey),
             LockAndReturnHotkey = HotkeyCatalog.Display(_settings.LockAndReturnHotkey),
