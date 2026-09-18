@@ -143,8 +143,11 @@ object ClipboardProtocol {
         val hash = ByteArray(32).also(b::get)
         val payloadLength = b.int
 
-        require(count > 0 && index in 0 until count && total > 0)
-        require(payloadLength in 0..MAX_CHUNK && b.remaining() == payloadLength)
+        val maxTotal = if (kind == ClipboardKind.TEXT) MAX_TEXT else MAX_IMAGE
+        val maxCount = (maxTotal + 255) / 256
+        require(count in 1..maxCount && index in 0 until count)
+        require(total in 1..maxTotal)
+        require(payloadLength in 1..MAX_CHUNK && payloadLength <= total && b.remaining() == payloadLength)
         val payload = ByteArray(payloadLength).also(b::get)
 
         return ClipboardWireChunk(transfer, kind, index, count, total, hash, payload)
@@ -218,7 +221,14 @@ class ClipboardWireReassembler {
             }
         }!!
 
-        state.parts.putIfAbsent(chunk.index, chunk.payload.copyOf())
+        if (!state.parts.containsKey(chunk.index)) {
+            require(state.bytes.toLong() + chunk.payload.size <= state.total.toLong()) {
+                "Clipboard transfer exceeds declared total length."
+            }
+            val copy = chunk.payload.copyOf()
+            state.parts[chunk.index] = copy
+            state.bytes += copy.size
+        }
         if (state.parts.size != state.count) return null
 
         val output = ByteArrayOutputStream(state.total)
