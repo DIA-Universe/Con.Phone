@@ -70,6 +70,7 @@ class ClipboardBridgeService : Service() {
     @Volatile private var credential: Credential? = null
     @Volatile private var directConfig: DirectConfig? = null
     @Volatile private var p2p: P2PChannel? = null
+    @Volatile private var pendingContent: ClipboardContent? = null
     @Volatile private var scanning = false
     @Volatile private var p2pNetwork: Network? = null
     @Volatile private var directNetworkCallback: ConnectivityManager.NetworkCallback? = null
@@ -445,6 +446,7 @@ class ClipboardBridgeService : Service() {
         channel.handshake()
         p2p = channel
         showStatus("Clipboard P2P 고속 채널 연결됨 · $target")
+        flushPendingContent()
         executor.execute { channel.readLoop() }
     }
 
@@ -586,20 +588,61 @@ class ClipboardBridgeService : Service() {
                 }.onFailure {
                     fast.close()
                     if (p2p === fast) p2p = null
-                    enqueueBle(content)
+                    sendViaBleOrQueue(content)
                 }
             }
             return
         }
 
-        enqueueBle(content)
+        sendViaBleOrQueue(content)
+    }
+
+    private fun sendViaBleOrQueue(content: ClipboardContent) {
+        val bleAllowed =
+            content.kind == ClipboardKind.TEXT ||
+            content.data.size <= 512 * 1024
+
+        if (bleAllowed && gatt != null && rx != null && credential != null) {
+            enqueueBle(content)
+            return
+        }
+
+        pendingContent = content
+        showStatus(
+            if (!bleAllowed)
+                "P2P 연결 후 이미지 전송 대기"
+            else
+                "PC 연결 후 Clipboard 전송 대기"
+        )
+
+        main.post {
+            beginScan()
+            if (directConfig != null && p2p?.ready != true)
+                requestDirectNetwork()
+        }
+    }
+
+    private fun flushPendingContent() {
+        val content = pendingContent ?: return
+
+        val canP2P = p2p?.ready == true
+        val canBle =
+            (content.kind == ClipboardKind.TEXT || content.data.size <= 512 * 1024) &&
+            gatt != null && rx != null && credential != null
+
+        if (!canP2P && !canBle) return
+
+        pendingContent = null
+        sendContent(content)
     }
 
     private fun enqueueBle(content: ClipboardContent) {
         val g = gatt
         val rxLocal = rx
         if (g == null || rxLocal == null || credential == null) {
-            toast("PC Clipboard 연결이 없습니다.")
+            pendingContent = content
+            showStatus("PC 연결 후 Clipboard 전송 대기")
+            main.post { beginScan() }
             return
         }
 
