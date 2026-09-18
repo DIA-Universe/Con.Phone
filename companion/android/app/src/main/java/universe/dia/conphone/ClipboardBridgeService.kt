@@ -507,7 +507,9 @@ class ClipboardBridgeService : Service() {
 
             override fun onUnavailable() {
                 directNetworkCallback = null
-                showStatus("P2P 링크 사용 불가/거부 · BLE fallback 유지")
+                directConfig = null
+                showStatus("P2P 링크 사용 불가/변경됨 · 설정 재확인")
+                retryDirectLinkRead()
             }
         }
 
