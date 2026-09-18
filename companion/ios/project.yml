@@ -8,6 +8,10 @@ targets:
     deploymentTarget: "17.0"
     sources:
       - ConPhoneCompanion
+      - Shared
+    dependencies:
+      - target: ConPhoneShare
+        embed: true
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: universe.dia.conphone.ios
@@ -20,8 +24,41 @@ targets:
       path: ConPhoneCompanion/Info.plist
       properties:
         CFBundleDisplayName: Con.Phone Companion
+        CFBundleURLTypes:
+          - CFBundleURLName: universe.dia.conphone
+            CFBundleURLSchemes:
+              - conphone
         UILaunchScreen: {}
         NSBluetoothAlwaysUsageDescription: Con.Phone PC와 텍스트 및 이미지를 Bluetooth로 동기화합니다.
         NSLocalNetworkUsageDescription: 같은 LAN 또는 P2P 연결이 있을 때 클립보드를 더 빠르게 전송하기 위해 사용합니다.
         UIBackgroundModes:
           - bluetooth-central
+
+  ConPhoneShare:
+    type: app-extension
+    platform: iOS
+    deploymentTarget: "17.0"
+    sources:
+      - ShareExtension
+      - Shared
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: universe.dia.conphone.ios.share
+        SWIFT_VERSION: "5.0"
+        MARKETING_VERSION: "0.3.0"
+        CURRENT_PROJECT_VERSION: "3"
+        APPLICATION_EXTENSION_API_ONLY: YES
+        SKIP_INSTALL: YES
+        CODE_SIGNING_ALLOWED: NO
+        CODE_SIGN_ENTITLEMENTS: ShareExtension/ConPhoneShare.entitlements
+    info:
+      path: ShareExtension/Info.plist
+      properties:
+        CFBundleDisplayName: Con.Phone
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.share-services
+          NSExtensionPrincipalClass: "$(PRODUCT_MODULE_NAME).ShareViewController"
+          NSExtensionAttributes:
+            NSExtensionActivationRule:
+              NSExtensionActivationSupportsText: true
+              NSExtensionActivationSupportsImageWithMaxCount: 1
