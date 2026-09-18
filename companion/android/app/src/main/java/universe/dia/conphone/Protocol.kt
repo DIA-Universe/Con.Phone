@@ -223,13 +223,14 @@ class ClipboardWireReassembler {
         }
 
         pending.remove(id)
-        completed[id] = System.currentTimeMillis()
         val bytes = output.toByteArray()
         require(bytes.size == state.total && sha256(bytes).contentEquals(state.hash)) {
             "Clipboard integrity check failed."
         }
         ClipboardProtocol.validate(state.kind, bytes)
-        return ClipboardContent(state.kind, bytes)
+        val content = ClipboardContent(state.kind, bytes)
+        completed[id] = System.currentTimeMillis()
+        return content
     }
 
     private fun cleanup() {
