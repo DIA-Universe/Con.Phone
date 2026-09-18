@@ -362,7 +362,11 @@ public sealed class BleClipboardService : IDisposable
     public bool HasSubscriber(string deviceId) =>
         LiveClients(_tx).Any(x => SessionId(x) == deviceId);
 
-    public async Task SendAsync(string deviceId, ClipboardContent content, CancellationToken token)
+    public async Task SendAsync(
+        string deviceId,
+        ClipboardContent content,
+        CancellationToken token,
+        Func<bool>? pauseBulk = null)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
         if (!IsActive(deviceId))
@@ -378,19 +382,35 @@ public sealed class BleClipboardService : IDisposable
         if (maxGattValue <= BleFragmentCodec.HeaderSize)
             throw new InvalidOperationException($"BLE 알림 크기가 너무 작습니다: {maxGattValue}");
 
+        var isImage = content.Kind != ClipboardContentKind.TextUtf8;
+        if (isImage && maxGattValue < 100)
+            throw new InvalidOperationException(
+                $"BLE 이미지 전송 MTU가 너무 작습니다({maxGattValue}). P2P 고속 링크를 사용하세요.");
+
         await _sendGate.WaitAsync(token).ConfigureAwait(false);
         try
         {
             foreach (var wireFrame in ClipboardWireCodec.Encode(content, 16 * 1024))
             {
                 var transferId = BitConverter.ToUInt32(RandomNumberGenerator.GetBytes(4));
+                var fragmentIndex = 0;
                 foreach (var fragment in BleFragmentCodec.Split(wireFrame, maxGattValue, transferId))
                 {
+                    if (isImage && pauseBulk is not null)
+                    {
+                        while (pauseBulk())
+                            await Task.Delay(25, token).ConfigureAwait(false);
+                    }
+
                     var result = await _tx.NotifyValueAsync(fragment.AsBuffer(), client)
                         .AsTask(token).ConfigureAwait(false);
 
                     if (result.Status != GattCommunicationStatus.Success)
                         throw new InvalidOperationException($"Clipboard BLE 전송 실패: {result.Status}");
+
+                    fragmentIndex++;
+                    if (isImage && fragmentIndex % 4 == 0)
+                        await Task.Delay(2, token).ConfigureAwait(false);
                 }
             }
         }
