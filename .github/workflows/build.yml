@@ -9,33 +9,49 @@ jobs:
   build:
     runs-on: windows-latest
     timeout-minutes: 20
+    defaults:
+      run:
+        shell: pwsh
+        working-directory: ${{ runner.temp }}
     steps:
-      - uses: actions/checkout@v4
+      # CON.anything is a reserved Windows path. Keep the GitHub repository name,
+      # but download the exact commit to a safe directory outside GITHUB_WORKSPACE.
+      - name: Fetch exact source commit to a Windows-safe path
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $headers = @{ Authorization = "Bearer $env:GH_TOKEN"; Accept = 'application/vnd.github+json' }
+          $zip = Join-Path $env:RUNNER_TEMP 'ConPhone-source.zip'
+          Invoke-WebRequest -Uri "$env:GITHUB_API_URL/repos/$env:GITHUB_REPOSITORY/zipball/$env:GITHUB_SHA" -Headers $headers -OutFile $zip
+          $unpack = Join-Path $env:RUNNER_TEMP 'conphone-unpack'
+          Expand-Archive -Path $zip -DestinationPath $unpack
+          $root = Get-ChildItem -Directory $unpack | Select-Object -First 1
+          Move-Item $root.FullName (Join-Path $env:RUNNER_TEMP 'conphone-src')
       - uses: actions/setup-dotnet@v4
         with:
           dotnet-version: '10.0.x'
       - name: Core behavior tests (no hardware claims)
-        run: dotnet run --project tests/ConPhone.Tests -c Release
+        run: dotnet run --project "$env:RUNNER_TEMP/conphone-src/tests/ConPhone.Tests" -c Release
       - name: Build Windows application
-        run: dotnet build src/ConPhone.Windows -c Release
+        run: dotnet build "$env:RUNNER_TEMP/conphone-src/src/ConPhone.Windows" -c Release
       - name: Publish portable Windows x64
-        run: dotnet publish src/ConPhone.Windows -c Release -r win-x64 --self-contained true -p:PublishSingleFile=false -o artifacts/Con.Phone-win-x64
-      - name: Include user documentation
-        shell: pwsh
+        run: dotnet publish "$env:RUNNER_TEMP/conphone-src/src/ConPhone.Windows" -c Release -r win-x64 --self-contained true -p:PublishSingleFile=false -o "$env:RUNNER_TEMP/ConPhone-win-x64"
+      - name: Include user documentation and provenance
         run: |
-          Copy-Item README.md artifacts/Con.Phone-win-x64/README.ko.md
-          Copy-Item -Recurse docs artifacts/Con.Phone-win-x64/docs
+          Copy-Item "$env:RUNNER_TEMP/conphone-src/README.md" "$env:RUNNER_TEMP/ConPhone-win-x64/README.ko.md"
+          Copy-Item -Recurse "$env:RUNNER_TEMP/conphone-src/docs" "$env:RUNNER_TEMP/ConPhone-win-x64/docs"
+          @{ repository = $env:GITHUB_REPOSITORY; commit = $env:GITHUB_SHA; run = $env:GITHUB_RUN_ID; hardwareTested = $false } | ConvertTo-Json | Set-Content "$env:RUNNER_TEMP/ConPhone-win-x64/BUILDINFO.json"
       - name: Upload Windows app
         uses: actions/upload-artifact@v4
         with:
-          name: Con.Phone-win-x64
-          path: artifacts/Con.Phone-win-x64/
+          name: ConPhone-win-x64
+          path: ${{ runner.temp }}/ConPhone-win-x64/
           retention-days: 14
-      - name: Source snapshot
-        shell: pwsh
-        run: git archive --format=zip --output=Con.Phone-source.zip HEAD
-      - uses: actions/upload-artifact@v4
+      - name: Upload exact source archive
+        if: always()
+        uses: actions/upload-artifact@v4
         with:
-          name: Con.Phone-source
-          path: Con.Phone-source.zip
+          name: ConPhone-source
+          path: ${{ runner.temp }}/ConPhone-source.zip
           retention-days: 14

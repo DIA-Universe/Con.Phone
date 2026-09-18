@@ -8,7 +8,9 @@
 
 ## 다운로드 / 실행
 
-저장소의 **Actions → Windows build and core tests → 성공한 실행 → Artifacts → Con.Phone-win-x64**에서 내려받아 전체 압축을 푼 뒤 `Con.Phone.exe`를 실행합니다. .NET 런타임을 포함하는 x64 배포본입니다. 코드 서명은 되어 있지 않습니다. 조직 보안 정책을 우회하거나 백신을 끄지 마세요.
+저장소의 **Actions → Windows build and core tests → 성공한 실행 → Artifacts → ConPhone-win-x64**에서 내려받아 전체 압축을 푼 뒤 `ConPhone.exe`를 실행합니다. .NET 런타임을 포함하는 x64 배포본입니다. 코드 서명은 되어 있지 않습니다. 조직 보안 정책을 우회하거나 백신을 끄지 마세요.
+
+**이름 주의:** GitHub 저장소/제품 이름은 Con.Phone이지만, Windows에서는 `CON` 및 `CON.*`가 예약되어 있습니다. 로컬 폴더와 실행 파일은 반드시 `ConPhone`처럼 점을 뺀 이름을 사용합니다. 저장소 이름 자체를 바꿀 필요는 없습니다.
 
 ## 갤럭시에서 첫 시험
 
@@ -47,13 +49,15 @@
 
 ## 개발
 
-.NET 10 SDK와 Windows 개발 환경이 필요합니다.
+.NET 10 SDK와 Windows 개발 환경이 필요합니다. Windows에서 clone할 때 대상 디렉터리를 명시합니다.
 
 ```powershell
+git clone https://github.com/DIA-Universe/Con.Phone.git ConPhone
+cd ConPhone
 dotnet run --project tests/ConPhone.Tests -c Release
 dotnet build src/ConPhone.Windows -c Release
 dotnet run --project src/ConPhone.Windows
-dotnet publish src/ConPhone.Windows -c Release -r win-x64 --self-contained true -o artifacts/Con.Phone-win-x64
+dotnet publish src/ConPhone.Windows -c Release -r win-x64 --self-contained true -o artifacts/ConPhone-win-x64
 ```
 
 기술 구조와 검증 범위는 `docs/ARCHITECTURE.md`, 실기기 시험표는 `docs/TESTING.md`를 확인하세요.
