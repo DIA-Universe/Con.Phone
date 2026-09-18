@@ -422,6 +422,14 @@ extension ClipboardBridge: CBPeripheralDelegate {
                     peripheral.readValue(for: characteristic)
                 }
             } else if characteristic.uuid == directLinkUUID {
+                if let config = directConfig {
+                    NEHotspotConfigurationManager.shared.removeConfiguration(
+                        forSSID: config.ssid)
+                }
+                directConfig = nil
+                fastLinkAvailable = false
+                p2p?.close()
+                p2p = nil
                 status = "현재 비활성 기기 또는 P2P 준비 전 · 활성화 대기"
                 retryDirectConfigRead(peripheral)
             } else {
