@@ -156,9 +156,9 @@ enum SharedPayloadStore {
                 SharedPayloadEnvelope.self,
                 from: previousData),
            let name = previous.fileName,
-           let directory = try? sharedDirectory() {
-            try? FileManager.default.removeItem(
-                at: directory.appendingPathComponent(name))
+           let directory = try? sharedDirectory(),
+           let file = safeFileURL(name, in: directory) {
+            try? FileManager.default.removeItem(at: file)
         }
 
         let data = try JSONEncoder().encode(envelope)
