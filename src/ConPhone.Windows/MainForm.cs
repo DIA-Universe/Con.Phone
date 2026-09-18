@@ -356,7 +356,12 @@ public sealed class MainForm : Form
             ActionButton("승인 해제", async () =>
             {
                 await ReturnLocalAsync();
-                _ble.Revoke();
+                var revokedId = _ble.Revoke();
+                if (revokedId is not null)
+                    ClipboardPairingSecretStore.Forget(revokedId);
+                if (_clipboardSync is not null)
+                    await _clipboardSync.SetActiveAsync(false);
+                Log("기기 승인과 기기간 복붙 인증키를 해제했습니다.");
             })));
         flow.Controls.Add(devices);
 
