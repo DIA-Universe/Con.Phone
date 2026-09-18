@@ -136,6 +136,28 @@ public sealed class ConPhoneCard : FlowLayoutPanel
         AutoSize = true;
         AutoSizeMode = AutoSizeMode.GrowAndShrink;
         BorderStyle = BorderStyle.FixedSingle;
+        MinimumSize = new Size(420, 0);
+    }
+
+    protected override void OnControlAdded(ControlEventArgs e)
+    {
+        base.OnControlAdded(e);
+        FitChild(e.Control);
+    }
+
+    protected override void OnSizeChanged(EventArgs e)
+    {
+        base.OnSizeChanged(e);
+        foreach (Control child in Controls) FitChild(child);
+    }
+
+    private void FitChild(Control child)
+    {
+        var width = Math.Max(320, ClientSize.Width - Padding.Horizontal - 8);
+        if (child is Label label && label.AutoSize)
+            label.MaximumSize = new Size(width, 0);
+        if (Equals(child.Tag, "stretch"))
+            child.Width = width;
     }
 }
 
