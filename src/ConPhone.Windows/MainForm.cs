@@ -96,6 +96,14 @@ public sealed class MainForm : Form
     private readonly TextBox _emergencyHotkeyBox = HotkeyBox();
     private readonly TextBox _lockHotkeyBox = HotkeyBox();
 
+    private readonly Label _quickHotkeyHelp = new()
+    {
+        AutoSize = true,
+        MaximumSize = new Size(810, 0),
+        ForeColor = Secondary,
+        Margin = new Padding(0, 0, 0, 10)
+    };
+
     private readonly ListBox _clipboardList = new()
     {
         Width = 820,
@@ -364,8 +372,7 @@ public sealed class MainForm : Form
 
         var quick = Section(150);
         quick.Controls.Add(SectionTitle("빠른 동작"));
-        quick.Controls.Add(Help(
-            $"전환 {HotkeyCatalog.Display(_settings.ToggleHotkey)} · 복귀 {HotkeyCatalog.Display(_settings.EmergencyHotkey)} · 잠금+복귀 {HotkeyCatalog.Display(_settings.LockAndReturnHotkey)}"));
+        quick.Controls.Add(_quickHotkeyHelp);
         quick.Controls.Add(Row(
             ActionButton("휴대폰으로 전환", ToggleAsync, primary: true),
             ActionButton("노트북으로 복귀", ReturnLocalAsync),
@@ -854,6 +861,17 @@ public sealed class MainForm : Form
         }
     }
 
+    private void RefreshHotkeyUi()
+    {
+        _toggleHotkeyBox.Text = HotkeyCatalog.Display(_settings.ToggleHotkey);
+        _emergencyHotkeyBox.Text = HotkeyCatalog.Display(_settings.EmergencyHotkey);
+        _lockHotkeyBox.Text = HotkeyCatalog.Display(_settings.LockAndReturnHotkey);
+        _quickHotkeyHelp.Text =
+            $"전환 {HotkeyCatalog.Display(_settings.ToggleHotkey)} · " +
+            $"복귀 {HotkeyCatalog.Display(_settings.EmergencyHotkey)} · " +
+            $"잠금+복귀 {HotkeyCatalog.Display(_settings.LockAndReturnHotkey)}";
+    }
+
     private void LoadSettingsToUi()
     {
         _mouseSpeed.Value = _settings.MouseSpeedPercent;
@@ -868,9 +886,7 @@ public sealed class MainForm : Form
             _ => 0
         };
 
-        _toggleHotkeyBox.Text = HotkeyCatalog.Display(_settings.ToggleHotkey);
-        _emergencyHotkeyBox.Text = HotkeyCatalog.Display(_settings.EmergencyHotkey);
-        _lockHotkeyBox.Text = HotkeyCatalog.Display(_settings.LockAndReturnHotkey);
+        RefreshHotkeyUi();
 
         _clipboardLimit.Value = _settings.ClipboardHistoryLimit;
         _captureClipboardText.Checked = _settings.CaptureClipboardText;
@@ -910,6 +926,7 @@ public sealed class MainForm : Form
 
         _mouseSpeedValue.Text = $"{_mouseSpeed.Value}%";
         _scrollSpeedValue.Text = $"{_scrollSpeed.Value}%";
+        RefreshHotkeyUi();
 
         if (save)
         {
@@ -968,6 +985,7 @@ public sealed class MainForm : Form
                     }
 
                     box.BackColor = Color.White;
+                    RefreshHotkeyUi();
                     ApplyInputSettings(save: true);
                     Log($"단축키 변경 완료: {HotkeyCatalog.Display(binding)}");
                 }
@@ -1002,10 +1020,7 @@ public sealed class MainForm : Form
         _settings.EmergencyHotkey = SettingsStore.DefaultEmergency();
         _settings.LockAndReturnHotkey = SettingsStore.DefaultLockAndReturn();
 
-        _toggleHotkeyBox.Text = HotkeyCatalog.Display(_settings.ToggleHotkey);
-        _emergencyHotkeyBox.Text = HotkeyCatalog.Display(_settings.EmergencyHotkey);
-        _lockHotkeyBox.Text = HotkeyCatalog.Display(_settings.LockAndReturnHotkey);
-
+        RefreshHotkeyUi();
         ApplyInputSettings(save: true);
         Log("단축키를 기본값으로 복원했습니다.");
     }
