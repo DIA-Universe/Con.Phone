@@ -944,7 +944,24 @@ public sealed class MainForm : Form
             SettingsStore.Save(_settings);
             Log($"클립보드 설정 저장 · 최대 {_settings.ClipboardHistoryLimit}개 · 동기화:{_settings.ClipboardSyncEnabled} · BLE 이미지 {_settings.ClipboardBleImageLimitKb} KiB");
             if (_settings.ClipboardSyncEnabled && _clipboardSync is not null)
-                Dispatch(() => _clipboardSync.StartAsync());
+                _ = StartClipboardSyncSafeAsync();
+        }
+    }
+
+    private async Task StartClipboardSyncSafeAsync()
+    {
+        if (_clipboardSync is null || !_settings.ClipboardSyncEnabled)
+            return;
+
+        try
+        {
+            await _clipboardSync.StartAsync();
+            Log("기기간 복붙 서비스 시작 · LAN/P2P 우선, BLE fallback");
+        }
+        catch (Exception ex)
+        {
+            _lastError = $"ClipboardSyncStart:{ex.GetType().Name}:0x{ex.HResult:X8}";
+            Log($"기기간 복붙 서비스 시작 실패: {ex.Message}");
         }
     }
 
