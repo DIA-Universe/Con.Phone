@@ -21,6 +21,7 @@ public sealed class InputCapture : IDisposable
     private HotkeyBinding _emergencyHotkey = SettingsStore.DefaultEmergency();
     private HotkeyBinding _lockAndReturnHotkey = SettingsStore.DefaultLockAndReturn();
     private HangulKeyMode _hangulKeyMode = HangulKeyMode.RightAlt;
+    private ModifierProfile _modifierProfile = ModifierProfile.Standard;
 
     private Action<HotkeyBinding>? _captureCallback;
     private readonly HashSet<int> _downKeys = [];
@@ -66,10 +67,15 @@ public sealed class InputCapture : IDisposable
         }
     }
 
-    public void ConfigureKeyboard(HangulKeyMode hangulKeyMode)
+    public void ConfigureKeyboard(
+        HangulKeyMode hangulKeyMode,
+        ModifierProfile modifierProfile)
     {
         lock (_gate)
+        {
             _hangulKeyMode = hangulKeyMode;
+            _modifierProfile = modifierProfile;
+        }
     }
 
     // Capturing is performed inside the low-level hook, not in a TextBox. This prevents the
@@ -308,9 +314,13 @@ public sealed class InputCapture : IDisposable
                     }
                 }
 
-                var report = _keys.Update(
-                    Hid.Usage(key, (int)k.Scan, (k.Flags & 1) != 0),
-                    !up);
+                var usage = Hid.Usage(
+                    key,
+                    (int)k.Scan,
+                    (k.Flags & 1) != 0);
+                usage = MapModifierUsage(usage, _modifierProfile);
+
+                var report = _keys.Update(usage, !up);
 
                 if (report is not null) Packet?.Invoke(new KeyboardPacket(report));
                 return _remote ? 1 : CallNextHookEx(0, code, message, data);
@@ -326,6 +336,23 @@ public sealed class InputCapture : IDisposable
 
     private static bool Matches(HotkeyBinding binding, int key, HotkeyModifiers modifiers) =>
         binding.Key == key && binding.Modifiers == modifiers;
+
+    private static byte MapModifierUsage(
+        byte usage,
+        ModifierProfile profile)
+    {
+        if (profile != ModifierProfile.MacCtrlCommandSwap)
+            return usage;
+
+        return usage switch
+        {
+            0xE0 => 0xE3,
+            0xE4 => 0xE7,
+            0xE3 => 0xE0,
+            0xE7 => 0xE4,
+            _ => usage
+        };
+    }
 
     private HotkeyModifiers ModifiersFromDownKeysLocked()
     {
