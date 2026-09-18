@@ -762,10 +762,10 @@ class ClipboardBridgeService : Service() {
         @Volatile private var closed = false
         val ready: Boolean get() = !closed && socket.isConnected
 
-        private val aad = "ConPhone-Clipboard-P2P-v1".toByteArray(Charsets.US_ASCII) + credential.deviceHash
+        private val aad = "ConPhone-Clipboard-P2P-v2".toByteArray(Charsets.US_ASCII) + credential.deviceHash
 
         fun handshake() {
-            val hello = "CPHELLO1".toByteArray(Charsets.US_ASCII)
+            val hello = "CPHELLO2".toByteArray(Charsets.US_ASCII)
             val clientNonce = ByteArray(16).also(SecureRandom()::nextBytes)
             val signed = hello + credential.deviceHash + clientNonce
             val mac = hmac(credential.secret, signed)
@@ -774,14 +774,22 @@ class ClipboardBridgeService : Service() {
 
             val response = ByteArray(56)
             input.readFully(response)
-            require(String(response, 0, 8, Charsets.US_ASCII) == "CPREADY1")
+            require(String(response, 0, 8, Charsets.US_ASCII) == "CPREADY2")
             val serverNonce = response.copyOfRange(8, 24)
             val serverMac = response.copyOfRange(24, 56)
             val expected = hmac(
                 credential.secret,
-                "CPREADY1".toByteArray(Charsets.US_ASCII) + clientNonce + serverNonce
+                "CPREADY2".toByteArray(Charsets.US_ASCII) + clientNonce + serverNonce
             )
             require(MessageDigest.isEqual(serverMac, expected)) { "P2P authentication failed." }
+
+            sessionKey = hmac(
+                credential.secret,
+                "ConPhone-P2P-Session-v2".toByteArray(Charsets.US_ASCII) +
+                    credential.deviceHash +
+                    clientNonce +
+                    serverNonce
+            )
         }
 
         fun sendFrame(plaintext: ByteArray) {
@@ -793,11 +801,12 @@ class ClipboardBridgeService : Service() {
                     .putLong(sendSequence)
                     .array()
 
+                val key = sessionKey ?: error("P2P session key is not ready.")
                 val nonce = ByteArray(12).also(SecureRandom()::nextBytes)
                 val cipher = Cipher.getInstance("AES/GCM/NoPadding")
                 cipher.init(
                     Cipher.ENCRYPT_MODE,
-                    SecretKeySpec(credential.secret, "AES"),
+                    SecretKeySpec(key, "AES"),
                     GCMParameterSpec(128, nonce)
                 )
                 cipher.updateAAD(aad + sequenceBytes)
@@ -834,10 +843,11 @@ class ClipboardBridgeService : Service() {
 
                     val encrypted = body.copyOfRange(20, body.size)
 
+                    val key = sessionKey ?: error("P2P session key is not ready.")
                     val cipher = Cipher.getInstance("AES/GCM/NoPadding")
                     cipher.init(
                         Cipher.DECRYPT_MODE,
-                        SecretKeySpec(credential.secret, "AES"),
+                        SecretKeySpec(key, "AES"),
                         GCMParameterSpec(128, nonce)
                     )
                     cipher.updateAAD(aad + sequenceBytes)
@@ -854,6 +864,8 @@ class ClipboardBridgeService : Service() {
         fun close() {
             if (closed) return
             closed = true
+            sessionKey?.fill(0)
+            sessionKey = null
             runCatching { socket.close() }
         }
 
