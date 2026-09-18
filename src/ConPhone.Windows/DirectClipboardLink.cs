@@ -1,3 +1,6 @@
+using System.Net;
+using System.Net.NetworkInformation;
+using System.Net.Sockets;
 using System.Security.Cryptography;
 using System.Text;
 using Windows.Devices.WiFiDirect;
@@ -5,21 +8,32 @@ using Windows.Security.Credentials;
 
 namespace ConPhone.Windows;
 
-public sealed record DirectLinkConfig(string Ssid, string Passphrase)
+public sealed record DirectLinkConfig(
+    string Ssid,
+    string Passphrase,
+    string? HostAddress = null)
 {
     public byte[] Encode()
     {
         var ssid = Encoding.UTF8.GetBytes(Ssid);
         var pass = Encoding.UTF8.GetBytes(Passphrase);
-        if (ssid.Length is < 1 or > 32 || pass.Length is < 8 or > 63)
+        var host = string.IsNullOrWhiteSpace(HostAddress)
+            ? Array.Empty<byte>()
+            : Encoding.ASCII.GetBytes(HostAddress);
+
+        if (ssid.Length is < 1 or > 32 ||
+            pass.Length is < 8 or > 63 ||
+            host.Length > 45)
             throw new InvalidOperationException("Invalid Wi-Fi Direct credentials.");
 
-        var result = new byte[3 + ssid.Length + pass.Length];
-        result[0] = 1;
+        var result = new byte[4 + ssid.Length + pass.Length + host.Length];
+        result[0] = 2;
         result[1] = (byte)ssid.Length;
         result[2] = (byte)pass.Length;
-        ssid.CopyTo(result, 3);
-        pass.CopyTo(result, 3 + ssid.Length);
+        result[3] = (byte)host.Length;
+        ssid.CopyTo(result, 4);
+        pass.CopyTo(result, 4 + ssid.Length);
+        host.CopyTo(result, 4 + ssid.Length + pass.Length);
         return result;
     }
 }
@@ -28,11 +42,13 @@ public sealed class DirectClipboardLink : IDisposable
 {
     private WiFiDirectAdvertisementPublisher? _publisher;
     private DirectLinkConfig? _config;
+    private HashSet<string> _baselineIpv4 = [];
     private bool _disposed;
 
     public event Action<string>? Status;
 
-    public DirectLinkConfig? Config => _config;
+    public DirectLinkConfig? Config =>
+        _config is null ? null : _config with { HostAddress = FindDirectIpv4() };
     public bool Running => _publisher?.Status == WiFiDirectAdvertisementPublisherStatus.Started;
 
     public void Start()
@@ -45,6 +61,7 @@ public sealed class DirectClipboardLink : IDisposable
             return;
         }
 
+        _baselineIpv4 = CurrentIpv4();
         var suffix = Convert.ToHexString(RandomNumberGenerator.GetBytes(3));
         var passphrase = CreatePassphrase();
         var config = new DirectLinkConfig($"DIRECT-CP-{suffix}", passphrase);
@@ -97,6 +114,49 @@ public sealed class DirectClipboardLink : IDisposable
         catch
         {
         }
+    }
+
+    private string? FindDirectIpv4()
+    {
+        var current = CurrentIpv4();
+        var created = current
+            .Where(address => !_baselineIpv4.Contains(address))
+            .OrderByDescending(address => address.StartsWith("192.168.", StringComparison.Ordinal))
+            .ThenByDescending(address => address.StartsWith("172.", StringComparison.Ordinal))
+            .FirstOrDefault();
+
+        if (created is not null) return created;
+
+        // Windows Wi-Fi Direct legacy GO commonly uses an ICS private address.
+        // Only expose it if it is actually assigned on this machine.
+        return current.FirstOrDefault(address => address.StartsWith("192.168.137.", StringComparison.Ordinal));
+    }
+
+    private static HashSet<string> CurrentIpv4()
+    {
+        var result = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var nic in NetworkInterface.GetAllNetworkInterfaces())
+        {
+            if (nic.OperationalStatus != OperationalStatus.Up) continue;
+            try
+            {
+                foreach (var unicast in nic.GetIPProperties().UnicastAddresses)
+                {
+                    if (unicast.Address.AddressFamily != AddressFamily.InterNetwork ||
+                        IPAddress.IsLoopback(unicast.Address))
+                        continue;
+
+                    var value = unicast.Address.ToString();
+                    if (!value.StartsWith("169.254.", StringComparison.Ordinal))
+                        result.Add(value);
+                }
+            }
+            catch (NetworkInformationException)
+            {
+            }
+        }
+
+        return result;
     }
 
     private static string CreatePassphrase()
