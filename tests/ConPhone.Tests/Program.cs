@@ -62,6 +62,14 @@ Check("button up follows down", ((PointerPacket)(await box.TakeAsync(default)).P
 box.TryAdd(new(1, new PointerPacket(0, 1))); box.TryAdd(new(2, new PointerPacket(0, 1)));
 Check("epoch prevents merge", box.Count == 2);
 box.Clear(); Check("clear removes backlog", box.Count == 0);
+
+var frameBox = new Outbox(8);
+Check("pointer frame first movement", frameBox.TryAdd(new(7, new PointerPacket(0, 2, 3))));
+var frameTask = frameBox.TakePointerFrameAsync(default, 6);
+Check("pointer frame second movement", frameBox.TryAdd(new(7, new PointerPacket(0, 4, -1))));
+var frame = await frameTask;
+Check("pointer frame coalesces after dequeue", frame.Packet == new PointerPacket(0, 6, 2));
+Check("pointer frame drains merged movement", frameBox.Count == 0);
 using (var cts = new CancellationTokenSource(40))
 {
     bool cancelled = false;
@@ -91,6 +99,8 @@ for (int i = 0; i < map.Length;)
 }
 Check("descriptor collections balanced", depth == 0);
 Check("descriptor keyboard input 64 bits", bits[(1, 0x80)] == 64);
+var languageRange = Convert.FromHexString("150026A400050719002AA400");
+Check("descriptor declares Korean/Hanja language usages", map.AsSpan().IndexOf(languageRange) >= 0);
 Check("descriptor has no output reports", !bits.ContainsKey((1, 0x90)));
 Check("descriptor pointer input 48 bits", bits[(2, 0x80)] == 48);
 Check("descriptor system-control input 8 bits", bits[(3, 0x80)] == 8);
