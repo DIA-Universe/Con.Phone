@@ -20,6 +20,9 @@ public sealed class InputCapture : IDisposable
     private HotkeyBinding _toggleHotkey = SettingsStore.DefaultToggle();
     private HotkeyBinding _emergencyHotkey = SettingsStore.DefaultEmergency();
     private HotkeyBinding _lockAndReturnHotkey = SettingsStore.DefaultLockAndReturn();
+    private bool _appleSwapCommandOption;
+    private Dictionary<int, SpecialKeyAction> _specialKeys = [];
+    private readonly HashSet<int> _activeSpecialKeys = [];
 
     private Action<HotkeyBinding>? _captureCallback;
     private readonly HashSet<int> _downKeys = [];
@@ -62,6 +65,25 @@ public sealed class InputCapture : IDisposable
             _toggleHotkey = toggle.Clone();
             _emergencyHotkey = emergency.Clone();
             _lockAndReturnHotkey = lockAndReturn.Clone();
+        }
+    }
+
+    public void ConfigureAdvancedInput(
+        bool appleSwapCommandOption,
+        IEnumerable<SpecialKeyBinding> specialKeys)
+    {
+        ArgumentNullException.ThrowIfNull(specialKeys);
+
+        lock (_gate)
+        {
+            _appleSwapCommandOption = appleSwapCommandOption;
+            _specialKeys = specialKeys
+                .Where(x =>
+                    x.SourceKey is >= (int)Keys.F1 and <= (int)Keys.F12 &&
+                    x.Action != SpecialKeyAction.None)
+                .GroupBy(x => x.SourceKey)
+                .ToDictionary(x => x.Key, x => x.Last().Action);
+            _activeSpecialKeys.Clear();
         }
     }
 
@@ -157,6 +179,7 @@ public sealed class InputCapture : IDisposable
         {
             _remote = false;
             _keys.Clear();
+            _activeSpecialKeys.Clear();
             _buttons = 0;
             _wheel = 0;
             _pan = 0;
@@ -178,6 +201,8 @@ public sealed class InputCapture : IDisposable
             Action<HotkeyBinding>? capturedCallback = null;
             HotkeyBinding? capturedBinding = null;
             HotkeyBinding toggle, emergency, lockAndReturn;
+            SpecialKeyAction specialAction;
+            bool specialWasActive;
 
             lock (_gate)
             {
@@ -213,6 +238,10 @@ public sealed class InputCapture : IDisposable
                 toggle = _toggleHotkey.Clone();
                 emergency = _emergencyHotkey.Clone();
                 lockAndReturn = _lockAndReturnHotkey.Clone();
+                specialAction = _specialKeys.GetValueOrDefault(key, SpecialKeyAction.None);
+                specialWasActive = _activeSpecialKeys.Contains(key);
+                if (up && specialWasActive)
+                    _activeSpecialKeys.Remove(key);
             }
 
             if (capturedBinding is not null && capturedCallback is not null)
@@ -220,6 +249,15 @@ public sealed class InputCapture : IDisposable
                 capturedCallback(capturedBinding);
                 return 1;
             }
+
+            if (_remote && up && specialWasActive)
+            {
+                Packet?.Invoke(new ConsumerPacket(0));
+                return 1;
+            }
+
+            if (_remote && !up && specialWasActive)
+                return 1;
 
             if (!up && firstDown)
             {
@@ -257,15 +295,47 @@ public sealed class InputCapture : IDisposable
                     LockAndReturn?.Invoke();
                     return 1;
                 }
+
+                if (_remote &&
+                    modifiers == HotkeyModifiers.None &&
+                    specialAction != SpecialKeyAction.None)
+                {
+                    if (specialAction == SpecialKeyAction.PowerPlus)
+                    {
+                        lock (_gate) _suppressUntilUp.Add(key);
+                        Deactivate();
+                        LockAndReturn?.Invoke();
+                        return 1;
+                    }
+
+                    var consumerUsage = SpecialKeyCatalog.ConsumerUsage(specialAction);
+                    if (consumerUsage != 0)
+                    {
+                        lock (_gate) _activeSpecialKeys.Add(key);
+                        Packet?.Invoke(new ConsumerPacket(consumerUsage));
+                        return 1;
+                    }
+                }
             }
 
             lock (_gate)
             {
                 if (!_remote) return CallNextHookEx(0, code, message, data);
 
-                var report = _keys.Update(
-                    Hid.Usage(key, (int)k.Scan, (k.Flags & 1) != 0),
-                    !up);
+                var usage = Hid.Usage(key, (int)k.Scan, (k.Flags & 1) != 0);
+                if (_appleSwapCommandOption)
+                {
+                    usage = usage switch
+                    {
+                        0xE2 => 0xE3, // Left Alt -> Left GUI / Command
+                        0xE3 => 0xE2, // Left Win -> Left Alt / Option
+                        0xE6 => 0xE7, // Right Alt -> Right GUI / Command
+                        0xE7 => 0xE6, // Right Win -> Right Alt / Option
+                        _ => usage
+                    };
+                }
+
+                var report = _keys.Update(usage, !up);
 
                 if (report is not null) Packet?.Invoke(new KeyboardPacket(report));
                 return _remote ? 1 : CallNextHookEx(0, code, message, data);

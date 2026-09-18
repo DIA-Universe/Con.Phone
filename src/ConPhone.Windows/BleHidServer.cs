@@ -16,18 +16,19 @@ public sealed record Peer(
     bool Keyboard,
     bool Mouse,
     bool SystemControl,
+    bool ConsumerControl,
     bool Paired,
     bool Connected)
 {
     public override string ToString() =>
-        $"{Name} [{Fingerprint}]  키보드:{Keyboard} 마우스:{Mouse} 잠금:{SystemControl} 페어링:{Paired} 연결:{Connected}";
+        $"{Name} [{Fingerprint}]  키보드:{Keyboard} 마우스:{Mouse} 잠금:{SystemControl} 특수키:{ConsumerControl} 페어링:{Paired} 연결:{Connected}";
 }
 
 public sealed class BleHidServer : IDisposable
 {
     private GattServiceProvider? _provider;
     private GattServiceProvider? _batteryProvider;
-    private GattLocalCharacteristic? _keyboard, _mouse, _system;
+    private GattLocalCharacteristic? _keyboard, _mouse, _system, _consumer;
 
     private readonly ConcurrentDictionary<string, byte> _protocol = new();
     private readonly ConcurrentDictionary<string, bool> _suspended = new();
@@ -46,6 +47,7 @@ public sealed class BleHidServer : IDisposable
     private byte[] _keyboardValue = new byte[Hid.KeyboardReportLength];
     private byte[] _mouseValue = new byte[Hid.MouseReportLength];
     private byte[] _systemValue = new byte[Hid.SystemReportLength];
+    private byte[] _consumerValue = new byte[Hid.ConsumerReportLength];
 
     public event Action? Changed;
     public event Action<string>? Status;
@@ -55,8 +57,11 @@ public sealed class BleHidServer : IDisposable
     public int KeyboardSubscribers => LiveClientCount(_keyboard);
     public int MouseSubscribers => LiveClientCount(_mouse);
     public int SystemSubscribers => LiveClientCount(_system);
+    public int ConsumerSubscribers => LiveClientCount(_consumer);
     public string? ApprovedId => _approved;
     public bool Ready => _running && _approved is { } id && IsReady(id);
+    public bool ConsumerReady =>
+        _running && _approved is { } id && Client(_consumer, id) is not null;
 
     private static Guid Uuid(ushort n) => new($"0000{n:x4}-0000-1000-8000-00805f9b34fb");
 
@@ -70,7 +75,7 @@ public sealed class BleHidServer : IDisposable
                $"Bluetooth LE: {adapter.IsLowEnergySupported}\r\n" +
                $"Peripheral 역할: {adapter.IsPeripheralRoleSupported}\r\n" +
                $"무선 상태: {radio?.State.ToString() ?? "Unknown"}\r\n" +
-               "0.2.1은 연결된 GATT 세션에 MaintainConnection을 요청하고 장치 객체를 재사용합니다.";
+               "0.2.2는 포인터 프레임 병합, Consumer Control 특수키와 연결 유지 요청을 사용합니다.";
     }
 
     public async Task StartAsync()
@@ -156,6 +161,12 @@ public sealed class BleHidServer : IDisposable
                 reportLength: Hid.SystemReportLength,
                 label: "시스템 잠금",
                 currentValue: id => id == _approved ? _systemValue : new byte[Hid.SystemReportLength]);
+
+            _consumer = await InputCharacteristic(
+                reportId: 4,
+                reportLength: Hid.ConsumerReportLength,
+                label: "특수키",
+                currentValue: id => id == _approved ? _consumerValue : new byte[Hid.ConsumerReportLength]);
 
             await CreateBatteryServiceAsync();
 
@@ -262,7 +273,7 @@ public sealed class BleHidServer : IDisposable
             catch (ObjectDisposedException) { }
 
             Status?.Invoke(
-                $"HID 구독 · 키보드:{LiveClientCount(_keyboard)} 마우스:{LiveClientCount(_mouse)} 잠금:{LiveClientCount(_system)} ({label} 변경)");
+                $"HID 구독 · 키보드:{LiveClientCount(_keyboard)} 마우스:{LiveClientCount(_mouse)} 잠금:{LiveClientCount(_system)} 특수키:{LiveClientCount(_consumer)} ({label} 변경)");
             Changed?.Invoke();
         };
 
@@ -506,7 +517,7 @@ public sealed class BleHidServer : IDisposable
         _lastOperation = "EnumerateSubscribedClients";
 
         var ids = new HashSet<string>(StringComparer.Ordinal);
-        foreach (var c in new[] { _keyboard, _mouse, _system })
+        foreach (var c in new[] { _keyboard, _mouse, _system, _consumer })
         {
             if (c is null) continue;
 
@@ -537,6 +548,7 @@ public sealed class BleHidServer : IDisposable
                 Client(_keyboard, id) is not null,
                 Client(_mouse, id) is not null,
                 Client(_system, id) is not null,
+                Client(_consumer, id) is not null,
                 device?.DeviceInformation.Pairing.IsPaired == true,
                 device?.ConnectionStatus != BluetoothConnectionStatus.Disconnected));
         }
@@ -571,13 +583,14 @@ public sealed class BleHidServer : IDisposable
         _keyboardValue = new byte[Hid.KeyboardReportLength];
         _mouseValue = new byte[Hid.MouseReportLength];
         _systemValue = new byte[Hid.SystemReportLength];
+        _consumerValue = new byte[Hid.ConsumerReportLength];
         _approved = id;
 
         if (_sessions.TryGetValue(id, out var session))
             TryMaintainConnection(session);
 
         Status?.Invoke(
-            $"입력 대상 승인 완료 · K:{(Client(_keyboard, id) is null ? 0 : 1)} M:{(Client(_mouse, id) is null ? 0 : 1)} LOCK:{(Client(_system, id) is null ? 0 : 1)}");
+            $"입력 대상 승인 완료 · K:{(Client(_keyboard, id) is null ? 0 : 1)} M:{(Client(_mouse, id) is null ? 0 : 1)} LOCK:{(Client(_system, id) is null ? 0 : 1)} C:{(Client(_consumer, id) is null ? 0 : 1)}");
         Changed?.Invoke();
     }
 
@@ -604,7 +617,7 @@ public sealed class BleHidServer : IDisposable
 
         if (_system is null || client is null)
             throw new NotSupportedException(
-                "휴대폰이 시스템 잠금 HID Report를 구독하지 않았습니다. 0.2.1 HID 프로필로 다시 페어링한 뒤 확인하세요.");
+                "휴대폰이 시스템 잠금 HID Report를 구독하지 않았습니다. 0.2.2 HID 프로필로 다시 페어링한 뒤 확인하세요.");
 
         await _send.WaitAsync(token).ConfigureAwait(false);
         try
@@ -652,7 +665,11 @@ public sealed class BleHidServer : IDisposable
             if (id is null || !_running || !IsReady(id))
                 throw new InvalidOperationException("승인된 입력 연결이 사라졌습니다.");
 
-            var characteristic = report.Keyboard ? _keyboard : _mouse;
+            var characteristic = report.Consumer
+                ? _consumer
+                : report.Keyboard
+                    ? _keyboard
+                    : _mouse;
             var client = Client(characteristic, id);
             if (characteristic is null || client is null)
                 throw new InvalidOperationException("승인된 입력 연결이 사라졌습니다.");
@@ -661,7 +678,8 @@ public sealed class BleHidServer : IDisposable
             if (bytes.Length > client.MaxNotificationSize)
                 throw new InvalidOperationException("HID report가 알림 크기를 초과합니다.");
 
-            if (report.Keyboard) _keyboardValue = bytes.ToArray();
+            if (report.Consumer) _consumerValue = bytes.ToArray();
+            else if (report.Keyboard) _keyboardValue = bytes.ToArray();
             else _mouseValue = bytes.ToArray();
 
             var result = await characteristic.NotifyValueAsync(bytes.AsBuffer(), client)
@@ -685,6 +703,7 @@ public sealed class BleHidServer : IDisposable
         _keyboardValue = new byte[Hid.KeyboardReportLength];
         _mouseValue = new byte[Hid.MouseReportLength];
         _systemValue = new byte[Hid.SystemReportLength];
+        _consumerValue = new byte[Hid.ConsumerReportLength];
 
         foreach (var session in _sessions.Values)
         {

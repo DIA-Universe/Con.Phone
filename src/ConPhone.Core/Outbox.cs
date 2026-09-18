@@ -49,6 +49,52 @@ public sealed class Outbox
             await _signal.WaitAsync(token).ConfigureAwait(false);
         }
     }
+
+    // BLE connection intervals are much slower than modern gaming-mouse raw input.
+    // Hold only pointer motion for a tiny frame window, then merge any motion that
+    // arrived after the first packet was dequeued. Keyboard events and button
+    // transitions remain strict ordering barriers.
+    public async Task<Envelope> TakePointerFrameAsync(
+        CancellationToken token,
+        int coalesceMilliseconds = 6)
+    {
+        if (coalesceMilliseconds is < 0 or > 20)
+            throw new ArgumentOutOfRangeException(nameof(coalesceMilliseconds));
+
+        var first = await TakeAsync(token).ConfigureAwait(false);
+        if (coalesceMilliseconds == 0 || first.Packet is not PointerPacket pointer)
+            return first;
+
+        await Task.Delay(coalesceMilliseconds, token).ConfigureAwait(false);
+
+        long x = pointer.X, y = pointer.Y, wheel = pointer.Wheel, pan = pointer.Pan;
+        lock (_gate)
+        {
+            while (_items.First is { } next &&
+                   next.Value.Epoch == first.Epoch &&
+                   next.Value.Packet is PointerPacket candidate &&
+                   candidate.Buttons == pointer.Buttons)
+            {
+                long nx = x + candidate.X;
+                long ny = y + candidate.Y;
+                long nw = wheel + candidate.Wheel;
+                long np = pan + candidate.Pan;
+
+                if (new[] { nx, ny, nw, np }.Any(v => Math.Abs(v) > 32767))
+                    break;
+
+                _items.RemoveFirst();
+                x = nx;
+                y = ny;
+                wheel = nw;
+                pan = np;
+            }
+        }
+
+        return new Envelope(
+            first.Epoch,
+            new PointerPacket(pointer.Buttons, (int)x, (int)y, (int)wheel, (int)pan));
+    }
     public void Clear()
     {
         lock (_gate)

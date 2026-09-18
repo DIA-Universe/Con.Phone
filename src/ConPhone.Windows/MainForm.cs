@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Text.Json;
 using ConPhone.Core;
 using Microsoft.Win32;
@@ -6,6 +7,8 @@ namespace ConPhone.Windows;
 
 public sealed class MainForm : Form
 {
+    private const int PointerFrameMilliseconds = 6;
+
     private static readonly Color Bg = ColorTranslator.FromHtml("#F7F8F9");
     private static readonly Color Surface = Color.White;
     private static readonly Color Border = ColorTranslator.FromHtml("#DCDEE3");
@@ -86,9 +89,19 @@ public sealed class MainForm : Form
     private readonly Label _scrollSpeedValue = new() { AutoSize = true, Width = 70, ForeColor = Secondary };
     private readonly CheckBox _invertScroll = new() { Text = "스크롤 방향 반전", AutoSize = true, ForeColor = TextColor };
 
+    private readonly ComboBox _targetProfile = TargetProfileBox();
+    private readonly CheckBox _appleSwapCommandOption = new()
+    {
+        Text = "Apple 키 배열: Alt=Command, Win=Option",
+        AutoSize = true,
+        ForeColor = TextColor
+    };
+    private readonly ComboBox[] _specialKeyBoxes = SpecialKeyBoxes();
+
     private readonly TextBox _toggleHotkeyBox = HotkeyBox();
     private readonly TextBox _emergencyHotkeyBox = HotkeyBox();
     private readonly TextBox _lockHotkeyBox = HotkeyBox();
+    private readonly Label _connectionShortcutSummary = Help("");
 
     private readonly ListBox _clipboardList = new()
     {
@@ -148,7 +161,7 @@ public sealed class MainForm : Form
     public MainForm(bool previewMode = false)
     {
         _previewMode = previewMode;
-        Text = "Con.Phone 0.2.1 · Bluetooth 입력 허브";
+        Text = "Con.Phone 0.2.2 · Bluetooth 입력 허브";
         Width = 980;
         Height = 800;
         MinimumSize = new Size(880, 700);
@@ -173,6 +186,7 @@ public sealed class MainForm : Form
                 Keyboard: true,
                 Mouse: true,
                 SystemControl: true,
+                ConsumerControl: true,
                 Paired: true,
                 Connected: true));
             _peers.SelectedIndex = 0;
@@ -201,6 +215,46 @@ public sealed class MainForm : Form
         BorderStyle = BorderStyle.FixedSingle,
         TabStop = false
     };
+
+    private sealed record SpecialActionChoice(SpecialKeyAction Action, string Label)
+    {
+        public override string ToString() => Label;
+    }
+
+    private static ComboBox TargetProfileBox()
+    {
+        var box = new ComboBox
+        {
+            Width = 260,
+            DropDownStyle = ComboBoxStyle.DropDownList
+        };
+        box.Items.AddRange(["Android", "iPhone / iPad", "Mac"]);
+        box.SelectedIndex = 0;
+        return box;
+    }
+
+    private static ComboBox[] SpecialKeyBoxes()
+    {
+        return Enumerable.Range(0, 12)
+            .Select(_ =>
+            {
+                var box = new ComboBox
+                {
+                    Width = 260,
+                    DropDownStyle = ComboBoxStyle.DropDownList
+                };
+                foreach (var action in Enum.GetValues<SpecialKeyAction>())
+                    box.Items.Add(new SpecialActionChoice(action, SpecialKeyCatalog.Display(action)));
+                box.SelectedIndex = 0;
+                return box;
+            })
+            .ToArray();
+    }
+
+    private static SpecialKeyAction SelectedSpecialAction(ComboBox box) =>
+        box.SelectedItem is SpecialActionChoice choice
+            ? choice.Action
+            : SpecialKeyAction.None;
 
     private void BuildUi()
     {
@@ -277,7 +331,10 @@ public sealed class MainForm : Form
         var connect = Section(170);
         connect.Controls.Add(SectionTitle("Bluetooth 연결"));
         connect.Controls.Add(Help(
-            "0.2.1은 0.1.6의 HID 경로를 기준으로 연결 유지 로직을 보강했습니다. 잠금 Report가 추가되어 첫 사용 시 휴대폰에서 기존 PC 등록을 삭제하고 한 번 다시 페어링하는 것을 권장합니다."));
+            "0.2.2는 한/영 LANG1·LANG2와 Consumer Control 특수키 Report를 포함합니다. HID descriptor가 바뀌므로 이 버전 첫 사용 시 기존 PC 등록을 삭제하고 한 번 다시 페어링해 주세요."));
+        connect.Controls.Add(Help(
+            "Bluetooth 표시 이름은 Windows Bluetooth 스택이 관리합니다. 내장 GATT Server 방식에서는 EasyBlue 동글처럼 앱이 광고 이름을 임의 변경할 수 없습니다.",
+            Tertiary));
         connect.Controls.Add(Row(
             ActionButton("Bluetooth 다시 검사", async () => _diagnosis.Text = await BleHidServer.DiagnoseAsync()),
             ActionButton("광고 확인 / 시작", async () =>
@@ -289,17 +346,18 @@ public sealed class MainForm : Form
             {
                 await ReturnLocalAsync();
                 _ble.Stop();
-            })));
+            }),
+            ActionButton("업데이트 페이지", OpenUpdatePageAsync)));
         flow.Controls.Add(connect);
 
         var devices = Section(245);
         devices.Controls.Add(SectionTitle("연결된 휴대폰"));
         devices.Controls.Add(Help(
-            "휴대폰을 선택하고 한 번 승인하세요. K/M은 키보드·마우스 구독, LOCK은 화면 잠금 Report 구독 상태입니다."));
+            "여러 기기가 동시에 페어링/구독돼도 한 번에 승인된 1대에만 입력을 보냅니다. K/M은 키보드·마우스, LOCK은 잠금, C는 Consumer Control 특수키 구독 상태입니다."));
         devices.Controls.Add(_peers);
         devices.Controls.Add(Row(
             ActionButton("목록 갱신", () => RefreshPeersAsync(false)),
-            ActionButton("선택한 기기 승인", ApproveSelectedAsync, primary: true),
+            ActionButton("선택한 기기로 전환 / 승인", ApproveSelectedAsync, primary: true),
             ActionButton("승인 해제", async () =>
             {
                 await ReturnLocalAsync();
@@ -309,8 +367,8 @@ public sealed class MainForm : Form
 
         var quick = Section(150);
         quick.Controls.Add(SectionTitle("빠른 동작"));
-        quick.Controls.Add(Help(
-            $"전환 {HotkeyCatalog.Display(_settings.ToggleHotkey)} · 복귀 {HotkeyCatalog.Display(_settings.EmergencyHotkey)} · 잠금+복귀 {HotkeyCatalog.Display(_settings.LockAndReturnHotkey)}"));
+        RefreshConnectionShortcutSummary();
+        quick.Controls.Add(_connectionShortcutSummary);
         quick.Controls.Add(Row(
             ActionButton("휴대폰으로 전환", ToggleAsync, primary: true),
             ActionButton("노트북으로 복귀", ReturnLocalAsync),
@@ -320,11 +378,33 @@ public sealed class MainForm : Form
         return tab;
     }
 
+    private void RefreshConnectionShortcutSummary()
+    {
+        _connectionShortcutSummary.Text =
+            $"전환 {HotkeyCatalog.Display(_settings.ToggleHotkey)} · " +
+            $"복귀 {HotkeyCatalog.Display(_settings.EmergencyHotkey)} · " +
+            $"잠금+복귀 {HotkeyCatalog.Display(_settings.LockAndReturnHotkey)}";
+    }
+
     private TabPage BuildInputTab()
     {
         var tab = NewTab("입력 설정");
         var flow = TabFlow();
         tab.Controls.Add(flow);
+
+        var compatibility = Section(225);
+        compatibility.Controls.Add(SectionTitle("Android / iOS / Mac 호환성"));
+        compatibility.Controls.Add(Help(
+            "대상 프로필은 안내와 키 배열 설정에 사용합니다. iPhone/iPad는 Eject 특수키로 화면 키보드를 호출할 수 있고, Mac 모드는 필요할 때 Alt/Win을 Command/Option 위치로 바꿉니다."));
+        compatibility.Controls.Add(LabeledRow("대상 프로필", _targetProfile));
+        compatibility.Controls.Add(_appleSwapCommandOption);
+        compatibility.Controls.Add(Row(
+            ActionButton("호환성 설정 저장", () =>
+            {
+                ApplyInputSettings(save: true);
+                return Task.CompletedTask;
+            }, primary: true)));
+        flow.Controls.Add(compatibility);
 
         var pointer = Section(235);
         pointer.Controls.Add(SectionTitle("마우스 / 스크롤"));
@@ -362,6 +442,26 @@ public sealed class MainForm : Form
                 return Task.CompletedTask;
             })));
         flow.Controls.Add(hotkeys);
+
+        var special = Section(690);
+        special.Controls.Add(SectionTitle("F1–F12 특수키 매핑"));
+        special.Controls.Add(Help(
+            "EasyBlue 방식처럼 F1–F12에 Consumer Control 동작을 지정합니다. Eject는 iPhone/iPad 화면 키보드, Power+는 휴대폰 잠금 후 PC 복귀에 사용합니다. F8/F9 기본 전환키와 같은 키를 매핑하면 전환 단축키가 우선합니다."));
+        for (var i = 0; i < _specialKeyBoxes.Length; i++)
+            special.Controls.Add(LabeledRow($"F{i + 1}", _specialKeyBoxes[i]));
+        special.Controls.Add(Row(
+            ActionButton("특수키 저장", () =>
+            {
+                ApplyInputSettings(save: true);
+                return Task.CompletedTask;
+            }, primary: true),
+            ActionButton("특수키 모두 해제", () =>
+            {
+                foreach (var box in _specialKeyBoxes) box.SelectedIndex = 0;
+                ApplyInputSettings(save: true);
+                return Task.CompletedTask;
+            })));
+        flow.Controls.Add(special);
 
         return tab;
     }
@@ -676,7 +776,7 @@ public sealed class MainForm : Form
             var emergency = HotkeyCatalog.Display(_settings.EmergencyHotkey);
             _state.Text = _input.IsRemote
                 ? $"휴대폰 조작 중 · {emergency}로 즉시 복귀"
-                : $"노트북 조작 중 · 광고:{_ble.Advertisement} · K:{_ble.KeyboardSubscribers} M:{_ble.MouseSubscribers} LOCK:{_ble.SystemSubscribers} · 승인:{(_ble.Ready ? "준비됨" : "대기")}";
+                : $"노트북 조작 중 · 광고:{_ble.Advertisement} · K:{_ble.KeyboardSubscribers} M:{_ble.MouseSubscribers} LOCK:{_ble.SystemSubscribers} C:{_ble.ConsumerSubscribers} · 승인:{(_ble.Ready ? "준비됨" : "대기")}";
 
             _tray.Text = _input.IsRemote
                 ? $"Con.Phone · 휴대폰 입력 / {emergency} 복귀"
@@ -700,7 +800,7 @@ public sealed class MainForm : Form
             await _ble.StartAsync();
 
             Log("Bluetooth HID 광고를 시작했습니다.");
-            Log("0.2.1은 잠금용 System Control Report가 추가되어 LOCK:0이면 휴대폰에서 기존 PC 등록을 삭제하고 다시 페어링해 주세요.");
+            Log("0.2.2는 한/영 LANG1·LANG2 및 Consumer Control Report가 추가되었습니다. C:0이거나 한/영이 동작하지 않으면 기존 PC 등록을 삭제하고 다시 페어링해 주세요.");
         });
     }
 
@@ -731,6 +831,25 @@ public sealed class MainForm : Form
         _mouseSpeed.Value = _settings.MouseSpeedPercent;
         _scrollSpeed.Value = _settings.ScrollSpeedPercent;
         _invertScroll.Checked = _settings.InvertScroll;
+        _targetProfile.SelectedIndex = Math.Clamp((int)_settings.TargetProfile, 0, 2);
+        _appleSwapCommandOption.Checked = _settings.AppleSwapCommandOption;
+
+        foreach (var box in _specialKeyBoxes)
+            box.SelectedIndex = 0;
+        foreach (var mapping in _settings.SpecialKeys)
+        {
+            var index = mapping.SourceKey - (int)Keys.F1;
+            if (index is < 0 or >= 12) continue;
+            for (var item = 0; item < _specialKeyBoxes[index].Items.Count; item++)
+            {
+                if (_specialKeyBoxes[index].Items[item] is SpecialActionChoice choice &&
+                    choice.Action == mapping.Action)
+                {
+                    _specialKeyBoxes[index].SelectedIndex = item;
+                    break;
+                }
+            }
+        }
 
         _toggleHotkeyBox.Text = HotkeyCatalog.Display(_settings.ToggleHotkey);
         _emergencyHotkeyBox.Text = HotkeyCatalog.Display(_settings.EmergencyHotkey);
@@ -749,6 +868,15 @@ public sealed class MainForm : Form
         _settings.MouseSpeedPercent = _mouseSpeed.Value;
         _settings.ScrollSpeedPercent = _scrollSpeed.Value;
         _settings.InvertScroll = _invertScroll.Checked;
+        _settings.TargetProfile = (TargetProfile)Math.Clamp(_targetProfile.SelectedIndex, 0, 2);
+        _settings.AppleSwapCommandOption = _appleSwapCommandOption.Checked;
+        _settings.SpecialKeys = _specialKeyBoxes
+            .Select((box, index) => new SpecialKeyBinding
+            {
+                SourceKey = (int)Keys.F1 + index,
+                Action = SelectedSpecialAction(box)
+            })
+            .ToList();
 
         _pointerScaler.Configure(
             _settings.MouseSpeedPercent,
@@ -759,14 +887,18 @@ public sealed class MainForm : Form
             _settings.ToggleHotkey,
             _settings.EmergencyHotkey,
             _settings.LockAndReturnHotkey);
+        _input.ConfigureAdvancedInput(
+            _settings.AppleSwapCommandOption,
+            _settings.SpecialKeys);
 
         _mouseSpeedValue.Text = $"{_mouseSpeed.Value}%";
         _scrollSpeedValue.Text = $"{_scrollSpeed.Value}%";
+        RefreshConnectionShortcutSummary();
 
         if (save)
         {
             SettingsStore.Save(_settings);
-            Log($"입력 설정 저장 · 마우스 {_settings.MouseSpeedPercent}% · 스크롤 {_settings.ScrollSpeedPercent}%");
+            Log($"입력 설정 저장 · 프로필 {_settings.TargetProfile} · 마우스 {_settings.MouseSpeedPercent}% · 스크롤 {_settings.ScrollSpeedPercent}%");
         }
     }
 
@@ -1035,6 +1167,14 @@ public sealed class MainForm : Form
                 new WireReport(false, new byte[Hid.MouseReportLength]),
                 () => epoch == Volatile.Read(ref _epoch),
                 timeout.Token);
+
+            if (_ble.ConsumerReady)
+            {
+                await _ble.SendAsync(
+                    new WireReport(false, new byte[Hid.ConsumerReportLength], Consumer: true),
+                    () => epoch == Volatile.Read(ref _epoch),
+                    timeout.Token);
+            }
         }
         catch (Exception ex)
         {
@@ -1163,7 +1303,9 @@ public sealed class MainForm : Form
         {
             try
             {
-                var envelope = await _outbox.TakeAsync(_lifetime.Token);
+                var envelope = await _outbox.TakePointerFrameAsync(
+                    _lifetime.Token,
+                    PointerFrameMilliseconds);
 
                 foreach (var report in Hid.Encode(envelope.Packet))
                 {
@@ -1195,6 +1337,17 @@ public sealed class MainForm : Form
         }
     }
 
+    private Task OpenUpdatePageAsync()
+    {
+        Process.Start(new ProcessStartInfo
+        {
+            FileName = "https://github.com/DIA-Universe/Con.Phone/releases",
+            UseShellExecute = true
+        });
+        Log("업데이트/릴리스 페이지를 기본 브라우저에서 열었습니다.");
+        return Task.CompletedTask;
+    }
+
     private async Task SaveDiagnosticsAsync()
     {
         using var dialog = new SaveFileDialog
@@ -1208,7 +1361,7 @@ public sealed class MainForm : Form
 
         var report = new
         {
-            Version = "0.2.1",
+            Version = "0.2.2",
             OS = Environment.OSVersion.Version.ToString(),
             Runtime = Environment.Version.ToString(),
             Bluetooth = await BleHidServer.DiagnoseAsync(),
@@ -1217,9 +1370,17 @@ public sealed class MainForm : Form
             KeyboardSubscribers = _ble.KeyboardSubscribers,
             MouseSubscribers = _ble.MouseSubscribers,
             SystemSubscribers = _ble.SystemSubscribers,
+            ConsumerSubscribers = _ble.ConsumerSubscribers,
             ApprovedAndSubscribed = _ble.Ready,
+            TargetProfile = _settings.TargetProfile.ToString(),
+            AppleSwapCommandOption = _settings.AppleSwapCommandOption,
+            SpecialKeys = _settings.SpecialKeys
+                .Where(x => x.Action != SpecialKeyAction.None)
+                .Select(x => $"{HotkeyCatalog.NameOf(x.SourceKey)}={SpecialKeyCatalog.Display(x.Action)}")
+                .ToArray(),
             SendOperations = Interlocked.Read(ref _sent),
             Pending = _outbox.Count,
+            PointerFrameMilliseconds,
             LastError = _lastError,
             MouseSpeedPercent = _settings.MouseSpeedPercent,
             ScrollSpeedPercent = _settings.ScrollSpeedPercent,
