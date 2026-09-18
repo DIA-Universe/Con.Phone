@@ -126,3 +126,30 @@ Con.Phone은 같은 Wi-Fi를 전제로 하지 않는다. 고속 경로는 Window
 - Windows 내장 BLE의 시스템 Bluetooth 페어링 이름은 Con.Phone이 변경하지 않는다. 앱별 GATT 서버에서 시스템 Bluetooth 이름을 안전하게 재정의하는 지원 경로가 없기 때문이다.
 - P2P 비밀번호와 per-device clipboard secret은 Windows Password Vault에 보관한다.
 - 비활성 신뢰 기기는 clipboard secret을 유지할 수 있지만 P2P 설정 읽기와 clipboard 쓰기는 거부된다.
+
+
+## P2P 보안 프로토콜 v2
+
+Direct Wi-Fi/P2P 링크 자체의 WPA2 비밀번호만 신뢰하지 않는다.
+
+1. Companion이 BLE에서 받은 per-device 256-bit secret과 device hash를 사용한다.
+2. TCP 연결 후 CPHELLO2 / CPREADY2 HMAC challenge-response로 상대를 인증한다.
+3. client nonce 16 bytes + server nonce 16 bytes + device hash를 장기 secret과 HMAC-SHA256하여 연결 전용 256-bit session key를 만든다.
+4. clipboard wire frame은 session key로 AES-256-GCM 암호화한다.
+5. 각 방향 frame sequence를 AAD에 포함하고 1부터 정확히 증가해야 한다.
+6. 연결 종료 시 Windows/Android의 session key 메모리를 즉시 폐기한다.
+7. wire frame, BLE fragment 모두 완료 transfer replay와 내용이 바뀐 duplicate chunk를 거부한다.
+8. 동시에 진행 가능한 미완료 transfer/frame 수를 제한하여 메모리 소모 공격을 막는다.
+
+장기 pairing secret은 P2P 데이터 frame의 AES key로 직접 사용하지 않는다.
+
+## HID 입력과 클립보드 QoS
+
+마우스/키보드 입력이 활성 상태일 때 이미지 bulk payload를 BLE로 동시에 밀지 않는다.
+
+- 텍스트: BLE fallback 허용
+- 이미지 + HID 입력 중: P2P를 우선하고 잠시 연결을 기다림
+- P2P가 준비되지 않으면 이미지 BLE bulk 전송을 보류하고 HID 입력을 계속 유지
+- 사용자가 로컬 입력 상태에서 수동 전송하는 작은 이미지는 설정된 BLE 한도 내에서 fallback 가능
+
+이 정책은 이미지 전송 때문에 상대좌표 mouse report가 Bluetooth queue에 밀리는 현상을 줄이기 위한 것이다.
