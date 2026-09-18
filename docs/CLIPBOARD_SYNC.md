@@ -23,7 +23,6 @@ Windows는 다음 순서로 자동 선택한다.
 
 1. **LAN / P2P IP 링크** — UDP discovery 후 TCP 연결, AES-256-GCM
 2. **Bluetooth LE fallback** — 동일 Wi-Fi가 없어도 동작
-3. **인터넷 Relay(E2E, opt-in)** — 서로 다른 네트워크/장소에서도 사용 가능
 
 Wi-Fi Direct/Wi-Fi Aware 등으로 IP 링크가 이미 만들어진 경우에도 1번 프로토콜을 그대로 사용할 수 있다. 현재 앱이 직접 P2P 그룹을 생성하는 기능은 별도 검증 대상이다.
 
@@ -81,7 +80,6 @@ companion/android
 - Android → PC: Companion 화면의 명시적 보내기 버튼
 - LAN이 없으면 BLE fallback
 - Android가 Windows P2P 링크를 사용할 수 있으면 시스템 승인 후 local-only Wi-Fi로 승격
-- PC에서 Relay를 켠 경우 마지막 fallback으로 E2E Relay 사용
 
 이미지 paste 성공 여부는 붙여넣기 대상 Android 앱이 image/content URI clipboard를 지원하는지에 따라 달라진다.
 
@@ -95,7 +93,6 @@ companion/ios
 - iOS → PC는 Companion의 명시적 보내기 버튼
 - BLE fallback 지원
 - P2P 고속 연결 버튼: iOS 시스템 승인 → Windows 전용 Wi-Fi → AES-GCM TCP 채널
-- PC에서 Relay를 켠 경우 마지막 fallback으로 E2E WebSocket Relay 사용
 
 ## 자동 검증과 실기기 검증의 구분
 
@@ -118,32 +115,3 @@ CI만으로 검증할 수 없는 항목:
 - 절전/재부팅 후 장시간 reconnect
 
 이 항목은 실제 기기 E2E 시험표에서 별도로 확인한다.
-
-
-## 인터넷 Relay
-
-기본값은 OFF다. Windows 클립보드 설정에서 사용자가 명시적으로 켠 경우에만 연결한다.
-
-기본 endpoint:
-
-- https://relay-runtime-production.up.railway.app
-
-배포는 Railway의 독립 Node 런타임을 사용하며 private Con.Phone GitHub 저장소의 읽기 권한을 Relay 서비스에 부여하지 않았다.
-
-Relay 서버가 처리하는 값:
-
-- HMAC으로 파생한 room ID
-- HMAC으로 파생한 room auth token
-- AES-256-GCM으로 이미 암호화된 binary frame
-
-Relay 서버가 갖지 않는 값:
-
-- Windows Bluetooth DeviceId
-- per-device clipboard secret
-- 원문 텍스트
-- 원본 이미지
-- 복호화 키
-
-room/auth 및 Relay frame 암호화 키는 승인된 Windows/Companion 양 끝에서 같은 256-bit device secret으로 독립적으로 파생한다.
-
-Railway healthcheck는 /health이며 실제 relay-runtime deployment가 SUCCESS 상태여야 endpoint를 제품 기본값으로 사용한다.
