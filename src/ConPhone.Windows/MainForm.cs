@@ -1344,11 +1344,11 @@ public sealed class MainForm : Form
         try
         {
             await _ble.SendSystemLockAsync(timeout.Token);
-            Log("Android LOCK System Control 키를 보내고 노트북 입력으로 복귀했습니다.");
+            Log("Galaxy 잠금 WIN+L을 보내고, 지원 시 System Sleep까지 보조 전송한 뒤 노트북 입력으로 복귀했습니다.");
         }
         catch (NotSupportedException ex)
         {
-            Log(ex.Message);
+            Log($"휴대폰 잠금 보조 기능 미지원: {ex.Message}");
         }
         catch (Exception ex)
         {
