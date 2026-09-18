@@ -151,6 +151,16 @@ bool badPngRejected = false;
 try { ClipboardContent.FromImage(ClipboardContentKind.Png, new byte[] { 1, 2, 3, 4, 5, 6, 7, 8 }); }
 catch (ArgumentException) { badPngRejected = true; }
 Check("clipboard bad png rejected", badPngRejected);
+bool oversizedWireFrameRejected = false;
+try
+{
+    ClipboardWireCodec.Decode(new byte[ClipboardWireCodec.MaxEncodedFrameBytes + 1]);
+}
+catch (InvalidDataException)
+{
+    oversizedWireFrameRejected = true;
+}
+Check("oversized clipboard wire frame rejected", oversizedWireFrameRejected);
 
 var wholeFrame = ClipboardWireCodec.Encode(clipText, 4096).Single();
 var bleParts = BleFragmentCodec.Split(wholeFrame, 20, 42);
