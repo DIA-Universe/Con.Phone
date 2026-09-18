@@ -13,7 +13,7 @@ public sealed class LanClipboardServer : IAsyncDisposable
 
     private static readonly byte[] Hello = "CPHELLO1"u8.ToArray();
     private static readonly byte[] Ready = "CPREADY1"u8.ToArray();
-    private static readonly byte[] AadPrefix = "ConPhone-Clipboard-LAN-v1"u8.ToArray();
+    private static readonly byte[] AadPrefix = "ConPhone-Clipboard-P2P-v1"u8.ToArray();
 
     private readonly Func<string?> _approvedDeviceId;
     private readonly Func<bool> _enabled;
@@ -66,7 +66,7 @@ public sealed class LanClipboardServer : IAsyncDisposable
             }
             catch (Exception ex)
             {
-                Status?.Invoke($"Clipboard LAN 연결 수락 오류: {ex.Message}");
+                Status?.Invoke($"Clipboard P2P 연결 수락 오류: {ex.Message}");
                 await Task.Delay(500, token).ConfigureAwait(false);
             }
         }
