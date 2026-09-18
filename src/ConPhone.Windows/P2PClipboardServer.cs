@@ -11,9 +11,10 @@ public sealed class P2PClipboardServer : IAsyncDisposable
 {
     public const int DataPort = 47911;
 
-    private static readonly byte[] Hello = "CPHELLO1"u8.ToArray();
-    private static readonly byte[] Ready = "CPREADY1"u8.ToArray();
-    private static readonly byte[] AadPrefix = "ConPhone-Clipboard-P2P-v1"u8.ToArray();
+    private static readonly byte[] Hello = "CPHELLO2"u8.ToArray();
+    private static readonly byte[] Ready = "CPREADY2"u8.ToArray();
+    private static readonly byte[] AadPrefix = "ConPhone-Clipboard-P2P-v2"u8.ToArray();
+    private static readonly byte[] SessionLabel = "ConPhone-P2P-Session-v2"u8.ToArray();
 
     private readonly Func<string?> _approvedDeviceId;
     private readonly Func<bool> _enabled;
@@ -126,7 +127,21 @@ public sealed class P2PClipboardServer : IAsyncDisposable
             serverMac.CopyTo(ready, 24);
             await stream.WriteAsync(ready, token).ConfigureAwait(false);
 
-            var connection = new ClientConnection(approved, tcp, stream, secret, approvedHash);
+            var sessionKey = DeriveSessionKey(
+                secret,
+                approvedHash,
+                clientNonce,
+                serverNonce);
+
+            var connection = new ClientConnection(
+                approved,
+                tcp,
+                stream,
+                sessionKey,
+                approvedHash);
+
+            CryptographicOperations.ZeroMemory(sessionKey);
+            CryptographicOperations.ZeroMemory(secret);
             ClientConnection? replaced;
             lock (_clientGate)
             {
@@ -198,6 +213,37 @@ public sealed class P2PClipboardServer : IAsyncDisposable
         Status?.Invoke("Clipboard P2P 연결 종료.");
     }
 
+    private static byte[] DeriveSessionKey(
+        ReadOnlySpan<byte> secret,
+        ReadOnlySpan<byte> deviceHash,
+        ReadOnlySpan<byte> clientNonce,
+        ReadOnlySpan<byte> serverNonce)
+    {
+        var material = new byte[
+            SessionLabel.Length +
+            deviceHash.Length +
+            clientNonce.Length +
+            serverNonce.Length];
+
+        var offset = 0;
+        SessionLabel.CopyTo(material, offset);
+        offset += SessionLabel.Length;
+        deviceHash.CopyTo(material.AsSpan(offset));
+        offset += deviceHash.Length;
+        clientNonce.CopyTo(material.AsSpan(offset));
+        offset += clientNonce.Length;
+        serverNonce.CopyTo(material.AsSpan(offset));
+
+        try
+        {
+            return HMACSHA256.HashData(secret, material);
+        }
+        finally
+        {
+            CryptographicOperations.ZeroMemory(material);
+        }
+    }
+
     private static async Task<bool> ReadExactAsync(Stream stream, Memory<byte> buffer, CancellationToken token)
     {
         var offset = 0;
@@ -215,7 +261,7 @@ public sealed class P2PClipboardServer : IAsyncDisposable
     {
         private readonly TcpClient _tcp;
         private readonly NetworkStream _stream;
-        private readonly byte[] _secret;
+        private readonly byte[] _sessionKey;
         private readonly byte[] _aad;
         private readonly SemaphoreSlim _send = new(1, 1);
         private long _sendSequence;
@@ -229,13 +275,13 @@ public sealed class P2PClipboardServer : IAsyncDisposable
             string deviceId,
             TcpClient tcp,
             NetworkStream stream,
-            byte[] secret,
+            byte[] sessionKey,
             byte[] deviceHash)
         {
             DeviceId = deviceId;
             _tcp = tcp;
             _stream = stream;
-            _secret = secret.ToArray();
+            _sessionKey = sessionKey.ToArray();
             _aad = new byte[AadPrefix.Length + deviceHash.Length];
             AadPrefix.CopyTo(_aad, 0);
             deviceHash.CopyTo(_aad, AadPrefix.Length);
@@ -257,7 +303,7 @@ public sealed class P2PClipboardServer : IAsyncDisposable
                 var tag = new byte[16];
                 var frameAad = BuildFrameAad(sequenceBytes);
 
-                using (var aes = new AesGcm(_secret, 16))
+                using (var aes = new AesGcm(_sessionKey, 16))
                     aes.Encrypt(nonce, plaintext, ciphertext, tag, frameAad);
 
                 var bodyLength = 12 + 8 + ciphertext.Length + 16;
@@ -305,7 +351,7 @@ public sealed class P2PClipboardServer : IAsyncDisposable
             var plaintext = new byte[cipherLength];
             var frameAad = BuildFrameAad(sequenceBytes);
 
-            using (var aes = new AesGcm(_secret, 16))
+            using (var aes = new AesGcm(_sessionKey, 16))
                 aes.Decrypt(nonce, ciphertext, tag, plaintext, frameAad);
 
             _receiveSequence = sequence;
@@ -325,7 +371,7 @@ public sealed class P2PClipboardServer : IAsyncDisposable
             if (Interlocked.Exchange(ref _closed, 1) != 0) return;
             try { _tcp.Close(); } catch { }
             _send.Dispose();
-            CryptographicOperations.ZeroMemory(_secret);
+            CryptographicOperations.ZeroMemory(_sessionKey);
         }
     }
 
