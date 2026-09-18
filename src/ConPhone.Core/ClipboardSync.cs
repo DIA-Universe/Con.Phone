@@ -347,3 +347,105 @@ public static class ClipboardTransportPolicy
         return routes;
     }
 }
+
+
+public sealed record ClipboardRelayIdentity(string Room, string Auth);
+
+public static class ClipboardRelayCrypto
+{
+    private static readonly byte[] RoomLabel = "ConPhone-Relay-Room-v1"u8.ToArray();
+    private static readonly byte[] AuthLabel = "ConPhone-Relay-Auth-v1"u8.ToArray();
+    private static readonly byte[] AadLabel = "ConPhone-Clipboard-Relay-v1"u8.ToArray();
+
+    public static ClipboardRelayIdentity DeriveIdentity(
+        ReadOnlySpan<byte> secret,
+        ReadOnlySpan<byte> deviceHash)
+    {
+        if (secret.Length != 32 || deviceHash.Length != 32)
+            throw new ArgumentException("Relay secret and device hash must each contain 32 bytes.");
+
+        var roomInput = new byte[RoomLabel.Length + deviceHash.Length];
+        RoomLabel.CopyTo(roomInput, 0);
+        deviceHash.CopyTo(roomInput.AsSpan(RoomLabel.Length));
+
+        var authInput = new byte[AuthLabel.Length + deviceHash.Length];
+        AuthLabel.CopyTo(authInput, 0);
+        deviceHash.CopyTo(authInput.AsSpan(AuthLabel.Length));
+
+        var room = HMACSHA256.HashData(secret, roomInput);
+        var auth = HMACSHA256.HashData(secret, authInput);
+        return new ClipboardRelayIdentity(Base64Url(room), Base64Url(auth));
+    }
+
+    public static byte[] EncryptFrame(
+        ReadOnlySpan<byte> secret,
+        ReadOnlySpan<byte> deviceHash,
+        ReadOnlySpan<byte> plaintext)
+    {
+        if (secret.Length != 32 || deviceHash.Length != 32)
+            throw new ArgumentException("Relay secret and device hash must each contain 32 bytes.");
+        if (plaintext.Length is <= 0 or > 2 * 1024 * 1024)
+            throw new ArgumentOutOfRangeException(nameof(plaintext));
+
+        var nonce = RandomNumberGenerator.GetBytes(12);
+        var ciphertext = new byte[plaintext.Length];
+        var tag = new byte[16];
+        var aad = BuildAad(deviceHash);
+
+        using (var aes = new AesGcm(secret, 16))
+            aes.Encrypt(nonce, plaintext, ciphertext, tag, aad);
+
+        var result = new byte[1 + nonce.Length + ciphertext.Length + tag.Length];
+        result[0] = 1;
+        nonce.CopyTo(result, 1);
+        ciphertext.CopyTo(result, 13);
+        tag.CopyTo(result, 13 + ciphertext.Length);
+        return result;
+    }
+
+    public static byte[] DecryptFrame(
+        ReadOnlySpan<byte> secret,
+        ReadOnlySpan<byte> deviceHash,
+        ReadOnlySpan<byte> envelope)
+    {
+        if (secret.Length != 32 || deviceHash.Length != 32)
+            throw new ArgumentException("Relay secret and device hash must each contain 32 bytes.");
+        if (envelope.Length < 30 || envelope[0] != 1)
+            throw new InvalidDataException("Unsupported relay envelope.");
+
+        var nonce = envelope.Slice(1, 12);
+        var cipherLength = envelope.Length - 1 - 12 - 16;
+        if (cipherLength <= 0 || cipherLength > 2 * 1024 * 1024)
+            throw new InvalidDataException("Invalid relay envelope length.");
+
+        var ciphertext = envelope.Slice(13, cipherLength);
+        var tag = envelope.Slice(13 + cipherLength, 16);
+        var plaintext = new byte[cipherLength];
+        var aad = BuildAad(deviceHash);
+
+        try
+        {
+            using var aes = new AesGcm(secret, 16);
+            aes.Decrypt(nonce, ciphertext, tag, plaintext, aad);
+            return plaintext;
+        }
+        catch (CryptographicException ex)
+        {
+            throw new InvalidDataException("Relay clipboard frame authentication failed.", ex);
+        }
+    }
+
+    private static byte[] BuildAad(ReadOnlySpan<byte> deviceHash)
+    {
+        var aad = new byte[AadLabel.Length + deviceHash.Length];
+        AadLabel.CopyTo(aad, 0);
+        deviceHash.CopyTo(aad.AsSpan(AadLabel.Length));
+        return aad;
+    }
+
+    private static string Base64Url(ReadOnlySpan<byte> bytes) =>
+        Convert.ToBase64String(bytes)
+            .TrimEnd('=')
+            .Replace('+', '-')
+            .Replace('/', '_');
+}
