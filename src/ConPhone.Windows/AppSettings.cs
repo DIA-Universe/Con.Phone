@@ -44,8 +44,6 @@ public sealed class ConPhoneSettings
     public bool ClipboardAutoSendText { get; set; } = true;
     public bool ClipboardAutoSendImages { get; set; } = true;
     public int ClipboardBleImageLimitKb { get; set; } = 512;
-    public bool ClipboardRelayEnabled { get; set; } = false;
-    public string ClipboardRelayUrl { get; set; } = "https://relay-runtime-production.up.railway.app";
 }
 
 public static class SettingsStore
@@ -90,10 +88,6 @@ public static class SettingsStore
         settings.ScrollSpeedPercent = Math.Clamp(settings.ScrollSpeedPercent, 25, 300);
         settings.ClipboardHistoryLimit = Math.Clamp(settings.ClipboardHistoryLimit, 10, 200);
         settings.ClipboardBleImageLimitKb = Math.Clamp(settings.ClipboardBleImageLimitKb, 64, 4096);
-        settings.ClipboardRelayUrl = (settings.ClipboardRelayUrl ?? "").Trim();
-        if (settings.ClipboardRelayUrl.Length > 512)
-            settings.ClipboardRelayUrl = settings.ClipboardRelayUrl[..512];
-
         settings.ToggleHotkey ??= DefaultToggle();
         settings.EmergencyHotkey ??= DefaultEmergency();
         settings.LockAndReturnHotkey ??= DefaultLockAndReturn();
