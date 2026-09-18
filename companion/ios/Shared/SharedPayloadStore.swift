@@ -86,10 +86,10 @@ enum SharedPayloadStore {
         defaults.removeObject(forKey: defaultsKey)
 
         if Date().timeIntervalSince(envelope.createdAt) > 24 * 60 * 60 {
-            if let name = envelope.fileName {
-                try? sharedDirectory()
-                    .appendingPathComponent(name)
-                    .deletingLastPathComponent()
+            if let name = envelope.fileName,
+               let directory = try? sharedDirectory() {
+                try? FileManager.default.removeItem(
+                    at: directory.appendingPathComponent(name))
             }
             return nil
         }
