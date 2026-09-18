@@ -128,6 +128,33 @@ public sealed class ClipboardSyncCoordinator : IAsyncDisposable
                 content.Kind == ClipboardContentKind.TextUtf8 ||
                 content.Data.Length <= bleImageLimitBytes;
 
+            if (!bleAllowed && !_lan.HasClient(id))
+            {
+                _ = GetDirectLinkConfig();
+                Status?.Invoke("큰 이미지 전송을 위해 P2P 고속 링크 연결을 기다립니다.");
+
+                var deadline = DateTimeOffset.UtcNow + TimeSpan.FromSeconds(8);
+                while (!_lan.HasClient(id) && DateTimeOffset.UtcNow < deadline)
+                {
+                    token.ThrowIfCancellationRequested();
+                    await Task.Delay(125, token).ConfigureAwait(false);
+                }
+
+                if (_lan.HasClient(id))
+                {
+                    try
+                    {
+                        await _lan.SendAsync(id, content, token).ConfigureAwait(false);
+                        Status?.Invoke($"Clipboard 전송 완료 · P2P · {Describe(content)}");
+                        return true;
+                    }
+                    catch (Exception ex)
+                    {
+                        Status?.Invoke($"P2P 이미지 전송 실패: {ex.Message}");
+                    }
+                }
+            }
+
             if (bleAllowed && _ble.HasSubscriber(id))
             {
                 try
@@ -143,9 +170,8 @@ public sealed class ClipboardSyncCoordinator : IAsyncDisposable
             }
             else if (!bleAllowed)
             {
-                _ = GetDirectLinkConfig();
                 Status?.Invoke(
-                    $"이미지 {content.Data.Length / 1024:N0} KiB는 BLE 제한을 초과했습니다. P2P 고속 링크를 준비하고 있습니다.");
+                    $"이미지 {content.Data.Length / 1024:N0} KiB는 BLE 제한을 초과했고 P2P 연결도 준비되지 않았습니다.");
             }
 
             return false;
