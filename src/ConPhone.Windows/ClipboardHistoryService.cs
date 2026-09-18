@@ -24,13 +24,15 @@ public sealed class ClipboardEntry
 public sealed class ClipboardHistoryService : IDisposable
 {
     private readonly ClipboardSink _sink;
+    private readonly System.Windows.Forms.Timer _retryTimer;
     private readonly List<ClipboardEntry> _entries = [];
     private readonly object _gate = new();
     private int _limit;
     private bool _captureText;
     private bool _captureImages;
     private bool _disposed;
-    private bool _selfWrite;
+    private int _remainingCaptureAttempts;
+    private DateTime _ignoreUpdatesUntilUtc;
 
     private static readonly string Root = Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "ConPhone");
@@ -38,6 +40,7 @@ public sealed class ClipboardHistoryService : IDisposable
     private static readonly string HistoryPath = Path.Combine(Root, "clipboard-history.json");
 
     public event Action? Changed;
+    public event Action<string>? Status;
 
     public ClipboardHistoryService(int limit, bool captureText, bool captureImages)
     {
@@ -45,7 +48,13 @@ public sealed class ClipboardHistoryService : IDisposable
         _captureText = captureText;
         _captureImages = captureImages;
         Load();
+
+        _retryTimer = new System.Windows.Forms.Timer { Interval = 90 };
+        _retryTimer.Tick += (_, _) => RetryCapture();
         _sink = new ClipboardSink(this);
+
+        // Pick up content that already existed before Con.Phone started.
+        ScheduleCapture(3);
     }
 
     public IReadOnlyList<ClipboardEntry> Entries
@@ -66,31 +75,90 @@ public sealed class ClipboardHistoryService : IDisposable
         Changed?.Invoke();
     }
 
+    public bool CaptureCurrentNow()
+    {
+        if (_disposed) return false;
+        if (TryCaptureCurrent()) return true;
+        ScheduleCapture(6);
+        return false;
+    }
+
     private void OnClipboardUpdate()
     {
-        if (_disposed || _selfWrite) return;
+        if (_disposed || DateTime.UtcNow < _ignoreUpdatesUntilUtc) return;
+        ScheduleCapture(8);
+    }
+
+    private void ScheduleCapture(int attempts)
+    {
+        if (_disposed) return;
+        _remainingCaptureAttempts = Math.Max(_remainingCaptureAttempts, attempts);
+        _retryTimer.Stop();
+        _retryTimer.Start();
+    }
+
+    private void RetryCapture()
+    {
+        if (_disposed)
+        {
+            _retryTimer.Stop();
+            return;
+        }
+
+        if (TryCaptureCurrent())
+        {
+            _remainingCaptureAttempts = 0;
+            _retryTimer.Stop();
+            return;
+        }
+
+        if (--_remainingCaptureAttempts <= 0)
+        {
+            _retryTimer.Stop();
+            Status?.Invoke("클립보드가 다른 프로그램에 의해 잠겨 있어 이번 변경을 읽지 못했습니다.");
+        }
+    }
+
+    private bool TryCaptureCurrent()
+    {
         try
         {
             if (_captureText && Clipboard.ContainsText(TextDataFormat.UnicodeText))
             {
                 var text = Clipboard.GetText(TextDataFormat.UnicodeText);
-                if (!string.IsNullOrEmpty(text)) AddText(text);
-                return;
+                if (!string.IsNullOrEmpty(text))
+                {
+                    AddText(text);
+                    return true;
+                }
             }
 
             if (_captureImages && Clipboard.ContainsImage())
             {
                 using var image = Clipboard.GetImage();
-                if (image is not null) AddImage(image);
+                if (image is not null)
+                {
+                    AddImage(image);
+                    return true;
+                }
             }
+
+            // Clipboard may contain unsupported formats; that is still a successful read.
+            return true;
         }
         catch (ExternalException)
         {
-            // Another app can hold the clipboard for a short time. The next clipboard update is still monitored.
+            return false;
         }
-        catch
+        catch (ThreadStateException)
         {
-            // Clipboard history must never break input switching.
+            Status?.Invoke("클립보드는 STA UI 스레드에서만 읽을 수 있습니다.");
+            return true;
+        }
+        catch (Exception ex)
+        {
+            Status?.Invoke($"클립보드 읽기 오류: {ex.GetType().Name}");
+            return true;
         }
     }
 
@@ -115,6 +183,7 @@ public sealed class ClipboardHistoryService : IDisposable
             TrimLocked();
             SaveLocked();
         }
+        Status?.Invoke("텍스트 클립보드를 기록했습니다.");
         Changed?.Invoke();
     }
 
@@ -129,8 +198,8 @@ public sealed class ClipboardHistoryService : IDisposable
         lock (_gate)
         {
             if (_entries.FirstOrDefault()?.Hash == hash) return;
-            var duplicates = _entries.Where(x => x.Hash == hash).ToArray();
-            foreach (var duplicate in duplicates) DeleteImageFile(duplicate);
+            foreach (var duplicate in _entries.Where(x => x.Hash == hash).ToArray())
+                DeleteImageFile(duplicate);
             _entries.RemoveAll(x => x.Hash == hash);
 
             var id = Guid.NewGuid().ToString("N");
@@ -148,6 +217,7 @@ public sealed class ClipboardHistoryService : IDisposable
             TrimLocked();
             SaveLocked();
         }
+        Status?.Invoke("이미지/캡처 클립보드를 기록했습니다.");
         Changed?.Invoke();
     }
 
@@ -157,26 +227,30 @@ public sealed class ClipboardHistoryService : IDisposable
         lock (_gate) entry = _entries.FirstOrDefault(x => x.Id == id) is { } found ? Clone(found) : null;
         if (entry is null) return false;
 
-        try
+        for (var attempt = 0; attempt < 6; attempt++)
         {
-            _selfWrite = true;
-            if (entry.Kind == ClipboardEntryKind.Text && entry.Text is not null)
+            try
             {
-                Clipboard.SetText(entry.Text, TextDataFormat.UnicodeText);
-                return true;
+                _ignoreUpdatesUntilUtc = DateTime.UtcNow.AddMilliseconds(500);
+                if (entry.Kind == ClipboardEntryKind.Text && entry.Text is not null)
+                {
+                    Clipboard.SetDataObject(entry.Text, true, 5, 40);
+                    return true;
+                }
+
+                if (entry.Kind == ClipboardEntryKind.Image && entry.ImageFile is { } path && File.Exists(path))
+                {
+                    using var source = Image.FromFile(path);
+                    using var copy = new Bitmap(source);
+                    Clipboard.SetDataObject(copy, true, 5, 40);
+                    return true;
+                }
+                return false;
             }
-            if (entry.Kind == ClipboardEntryKind.Image && entry.ImageFile is { } path && File.Exists(path))
+            catch (ExternalException)
             {
-                using var source = Image.FromFile(path);
-                using var copy = new Bitmap(source);
-                Clipboard.SetImage(copy);
-                return true;
+                Thread.Sleep(35);
             }
-        }
-        catch (ExternalException) { }
-        finally
-        {
-            _selfWrite = false;
         }
         return false;
     }
@@ -241,8 +315,10 @@ public sealed class ClipboardHistoryService : IDisposable
         try
         {
             Directory.CreateDirectory(Root);
+            var temp = HistoryPath + ".tmp";
             var json = JsonSerializer.Serialize(_entries, new JsonSerializerOptions { WriteIndented = true });
-            File.WriteAllText(HistoryPath, json);
+            File.WriteAllText(temp, json);
+            File.Move(temp, HistoryPath, true);
         }
         catch { }
     }
@@ -256,17 +332,23 @@ public sealed class ClipboardHistoryService : IDisposable
     public void Dispose()
     {
         _disposed = true;
+        _retryTimer.Stop();
+        _retryTimer.Dispose();
         _sink.Dispose();
     }
 
     private sealed class ClipboardSink : NativeWindow, IDisposable
     {
         private readonly ClipboardHistoryService _owner;
+
         public ClipboardSink(ClipboardHistoryService owner)
         {
             _owner = owner;
-            CreateHandle(new CreateParams { Caption = "Con.Phone.ClipboardSink", Parent = new nint(-3) });
-            AddClipboardFormatListener(Handle);
+            // Use a normal hidden native window; this is more reliable for clipboard notifications
+            // than a message-only window on some Windows builds.
+            CreateHandle(new CreateParams { Caption = "Con.Phone.ClipboardSink" });
+            if (!AddClipboardFormatListener(Handle))
+                throw new ExternalException("AddClipboardFormatListener failed.", Marshal.GetLastWin32Error());
         }
 
         protected override void WndProc(ref Message m)
@@ -277,11 +359,9 @@ public sealed class ClipboardHistoryService : IDisposable
 
         public void Dispose()
         {
-            if (Handle != 0)
-            {
-                RemoveClipboardFormatListener(Handle);
-                DestroyHandle();
-            }
+            if (Handle == 0) return;
+            RemoveClipboardFormatListener(Handle);
+            DestroyHandle();
         }
     }
 

@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Text.Json;
 using ConPhone.Core;
 using Microsoft.Win32;
@@ -38,7 +39,7 @@ public sealed class MainForm : Form
     private Panel? _contentHost;
     private readonly NotifyIcon _tray = new() { Text = "Con.Phone · 로컬 입력", Icon = SystemIcons.Application, Visible = true };
     private readonly System.Windows.Forms.Timer _timer = new() { Interval = 400 };
-    private readonly System.Windows.Forms.Timer _peerTimer = new() { Interval = 1500 };
+    private readonly System.Windows.Forms.Timer _peerTimer = new() { Interval = 5000 };
     private Task? _pump;
     private long _epoch, _sent;
     private bool _closing, _closed, _exitRequested;
@@ -46,9 +47,10 @@ public sealed class MainForm : Form
 
     public MainForm()
     {
-        Text = "Con.Phone 0.2.0 · Bluetooth 입력 허브";
-        Width = 1080; Height = 760; MinimumSize = new Size(920, 680);
+        Text = "Con.Phone 0.2.1 · Bluetooth 입력 허브";
+        Width = 1080; Height = 740; MinimumSize = new Size(860, 600);
         StartPosition = FormStartPosition.CenterScreen;
+        AutoScaleMode = AutoScaleMode.Dpi;
         Font = ConPhoneTheme.Font(10f);
         BackColor = ConPhoneTheme.Basement;
 
@@ -71,6 +73,7 @@ public sealed class MainForm : Form
             _settings.CaptureClipboardText,
             _settings.CaptureClipboardImages);
         _clipboard.Changed += () => Post(RefreshClipboardList);
+        _clipboard.Status += text => Post(() => Log(text));
 
         LoadSettingsToUi();
         ApplyInputSettings(save: false);
@@ -80,6 +83,12 @@ public sealed class MainForm : Form
         _mouseSpeed.ValueChanged += (_, _) => _mouseSpeedValue.Text = $"{_mouseSpeed.Value}%";
         _scrollSpeed.ValueChanged += (_, _) => _scrollSpeedValue.Text = $"{_scrollSpeed.Value}%";
         _clipboardList.SelectedIndexChanged += (_, _) => UpdateClipboardDetail();
+
+        foreach (var box in new[] { _toggleKey, _emergencyKey, _lockAndReturnKey })
+        {
+            box.CaptureStateChanged += active => _input.SetHotkeysEnabled(!active);
+            box.BindingChanged += _ => ApplyCapturedHotkey();
+        }
 
         var menu = new ContextMenuStrip();
         menu.Items.Add("창 열기", null, (_, _) => { Show(); WindowState = FormWindowState.Normal; Activate(); });
@@ -108,13 +117,14 @@ public sealed class MainForm : Form
             var emergency = HotkeyCatalog.Display(_settings.EmergencyHotkey);
             _state.Text = _input.IsRemote
                 ? $"휴대폰 조작 중 · {emergency}로 즉시 복귀"
-                : $"노트북 조작 중 · 광고:{_ble.Advertisement} · HID구독 K:{_ble.KeyboardSubscribers} M:{_ble.MouseSubscribers} · 승인:{(_ble.Ready ? "준비됨" : "대기")}";
+                : $"노트북 조작 중 · 광고:{_ble.Advertisement} · HID K:{_ble.KeyboardSubscribers} M:{_ble.MouseSubscribers} S:{_ble.SystemSubscribers} · 승인:{(_ble.Ready ? "준비됨" : "대기")}";
             _tray.Text = _input.IsRemote ? $"Con.Phone · 휴대폰 입력 / {emergency} 복귀" : "Con.Phone · 노트북 입력";
         };
         _timer.Start();
         _peerTimer.Tick += (_, _) =>
         {
-            if (_ble.Advertisement is "Started" or "StartedWithoutAllAdvertisementData")
+            if (!_input.IsRemote && _ble.ApprovedId is null &&
+                _ble.Advertisement is "Started" or "StartedWithoutAllAdvertisementData")
                 Dispatch(() => RefreshPeersAsync(true));
         };
         _peerTimer.Start();
@@ -123,7 +133,7 @@ public sealed class MainForm : Form
             await _input.Started;
             _diagnosis.Text = await BleHidServer.DiagnoseAsync();
             await _ble.StartAsync();
-            Log("Bluetooth HID 광고를 자동 시작했습니다. 이전 등록이 연결 실패하면 휴대폰에서 삭제 후 이 PC를 새로 검색해 페어링하세요.");
+            Log("Bluetooth HID 광고를 시작했습니다. 0.2.1의 휴대폰 잠금 기능은 HID Report가 추가되어 기존 페어링에서는 동작하지 않을 수 있습니다. 잠금 기능을 쓰려면 휴대폰의 PC 등록을 삭제하고 한 번 다시 페어링하세요.");
         });
         _pump = Task.Run(PumpAsync);
         SystemEvents.PowerModeChanged += PowerChanged;
@@ -181,7 +191,7 @@ public sealed class MainForm : Form
         {
             Dock = DockStyle.Bottom,
             Height = 54,
-            Text = "0.2.0\r\n설정은 이 PC에만 저장됩니다.",
+            Text = "0.2.1\r\n설정은 이 PC에만 저장됩니다.",
             Font = ConPhoneTheme.Font(8.5f),
             ForeColor = ConPhoneTheme.TextTertiary,
             TextAlign = ContentAlignment.BottomLeft,
@@ -263,7 +273,7 @@ public sealed class MainForm : Form
         var devices = CardFlow();
         devices.Controls.Add(ConPhoneTheme.Section("연결된 기기"));
         devices.Controls.Add(ConPhoneTheme.Body("목록에서 본인 휴대폰을 선택한 뒤 승인하세요. 기존 등록이 연결되지 않으면 휴대폰 Bluetooth 설정에서 삭제 후 새로 페어링하세요."));
-        _peers.Width = 720; _peers.Height = 118;
+        _peers.Height = 118; _peers.Tag = "stretch";
         devices.Controls.Add(_peers);
         devices.Controls.Add(Row(
             Button("목록 갱신", () => RefreshPeersAsync(false)),
@@ -307,7 +317,7 @@ public sealed class MainForm : Form
         shortcuts.Controls.Add(ConPhoneTheme.Body("입력칸을 클릭한 뒤 원하는 키 조합을 그대로 누르세요. Ctrl·Alt·Shift·Win 조합을 함께 인식합니다."));
         shortcuts.Controls.Add(HotkeyRow("PC ↔ 휴대폰 전환", _toggleKey, "어느 화면에서든 입력 대상을 전환합니다."));
         shortcuts.Controls.Add(HotkeyRow("비상 노트북 복귀", _emergencyKey, "휴대폰 제어 중 즉시 PC 입력으로 돌아옵니다."));
-        shortcuts.Controls.Add(HotkeyRow("휴대폰 잠금 + 복귀", _lockAndReturnKey, "휴대폰 Power 키를 보내고 즉시 PC로 돌아옵니다."));
+        shortcuts.Controls.Add(HotkeyRow("휴대폰 잠금 + 복귀", _lockAndReturnKey, "Android KEYCODE_POWER로 매핑되는 HID System Power Down을 보내고 즉시 PC로 돌아옵니다. 0.2.1 설치 후 한 번 재페어링해야 합니다."));
         shortcuts.Controls.Add(_shortcutSummary);
         shortcuts.Controls.Add(Row(
             Button("설정 저장", () => { ApplyInputSettings(save: true); return Task.CompletedTask; }, ConPhoneButtonKind.Primary),
@@ -330,10 +340,11 @@ public sealed class MainForm : Form
 
         var history = CardFlow();
         history.Controls.Add(ConPhoneTheme.Section("최근 항목"));
-        _clipboardList.Width = 720; _clipboardList.Height = 260;
+        _clipboardList.Height = 260; _clipboardList.Tag = "stretch";
         history.Controls.Add(_clipboardList);
         history.Controls.Add(_clipboardDetail);
         history.Controls.Add(Row(
+            Button("현재 클립보드 가져오기", () => { CaptureCurrentClipboard(); return Task.CompletedTask; }),
             Button("Windows 클립보드로 복사", () => { RestoreSelectedClipboard(); return Task.CompletedTask; }, ConPhoneButtonKind.Primary),
             Button("항목 삭제", () => { DeleteSelectedClipboard(); return Task.CompletedTask; }, ConPhoneButtonKind.Ghost),
             Button("전체 비우기", () => { ClearClipboardHistory(); return Task.CompletedTask; }, ConPhoneButtonKind.Ghost)));
@@ -360,10 +371,10 @@ public sealed class MainForm : Form
         card.Controls.Add(ConPhoneTheme.Title("진단", 16f));
         card.Controls.Add(ConPhoneTheme.Body("문제가 생기면 이 화면의 상태와 로그를 확인하세요. 진단 파일에는 입력한 문자나 기기 주소를 저장하지 않습니다."));
         card.Controls.Add(ConPhoneTheme.Section("Bluetooth"));
-        _diagnosis.Width = 720; _diagnosis.Height = 120;
+        _diagnosis.Height = 120; _diagnosis.Tag = "stretch";
         card.Controls.Add(_diagnosis);
         card.Controls.Add(ConPhoneTheme.Section("실행 로그"));
-        _events.Width = 720; _events.Height = 250;
+        _events.Height = 250; _events.Tag = "stretch";
         card.Controls.Add(_events);
         card.Controls.Add(Row(
             Button("진단 저장", SaveDiagnosticsAsync, ConPhoneButtonKind.Primary),
@@ -372,27 +383,45 @@ public sealed class MainForm : Form
         return page;
     }
 
-    private static FlowLayoutPanel PageFlow() => new()
+    private static FlowLayoutPanel PageFlow()
     {
-        Dock = DockStyle.Fill,
-        AutoScroll = true,
-        FlowDirection = FlowDirection.TopDown,
-        WrapContents = false,
-        Padding = new Padding(0, 0, 8, 18),
-        BackColor = Color.Transparent
-    };
+        var page = new FlowLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            AutoScroll = true,
+            FlowDirection = FlowDirection.TopDown,
+            WrapContents = false,
+            Padding = new Padding(0, 0, 8, 18),
+            BackColor = Color.Transparent
+        };
+
+        void FitCards()
+        {
+            var width = Math.Max(430, page.ClientSize.Width - SystemInformation.VerticalScrollBarWidth - 14);
+            foreach (Control control in page.Controls)
+            {
+                if (control is not ConPhoneCard card) continue;
+                card.Width = width;
+                card.MaximumSize = new Size(width, 0);
+            }
+        }
+
+        page.SizeChanged += (_, _) => FitCards();
+        page.ControlAdded += (_, _) => FitCards();
+        return page;
+    }
 
     private static ConPhoneCard CardFlow() => new()
     {
-        Width = 790,
-        MaximumSize = new Size(790, 0),
+        Width = 700,
+        MaximumSize = new Size(700, 0),
         AutoSize = true,
         AutoSizeMode = AutoSizeMode.GrowAndShrink
     };
 
     private Control HotkeyRow(string title, HotkeyCaptureBox box, string help)
     {
-        var row = new TableLayoutPanel { AutoSize = true, ColumnCount = 2, Width = 720, Margin = new Padding(0, 8, 0, 8) };
+        var row = new TableLayoutPanel { AutoSize = true, ColumnCount = 2, Width = 640, Margin = new Padding(0, 8, 0, 8), Tag = "stretch" };
         row.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 60));
         row.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 40));
         var labels = new FlowLayoutPanel { AutoSize = true, FlowDirection = FlowDirection.TopDown, WrapContents = false };
@@ -401,6 +430,21 @@ public sealed class MainForm : Form
         row.Controls.Add(labels, 0, 0);
         row.Controls.Add(box, 1, 0);
         return row;
+    }
+
+    private void ApplyCapturedHotkey()
+    {
+        try
+        {
+            ApplyInputSettings(save: true);
+            Log("단축키 변경을 즉시 적용했습니다.");
+        }
+        catch (Exception ex)
+        {
+            System.Media.SystemSounds.Beep.Play();
+            Log($"단축키 적용 실패: {ex.Message}");
+            LoadSettingsToUi();
+        }
     }
 
     private void LoadSettingsToUi()
@@ -475,6 +519,15 @@ public sealed class MainForm : Form
         ApplyInputSettings(save: true);
     }
 
+    private void CaptureCurrentClipboard()
+    {
+        if (_clipboard is null) return;
+        if (_clipboard.CaptureCurrentNow())
+            Log("현재 Windows 클립보드를 확인했습니다.");
+        else
+            Log("클립보드가 잠겨 있어 재시도 중입니다.");
+    }
+
     private void RefreshClipboardList()
     {
         if (_clipboard is null || _closed) return;
@@ -528,7 +581,7 @@ public sealed class MainForm : Form
 
     private static FlowLayoutPanel Row(params Control[] controls)
     {
-        var row = new FlowLayoutPanel { AutoSize = true, WrapContents = true, MaximumSize = new Size(740, 0), BackColor = Color.Transparent, Margin = new Padding(0, 6, 0, 6) };
+        var row = new FlowLayoutPanel { AutoSize = true, WrapContents = true, MaximumSize = new Size(2000, 0), BackColor = Color.Transparent, Margin = new Padding(0, 6, 0, 6), Tag = "stretch" };
         row.Controls.AddRange(controls);
         return row;
     }
@@ -609,17 +662,22 @@ public sealed class MainForm : Form
             return;
         }
 
-        using var timeout = new CancellationTokenSource(TimeSpan.FromMilliseconds(900));
+        using var timeout = new CancellationTokenSource(TimeSpan.FromMilliseconds(1400));
         try
         {
-            await _ble.TapKeyboardUsageAsync(Hid.KeyboardPowerUsage, timeout.Token);
-            await _ble.SendAsync(new(false, new byte[Hid.MouseReportLength]), () => true, timeout.Token);
-            Log("휴대폰에 Power 키를 보내고 노트북 입력으로 복귀했습니다. 기기에서 Power HID를 지원하지 않으면 화면은 그대로일 수 있습니다.");
+            await _ble.SendSystemPowerAsync(timeout.Token);
+            await ReleaseAsync();
+            Log("Android KEYCODE_POWER에 매핑되는 HID System Power Down을 보내고 노트북으로 복귀했습니다.");
+        }
+        catch (NotSupportedException ex)
+        {
+            _lastError = $"LockReturn:{ex.GetType().Name}:0x{ex.HResult:X8}";
+            Log(ex.Message);
         }
         catch (Exception ex)
         {
             _lastError = $"LockReturn:{ex.GetType().Name}:0x{ex.HResult:X8}";
-            Log("노트북 입력으로는 복귀했지만 휴대폰 화면 잠금 전송을 확인하지 못했습니다.");
+            Log("노트북 입력으로는 복귀했지만 휴대폰 잠금 전송에 실패했습니다. 진단의 HID S 구독 값을 확인해 주세요.");
         }
     }
 
@@ -671,6 +729,9 @@ public sealed class MainForm : Form
     }
     private async Task PumpAsync()
     {
+        long lastPointerSend = 0;
+        const double pointerIntervalMs = 12.0;
+
         while (!_lifetime.IsCancellationRequested)
         {
             try
@@ -678,9 +739,21 @@ public sealed class MainForm : Form
                 var envelope = await _outbox.TakeAsync(_lifetime.Token);
                 foreach (var report in Hid.Encode(envelope.Packet))
                 {
+                    if (!report.Keyboard && lastPointerSend != 0)
+                    {
+                        var elapsedMs = (Stopwatch.GetTimestamp() - lastPointerSend) * 1000.0 / Stopwatch.Frequency;
+                        var remaining = pointerIntervalMs - elapsedMs;
+                        if (remaining > 0.5)
+                            await Task.Delay(TimeSpan.FromMilliseconds(remaining), _lifetime.Token);
+                    }
+
                     using var timeout = CancellationTokenSource.CreateLinkedTokenSource(_lifetime.Token);
-                    timeout.CancelAfter(750);
-                    await _ble.SendAsync(report, () => envelope.Epoch == Volatile.Read(ref _epoch) && _input.IsRemote, timeout.Token);
+                    timeout.CancelAfter(900);
+                    await _ble.SendAsync(report,
+                        () => envelope.Epoch == Volatile.Read(ref _epoch) && _input.IsRemote,
+                        timeout.Token);
+
+                    if (!report.Keyboard) lastPointerSend = Stopwatch.GetTimestamp();
                     Interlocked.Increment(ref _sent);
                 }
             }
@@ -689,7 +762,7 @@ public sealed class MainForm : Form
             {
                 ImmediateLocal();
                 _lastError = $"Send:{ex.GetType().Name}:0x{ex.HResult:X8}";
-                Post(() => Log("Bluetooth 전송 실패/지연으로 노트북 입력으로 복귀했습니다. 서비스는 유지하므로 연결 상태를 확인한 뒤 다시 전환할 수 있습니다."));
+                Post(() => Log("Bluetooth 전송이 지연되어 노트북 입력으로 복귀했습니다. HID 서비스는 유지합니다. 반복되면 진단 파일을 저장해 주세요."));
             }
         }
     }
@@ -699,15 +772,18 @@ public sealed class MainForm : Form
         if (dialog.ShowDialog(this) != DialogResult.OK) return;
         var report = new
         {
-            Version = "0.2.0", OS = Environment.OSVersion.Version.ToString(), Runtime = Environment.Version.ToString(),
+            Version = "0.2.1", OS = Environment.OSVersion.Version.ToString(), Runtime = Environment.Version.ToString(),
             TargetProfile = _profile.SelectedIndex == 0 ? "Android" : "iPhone", Bluetooth = await BleHidServer.DiagnoseAsync(),
-            Advertisement = _ble.Advertisement, BleLastOperation = _ble.LastOperation, KeyboardSubscribers = _ble.KeyboardSubscribers, MouseSubscribers = _ble.MouseSubscribers, ApprovedAndSubscribed = _ble.Ready,
+            Advertisement = _ble.Advertisement, BleLastOperation = _ble.LastOperation,
+            KeyboardSubscribers = _ble.KeyboardSubscribers, MouseSubscribers = _ble.MouseSubscribers, SystemSubscribers = _ble.SystemSubscribers,
+            ApprovedAndSubscribed = _ble.Ready,
             SendOperations = Interlocked.Read(ref _sent), Pending = _outbox.Count, LastError = _lastError,
             MouseSpeedPercent = _settings.MouseSpeedPercent, ScrollSpeedPercent = _settings.ScrollSpeedPercent,
             ToggleHotkey = HotkeyCatalog.Display(_settings.ToggleHotkey), EmergencyHotkey = HotkeyCatalog.Display(_settings.EmergencyHotkey),
             LockAndReturnHotkey = HotkeyCatalog.Display(_settings.LockAndReturnHotkey),
             ClipboardEntries = _clipboard?.Entries.Count ?? 0,
-            AndroidHardwareTest = "Phone lock HID Power is device-dependent and requires hardware validation.", IPhoneHardwareTest = "Not performed",
+            PointerPacingMs = 12,
+            AndroidHardwareTest = "System Power Down report maps to Android KEYCODE_POWER; host subscription and hardware behavior remain device-dependent.", IPhoneHardwareTest = "Not performed",
             Privacy = "Diagnostic export excludes clipboard contents, typed keys, pairing codes, device names and Bluetooth addresses. Clipboard history itself is stored locally under LocalAppData."
         };
         await File.WriteAllTextAsync(dialog.FileName, JsonSerializer.Serialize(report, new JsonSerializerOptions { WriteIndented = true }));
@@ -718,15 +794,15 @@ public sealed class MainForm : Form
         if (e.Mode == PowerModes.Suspend)
         {
             ImmediateLocal();
-            _ble.Revoke();
-            _ble.Stop();
+            _ble.Stop(preserveTrusted: true);
         }
         else if (e.Mode == PowerModes.Resume)
         {
             Dispatch(async () =>
             {
                 await _ble.StartAsync();
-                Log("절전 모드에서 복귀해 Bluetooth HID 광고를 다시 확인했습니다.");
+                _ble.RestoreTrustedApproval();
+                Log("절전 모드에서 복귀해 Bluetooth HID 광고와 기존 승인 기기 복구를 시도했습니다.");
             });
         }
     }
@@ -735,8 +811,12 @@ public sealed class MainForm : Form
         if (e.Reason == SessionSwitchReason.SessionLock)
         {
             ImmediateLocal();
-            _ble.Revoke();
-            Log("Windows 잠금 감지 — 입력 대상 승인을 해제했지만 Bluetooth HID 광고는 유지합니다.");
+            _ble.SuspendApproval();
+            Log("Windows 잠금 감지 — 입력은 차단하고 승인 기기 정보는 재연결을 위해 유지합니다.");
+        }
+        else if (e.Reason == SessionSwitchReason.SessionUnlock)
+        {
+            _ble.RestoreTrustedApproval();
         }
         else if (e.Reason == SessionSwitchReason.SessionLogoff)
         {
