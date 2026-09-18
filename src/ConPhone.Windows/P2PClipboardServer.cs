@@ -218,6 +218,8 @@ public sealed class P2PClipboardServer : IAsyncDisposable
         private readonly byte[] _secret;
         private readonly byte[] _aad;
         private readonly SemaphoreSlim _send = new(1, 1);
+        private long _sendSequence;
+        private ulong _receiveSequence;
         private int _closed;
 
         public string DeviceId { get; }
@@ -246,17 +248,24 @@ public sealed class P2PClipboardServer : IAsyncDisposable
             {
                 if (Closed) throw new IOException("Clipboard connection closed.");
 
+                var sequence = checked((ulong)Interlocked.Increment(ref _sendSequence));
+                var sequenceBytes = new byte[8];
+                BinaryPrimitives.WriteUInt64LittleEndian(sequenceBytes, sequence);
+
                 var nonce = RandomNumberGenerator.GetBytes(12);
                 var ciphertext = new byte[plaintext.Length];
                 var tag = new byte[16];
-                using (var aes = new AesGcm(_secret, 16))
-                    aes.Encrypt(nonce, plaintext, ciphertext, tag, _aad);
+                var frameAad = BuildFrameAad(sequenceBytes);
 
-                var bodyLength = 12 + ciphertext.Length + 16;
+                using (var aes = new AesGcm(_secret, 16))
+                    aes.Encrypt(nonce, plaintext, ciphertext, tag, frameAad);
+
+                var bodyLength = 12 + 8 + ciphertext.Length + 16;
                 var prefix = new byte[4];
                 BinaryPrimitives.WriteInt32LittleEndian(prefix, bodyLength);
                 await _stream.WriteAsync(prefix, token).ConfigureAwait(false);
                 await _stream.WriteAsync(nonce, token).ConfigureAwait(false);
+                await _stream.WriteAsync(sequenceBytes, token).ConfigureAwait(false);
                 await _stream.WriteAsync(ciphertext, token).ConfigureAwait(false);
                 await _stream.WriteAsync(tag, token).ConfigureAwait(false);
                 await _stream.FlushAsync(token).ConfigureAwait(false);
@@ -274,8 +283,8 @@ public sealed class P2PClipboardServer : IAsyncDisposable
                 return null;
 
             var bodyLength = BinaryPrimitives.ReadInt32LittleEndian(prefix);
-            if (bodyLength < 28 ||
-                bodyLength > ClipboardWireCodec.MaxEncodedFrameBytes + 28)
+            if (bodyLength < 36 ||
+                bodyLength > ClipboardWireCodec.MaxEncodedFrameBytes + 36)
                 throw new InvalidDataException("Invalid encrypted clipboard frame length.");
 
             var body = new byte[bodyLength];
@@ -283,15 +292,32 @@ public sealed class P2PClipboardServer : IAsyncDisposable
                 return null;
 
             var nonce = body.AsSpan(0, 12);
-            var cipherLength = bodyLength - 28;
-            var ciphertext = body.AsSpan(12, cipherLength);
-            var tag = body.AsSpan(12 + cipherLength, 16);
+            var sequenceBytes = body.AsSpan(12, 8);
+            var sequence = BinaryPrimitives.ReadUInt64LittleEndian(sequenceBytes);
+
+            if (sequence != _receiveSequence + 1)
+                throw new InvalidDataException(
+                    $"P2P frame sequence rejected. expected={_receiveSequence + 1} received={sequence}");
+
+            var cipherLength = bodyLength - 36;
+            var ciphertext = body.AsSpan(20, cipherLength);
+            var tag = body.AsSpan(20 + cipherLength, 16);
             var plaintext = new byte[cipherLength];
+            var frameAad = BuildFrameAad(sequenceBytes);
 
             using (var aes = new AesGcm(_secret, 16))
-                aes.Decrypt(nonce, ciphertext, tag, plaintext, _aad);
+                aes.Decrypt(nonce, ciphertext, tag, plaintext, frameAad);
 
+            _receiveSequence = sequence;
             return plaintext;
+        }
+
+        private byte[] BuildFrameAad(ReadOnlySpan<byte> sequenceBytes)
+        {
+            var frameAad = new byte[_aad.Length + 8];
+            _aad.CopyTo(frameAad, 0);
+            sequenceBytes.CopyTo(frameAad.AsSpan(_aad.Length));
+            return frameAad;
         }
 
         public void Close()
