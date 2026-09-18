@@ -193,7 +193,12 @@ public sealed class BleClipboardService : IDisposable
                 return;
             }
 
-            request.RespondWithValue(ClipboardPairingSecretStore.GetOrCreate(id).AsBuffer());
+            var deviceHash = SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(id));
+            var secret = ClipboardPairingSecretStore.GetOrCreate(id);
+            var credential = new byte[64];
+            deviceHash.CopyTo(credential, 0);
+            secret.CopyTo(credential, 32);
+            request.RespondWithValue(credential.AsBuffer());
         }
         catch (Exception ex)
         {
