@@ -83,7 +83,7 @@ public sealed class BleHidServer
             {
                 if (bytes.Length != 1 || bytes[0] > 1) return false;
                 _protocol[id] = bytes[0];
-                if (_approved == id) _approved = null; // Require explicit reapproval after a protocol transition.
+                if (_approved == id) _approved = null;
                 Changed?.Invoke(); return true;
             });
             var control = await Characteristic(0x2A4C, GattCharacteristicProperties.WriteWithoutResponse);
@@ -122,7 +122,7 @@ public sealed class BleHidServer
         if (reportId is { } id) await Reference(c, id, 1);
         Read(c, client =>
         {
-            // An additional bonded central must never read the approved user's keystrokes.
+            // Never expose the approved user's current keys to a second bonded central.
             var value = client == _approved ? (keyboard ? _keyboardValue : _mouseValue) : new byte[keyboard ? 8 : 5];
             return boot && !keyboard ? new byte[] { (byte)(value[0] & 7), value[1], value[2] } : value.ToArray();
         });
@@ -133,12 +133,13 @@ public sealed class BleHidServer
                 var session = client.Session;
                 var id = session.DeviceId.Id;
                 if (_sessions.TryAdd(id, session))
-                    session.SessionStatusChanged += (_, args) =>
+                    session.SessionStatusChanged += (sender, args) =>
                     {
                         if (args.Status == GattSessionStatus.Closed)
                         {
                             if (_approved == id) _approved = null;
-                            _protocol.TryRemove(id, out _); _suspended.TryRemove(id, out _);
+                            _protocol.TryRemove(id, out _);
+                            _suspended.TryRemove(id, out _);
                             _sessions.TryRemove(id, out _);
                         }
                         Changed?.Invoke();
@@ -168,7 +169,7 @@ public sealed class BleHidServer
                 if (request.Offset > bytes.Length) request.RespondWithProtocolError(0x07);
                 else request.RespondWithValue(bytes.AsSpan(request.Offset).ToArray().AsBuffer());
             }
-            catch (Exception) { /* Disconnected request: never expose input in logs. */ }
+            catch (Exception) { /* A disconnected request must not expose input in logs. */ }
             finally { deferral.Complete(); }
         };
     }
@@ -191,7 +192,7 @@ public sealed class BleHidServer
     }
     private static void OutputHandler(GattLocalCharacteristic c)
     {
-        Read(c, _ => [0]); // LED output acknowledged, not used to guess the phone's IME state.
+        Read(c, _ => [0]); // LED output does not reveal the phone's current IME language.
         Write(c, (_, bytes) => bytes.Length == 1);
     }
     private GattLocalCharacteristic? Input(string id, bool keyboard)
@@ -247,7 +248,7 @@ public sealed class BleHidServer
                 bytes = [(byte)(bytes[0] & 7), bytes[1], bytes[2]];
             if (bytes.Length > client.MaxNotificationSize) throw new InvalidOperationException("HID report가 알림 크기를 초과합니다.");
             if (report.Keyboard) _keyboardValue = report.Data.ToArray(); else _mouseValue = report.Data.ToArray();
-            // Never use the overload that broadcasts to every subscribed client.
+            // This overload targets one approved client; never broadcast input to all clients.
             var result = await characteristic.NotifyValueAsync(bytes.AsBuffer(), client).AsTask(token).ConfigureAwait(false);
             if (result.Status != GattCommunicationStatus.Success) throw new InvalidOperationException($"HID 전송 실패: {result.Status}");
         }
