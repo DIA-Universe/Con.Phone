@@ -128,7 +128,6 @@ public sealed class InputCapture : IDisposable
                 if (Matches(toggle, key, modifiers))
                 {
                     lock (_gate) _suppressUntilUp.Add(key);
-                    if (_remote) Deactivate();
                     Toggle?.Invoke();
                     return 1;
                 }
