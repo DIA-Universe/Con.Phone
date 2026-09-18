@@ -14,6 +14,12 @@ public enum HangulKeyMode
     ShiftSpace
 }
 
+public enum ModifierProfile
+{
+    Standard,
+    MacCtrlCommandSwap
+}
+
 public enum ConsumerAction
 {
     Mute = 0,
