@@ -3,8 +3,9 @@ namespace ConPhone.Core;
 public abstract record InputPacket;
 public sealed record KeyboardPacket(byte[] Data) : InputPacket;
 public sealed record PointerPacket(byte Buttons, int X = 0, int Y = 0, int Wheel = 0, int Pan = 0) : InputPacket;
+public sealed record ConsumerPacket(ushort Usage) : InputPacket;
 public sealed record Envelope(long Epoch, InputPacket Packet);
-public sealed record WireReport(bool Keyboard, byte[] Data);
+public sealed record WireReport(bool Keyboard, byte[] Data, bool Consumer = false);
 
 public static class Hid
 {
@@ -13,16 +14,21 @@ public static class Hid
     public const int KeyboardReportLength = 8;
     public const int MouseReportLength = 6;
     public const int SystemReportLength = 1;
+    public const int ConsumerReportLength = 2;
     public const byte SystemLockMask = 0x02; // HID Generic Desktop System Sleep (usage 0x82)
     public static byte[] ReportMap => Convert.FromHexString(
         "05010906A1018501050719E029E715002501750195088102950175088101" +
         "95067508150026A400050719002AA4008100C0" +
         "05010902A10185020901A10005091901290315002501950375018102950175058101" +
         "05010930093116018026FF7F75109502810609381581257F750895018106C0C0" +
-        "05010980A1018503150025017501950319812983810295058101C0");
+        "05010980A1018503150025017501950319812983810295058101C0" +
+        "050C0901A1018504150026FF0319002AFF03751095018100C0");
 
     public static byte[] SystemReport(bool lockPressed) =>
         [lockPressed ? SystemLockMask : (byte)0];
+
+    public static byte[] ConsumerReport(ushort usage) =>
+        [(byte)(usage & 0xFF), (byte)(usage >> 8)];
 
     public static IEnumerable<WireReport> Encode(InputPacket packet)
     {
@@ -30,6 +36,11 @@ public static class Hid
         {
             if (k.Data.Length != 8) throw new ArgumentException("Keyboard reports must contain 8 bytes.");
             yield return new(true, k.Data.ToArray());
+            yield break;
+        }
+        if (packet is ConsumerPacket consumer)
+        {
+            yield return new(false, ConsumerReport(consumer.Usage), Consumer: true);
             yield break;
         }
         var p = (PointerPacket)packet;
