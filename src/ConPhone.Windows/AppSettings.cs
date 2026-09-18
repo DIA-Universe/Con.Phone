@@ -29,6 +29,7 @@ public sealed class ConPhoneSettings
     public int ScrollSpeedPercent { get; set; } = 100;
     public bool InvertScroll { get; set; }
     public HangulKeyMode HangulKeyMode { get; set; } = HangulKeyMode.RightAlt;
+    public ModifierProfile ModifierProfile { get; set; } = ModifierProfile.Standard;
 
     public HotkeyBinding ToggleHotkey { get; set; } = new() { Key = (int)Keys.F8 };
     public HotkeyBinding EmergencyHotkey { get; set; } = new() { Key = (int)Keys.F9 };
@@ -91,6 +92,8 @@ public static class SettingsStore
         settings.ClipboardBleImageLimitKb = Math.Clamp(settings.ClipboardBleImageLimitKb, 64, 4096);
         if (!Enum.IsDefined(typeof(HangulKeyMode), settings.HangulKeyMode))
             settings.HangulKeyMode = HangulKeyMode.RightAlt;
+        if (!Enum.IsDefined(typeof(ModifierProfile), settings.ModifierProfile))
+            settings.ModifierProfile = ModifierProfile.Standard;
 
         settings.ToggleHotkey ??= DefaultToggle();
         settings.EmergencyHotkey ??= DefaultEmergency();
