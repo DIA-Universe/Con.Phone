@@ -1,6 +1,5 @@
-name: Windows build and core tests
+name: Windows regression and single EXE
 on:
-  push:
   pull_request:
   workflow_dispatch:
 permissions:
@@ -15,9 +14,7 @@ jobs:
         shell: pwsh
         working-directory: 'C:\'
     steps:
-      # CON.anything is a reserved Windows path. Keep the GitHub repository name,
-      # but download the exact commit to a safe directory outside GITHUB_WORKSPACE.
-      - name: Fetch exact source commit to a Windows-safe path
+      - name: Fetch exact source into Windows-safe directory
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -29,61 +26,58 @@ jobs:
           Expand-Archive -Path $zip -DestinationPath $unpack
           $root = Get-ChildItem -Directory $unpack | Select-Object -First 1
           Move-Item $root.FullName (Join-Path $env:RUNNER_TEMP 'conphone-src')
+          New-Item -ItemType Directory (Join-Path $env:RUNNER_TEMP 'validation') | Out-Null
       - uses: actions/setup-dotnet@v4
         with:
           dotnet-version: '10.0.x'
-      - name: Core behavior tests (no hardware claims)
-        run: dotnet run --project "$env:RUNNER_TEMP/conphone-src/tests/ConPhone.Tests" -c Release
-      - name: Build Windows application
+      - name: Core routing, queue and transport regression
+        run: |
+          dotnet run --project "$env:RUNNER_TEMP/conphone-src/tests/ConPhone.Tests" -c Release 2>&1 | Tee-Object "$env:RUNNER_TEMP/validation/core-validation.txt"
+          if ($LASTEXITCODE -ne 0) { throw 'Core regression failed.' }
+      - name: Compile Windows application
         run: dotnet build "$env:RUNNER_TEMP/conphone-src/src/ConPhone.Windows" -c Release
-      - name: Publish one self-contained Windows x64 EXE
+      - name: Native Windows clipboard, settings and rendered UI validation
+        run: |
+          $dll = "$env:RUNNER_TEMP/conphone-src/src/ConPhone.Windows/bin/Release/net10.0-windows10.0.19041.0/ConPhone.dll"
+          dotnet $dll --self-test "$env:RUNNER_TEMP/validation"
+          if ($LASTEXITCODE -ne 0) { Get-Content "$env:RUNNER_TEMP/validation/windows-validation.txt"; throw 'Windows runtime validation failed.' }
+      - name: Publish one Windows x64 EXE
         run: |
           dotnet publish "$env:RUNNER_TEMP/conphone-src/src/ConPhone.Windows" `
-            -c Release `
-            -r win-x64 `
-            --self-contained true `
-            -p:PublishSingleFile=true `
-            -p:IncludeNativeLibrariesForSelfExtract=true `
-            -p:EnableCompressionInSingleFile=true `
-            -p:PublishTrimmed=false `
-            -p:PublishReadyToRun=false `
-            -p:DebugType=None `
-            -p:DebugSymbols=false `
+            -c Release -r win-x64 --self-contained true `
+            -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true `
+            -p:EnableCompressionInSingleFile=true -p:PublishTrimmed=false `
+            -p:PublishReadyToRun=false -p:DebugType=None -p:DebugSymbols=false `
             -o "$env:RUNNER_TEMP/ConPhone-win-x64"
-      - name: Verify exactly one distributable file
+      - name: Validate the actual standalone EXE
         run: |
-          $ErrorActionPreference = 'Stop'
-          $publish = Join-Path $env:RUNNER_TEMP 'ConPhone-win-x64'
-          $exe = Join-Path $publish 'ConPhone.exe'
-          if (!(Test-Path $exe -PathType Leaf)) { throw 'ConPhone.exe was not produced.' }
-          $files = @(Get-ChildItem $publish -File)
-          $unexpected = @($files | Where-Object Name -ne 'ConPhone.exe')
-          if ($unexpected.Count -gt 0) {
-            $names = ($unexpected.Name -join ', ')
-            throw "Single-file publish produced unexpected files: $names"
-          }
+          $exe = "$env:RUNNER_TEMP/ConPhone-win-x64/ConPhone.exe"
+          $result = Start-Process -FilePath $exe -ArgumentList @('--self-test', "$env:RUNNER_TEMP/validation/published", '--quick') -Wait -PassThru
+          if ($result.ExitCode -ne 0) { Get-Content "$env:RUNNER_TEMP/validation/published/windows-validation.txt"; throw 'Published EXE validation failed.' }
+          $files = @(Get-ChildItem "$env:RUNNER_TEMP/ConPhone-win-x64" -File)
+          if ($files.Count -ne 1 -or $files[0].Name -ne 'ConPhone.exe') { throw 'Not a single EXE.' }
           $hash = (Get-FileHash $exe -Algorithm SHA256).Hash
           $size = (Get-Item $exe).Length
-          Write-Host "ConPhone.exe size=$size SHA256=$hash"
-      - name: Upload ConPhone.exe
-        uses: actions/upload-artifact@v4
+          "size=$size`nsha256=$hash`nphysical_bluetooth_test=NOT_PERFORMED`nphone_lock_test=NOT_PERFORMED" | Set-Content "$env:RUNNER_TEMP/validation/build.txt"
+      - uses: actions/upload-artifact@v4
         with:
           name: ConPhone-win-x64-single-exe
           path: ${{ runner.temp }}/ConPhone-win-x64/ConPhone.exe
           if-no-files-found: error
           retention-days: 14
-      - name: Report successful single-EXE build to PR
-        if: success() && github.event_name == 'pull_request'
-        env:
-          GH_TOKEN: ${{ github.token }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
-        run: |
-          $exe = Join-Path $env:RUNNER_TEMP 'ConPhone-win-x64\ConPhone.exe'
-          $hash = (Get-FileHash $exe -Algorithm SHA256).Hash
-          $size = (Get-Item $exe).Length
-          $body = "ConPhone single-EXE build succeeded.`n`nrun_id=$env:GITHUB_RUN_ID`nartifact=ConPhone-win-x64-single-exe`nsize=$size`nsha256=$hash"
-          gh pr comment $env:PR_NUMBER --repo $env:GITHUB_REPOSITORY --body $body
-      - name: Upload exact source archive
+      - name: Upload validation evidence even when runtime validation fails
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ConPhone-validation
+          path: |
+            ${{ runner.temp }}/validation/*.txt
+            ${{ runner.temp }}/validation/*.json
+            ${{ runner.temp }}/validation/*.png
+            ${{ runner.temp }}/validation/published/*.txt
+            ${{ runner.temp }}/validation/published/*.json
+          retention-days: 14
+      - name: Upload exact source
         if: always()
         uses: actions/upload-artifact@v4
         with:

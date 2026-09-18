@@ -4,103 +4,90 @@ using ConPhone.Core;
 
 namespace ConPhone.Windows;
 
-// Hooks run on their own message-loop thread. They never await Bluetooth or touch the UI.
+// A dedicated message-loop thread. No BLE/clipboard/UI calls and no event invocation under _gate.
 public sealed class InputCapture : IDisposable
 {
     private readonly object _gate = new();
-    private readonly KeyboardState _keys = new();
+    private readonly KeyboardRouter _router = new();
     private readonly Thread _thread;
+    private readonly bool _installHooks;
     private readonly TaskCompletionSource _started = new(TaskCreationOptions.RunContinuationsAsynchronously);
     private Hook? _keyboardDelegate, _mouseDelegate;
     private nint _keyboardHook, _mouseHook;
     private Sink? _sink;
     private volatile bool _remote;
-    private HotkeyBinding _toggleHotkey = new() { Key = 0x77 };
-    private HotkeyBinding _emergencyHotkey = new() { Key = 0x78 };
-    private HotkeyBinding _lockAndReturnHotkey = new() { Key = (int)Keys.L, Modifiers = HotkeyModifiers.Control | HotkeyModifiers.Alt };
-    private readonly HashSet<int> _downKeys = [];
-    private readonly HashSet<int> _suppressUntilUp = [];
-    private readonly HashSet<int> _localPassthroughUntilUp = [];
+    private volatile bool _disposed;
+    private Action<KeyChord?>? _recorder;
     private byte _buttons;
-    private int _wheel, _pan;
+    private int _wheel;
     public event Action<InputPacket>? Packet;
-    public event Action? Toggle;
-    public event Action? Emergency;
-    public event Action? LockAndReturn;
+    public event Action<InputCommand>? Command;
     public event Action<string>? Fault;
     public bool IsRemote => _remote;
     public Task Started => _started.Task;
+    public bool Released { get { lock (_gate) return _router.Released; } }
 
-    public void ConfigureHotkeys(HotkeyBinding toggle, HotkeyBinding emergency, HotkeyBinding lockAndReturn)
+    public InputCapture(bool installHooks = true)
     {
-        if (!HotkeyCatalog.IsAllowedKey(toggle.Key) || !HotkeyCatalog.IsAllowedKey(emergency.Key) ||
-            !HotkeyCatalog.IsAllowedKey(lockAndReturn.Key))
-            throw new ArgumentOutOfRangeException(nameof(toggle), "지원하지 않는 단축키입니다.");
-        if (HotkeyCatalog.Same(toggle, emergency) || HotkeyCatalog.Same(toggle, lockAndReturn) ||
-            HotkeyCatalog.Same(emergency, lockAndReturn))
-            throw new InvalidOperationException("각 동작의 단축키 조합은 서로 다르게 지정해 주세요.");
-
+        _installHooks = installHooks;
+        _thread = new Thread(Run) { IsBackground = true, Name = "ConPhone.Input" };
+        _thread.SetApartmentState(ApartmentState.STA); _thread.Start();
+    }
+    public void Configure(ConPhoneSettings settings)
+    {
+        lock (_gate) _router.Configure(settings.ToggleHotkey.Chord, settings.EmergencyHotkey.Chord,
+            settings.LockAndReturnHotkey.Chord, settings.EnablePhoneLock);
+    }
+    public void BeginRecording(Action<KeyChord?> receive)
+    {
+        Deactivate();
+        lock (_gate) { _recorder = receive; _router.SetRecording(true); }
+    }
+    public void EndRecording()
+    {
+        lock (_gate) { _recorder = null; _router.SetRecording(false); }
+    }
+    public bool Activate()
+    {
+        if (_disposed || !_started.Task.IsCompletedSuccessfully) return false;
+        if (_installHooks)
+            for (int vk = 1; vk < 255; vk++)
+                if ((GetAsyncKeyState(vk) & 0x8000) != 0) return false;
         lock (_gate)
         {
-            _toggleHotkey = toggle.Clone();
-            _emergencyHotkey = emergency.Clone();
-            _lockAndReturnHotkey = lockAndReturn.Clone();
+            if (!_router.TryEnterPhone()) return false;
+            _buttons = 0; _wheel = 0; _remote = true; return true;
         }
     }
-
-    public InputCapture()
+    public void Deactivate()
     {
-        _thread = new Thread(Run) { IsBackground = true, Name = "Con.Phone.Input" };
-        _thread.SetApartmentState(ApartmentState.STA);
-        _thread.Start();
+        _remote = false; // Mouse pass-through never waits for BLE or UI.
+        lock (_gate) { _router.StopRemote(); _buttons = 0; _wheel = 0; }
     }
     private void Run()
     {
         try
         {
             _sink = new Sink(this);
-            var devices = new[] { new RawDevice { Page = 1, Usage = 2, Flags = 0x100, Target = _sink.Handle } };
-            if (!RegisterRawInputDevices(devices, 1, (uint)Marshal.SizeOf<RawDevice>())) throw new Win32Exception();
-            _keyboardDelegate = KeyboardHook; _mouseDelegate = MouseHook;
-            _keyboardHook = SetWindowsHookEx(13, _keyboardDelegate, GetModuleHandle(null), 0);
-            _mouseHook = SetWindowsHookEx(14, _mouseDelegate, GetModuleHandle(null), 0);
-            if (_keyboardHook == 0 || _mouseHook == 0) throw new Win32Exception();
-            _started.TrySetResult();
-            Application.Run();
+            if (_installHooks)
+            {
+                if (!RegisterRawInputDevices([new RawDevice { Page = 1, Usage = 2, Flags = 0x100, Target = _sink.Handle }], 1, (uint)Marshal.SizeOf<RawDevice>())) throw new Win32Exception();
+                _keyboardDelegate = KeyboardHook; _mouseDelegate = MouseHook;
+                _keyboardHook = SetWindowsHookEx(13, _keyboardDelegate, GetModuleHandle(null), 0);
+                _mouseHook = SetWindowsHookEx(14, _mouseDelegate, GetModuleHandle(null), 0);
+                if (_keyboardHook == 0 || _mouseHook == 0) throw new Win32Exception();
+            }
+            _started.TrySetResult(); Application.Run();
         }
-        catch (Exception ex) { _started.TrySetException(ex); Fault?.Invoke("입력 훅 시작 실패"); }
+        catch (Exception ex) { _started.TrySetException(ex); Fault?.Invoke($"입력 스레드: {ex.GetType().Name} 0x{ex.HResult:X8}"); }
         finally
         {
             Deactivate();
             if (_keyboardHook != 0) UnhookWindowsHookEx(_keyboardHook);
             if (_mouseHook != 0) UnhookWindowsHookEx(_mouseHook);
-            if (_sink is not null)
-            {
-                RegisterRawInputDevices([new RawDevice { Page = 1, Usage = 2, Flags = 1, Target = 0 }], 1, (uint)Marshal.SizeOf<RawDevice>());
-                _sink.Destroy();
-            }
+            if (_installHooks) RegisterRawInputDevices([new RawDevice { Page = 1, Usage = 2, Flags = 1 }], 1, (uint)Marshal.SizeOf<RawDevice>());
+            _sink?.Destroy();
         }
-    }
-    public void Activate()
-    {
-        lock (_gate)
-        {
-            if (!_started.Task.IsCompletedSuccessfully) throw new InvalidOperationException("입력 수집이 준비되지 않았습니다.");
-            var allowed = HotkeyPhysicalKeys(_toggleHotkey);
-            _localPassthroughUntilUp.Clear();
-            for (int vk = 1; vk < 255; vk++)
-            {
-                if ((GetAsyncKeyState(vk) & 0x8000) == 0) continue;
-                if (!allowed.Contains(vk))
-                    throw new InvalidOperationException("입력 전환 단축키 외의 키와 마우스 버튼을 모두 놓아 주세요.");
-                if (vk != _toggleHotkey.Key) _localPassthroughUntilUp.Add(vk);
-            }
-            _keys.Clear(); _buttons = 0; _wheel = 0; _pan = 0; _remote = true;
-        }
-    }
-    public void Deactivate()
-    {
-        lock (_gate) { _remote = false; _keys.Clear(); _buttons = 0; _wheel = 0; _pan = 0; }
     }
     private nint KeyboardHook(int code, nint message, nint data)
     {
@@ -109,148 +96,75 @@ public sealed class InputCapture : IDisposable
         {
             var k = Marshal.PtrToStructure<KeyData>(data);
             if ((k.Flags & 0x10) != 0) return CallNextHookEx(0, code, message, data);
-
-            int key = (int)k.Vk;
-            bool up = (k.Flags & 0x80) != 0;
-            bool firstDown;
-            HotkeyBinding toggle, emergency, lockAndReturn;
-
-            lock (_gate)
-            {
-                firstDown = !up && _downKeys.Add(key);
-                if (up) _downKeys.Remove(key);
-
-                if (up && _suppressUntilUp.Remove(key))
-                    return 1;
-                if (up && _localPassthroughUntilUp.Remove(key))
-                    return CallNextHookEx(0, code, message, data);
-
-                toggle = _toggleHotkey.Clone();
-                emergency = _emergencyHotkey.Clone();
-                lockAndReturn = _lockAndReturnHotkey.Clone();
-            }
-
-            if (!up && firstDown)
-            {
-                var modifiers = CurrentModifiers();
-                if (Matches(toggle, key, modifiers))
-                {
-                    lock (_gate) _suppressUntilUp.Add(key);
-                    Toggle?.Invoke();
-                    return 1;
-                }
-
-                if (_remote && Matches(emergency, key, modifiers))
-                {
-                    lock (_gate) _suppressUntilUp.Add(key);
-                    Deactivate();
-                    Emergency?.Invoke();
-                    return 1;
-                }
-
-                if (_remote && Matches(lockAndReturn, key, modifiers))
-                {
-                    lock (_gate) _suppressUntilUp.Add(key);
-                    Deactivate();
-                    LockAndReturn?.Invoke();
-                    return 1;
-                }
-            }
-
-            lock (_gate)
-            {
-                if (!_remote) return CallNextHookEx(0, code, message, data);
-                var report = _keys.Update(Hid.Usage(key, (int)k.Scan, (k.Flags & 1) != 0), !up);
-                if (report is not null) Packet?.Invoke(new KeyboardPacket(report));
-                return _remote ? 1 : CallNextHookEx(0, code, message, data);
-            }
+            return Route((int)k.Vk, (k.Flags & 0x80) != 0, (int)k.Scan, (k.Flags & 1) != 0)
+                ? 1 : CallNextHookEx(0, code, message, data);
         }
-        catch (Exception)
+        catch (Exception ex) { Deactivate(); Fault?.Invoke($"키보드 처리: {ex.GetType().Name}"); return CallNextHookEx(0, code, message, data); }
+    }
+    private bool Route(int key, bool up, int scan = 0, bool extended = false)
+    {
+        KeyRoute result; Action<KeyChord?>? recorder;
+        lock (_gate)
         {
-            Deactivate();
-            Fault?.Invoke("키보드 처리 오류 — 로컬 복귀");
-            return CallNextHookEx(0, code, message, data);
+            result = _router.Process(key, up, scan, extended);
+            _remote = _router.Remote; recorder = _recorder;
         }
+        if (result.Captured is { } chord) recorder?.Invoke(chord);
+        if (result.Command == InputCommand.CancelRecording) recorder?.Invoke(null);
+        else if (result.Command != InputCommand.None) Command?.Invoke(result.Command);
+        if (result.Report is { } bytes && _remote) Packet?.Invoke(new KeyboardPacket(bytes));
+        return result.Suppress;
     }
-
-    private static bool Matches(HotkeyBinding binding, int key, HotkeyModifiers modifiers) =>
-        binding.Key == key && binding.Modifiers == modifiers;
-
-    private static HotkeyModifiers CurrentModifiers()
+    internal bool TestKey(int key, bool up)
     {
-        HotkeyModifiers modifiers = HotkeyModifiers.None;
-        if ((GetAsyncKeyState(0x11) & 0x8000) != 0) modifiers |= HotkeyModifiers.Control;
-        if ((GetAsyncKeyState(0x12) & 0x8000) != 0) modifiers |= HotkeyModifiers.Alt;
-        if ((GetAsyncKeyState(0x10) & 0x8000) != 0) modifiers |= HotkeyModifiers.Shift;
-        if ((GetAsyncKeyState(0x5B) & 0x8000) != 0 || (GetAsyncKeyState(0x5C) & 0x8000) != 0)
-            modifiers |= HotkeyModifiers.Windows;
-        return modifiers;
+        if (_installHooks) throw new InvalidOperationException("Test injection is available only without hardware hooks.");
+        return Route(key, up);
     }
-
-    private static HashSet<int> HotkeyPhysicalKeys(HotkeyBinding binding)
-    {
-        var keys = new HashSet<int> { binding.Key };
-        if (binding.Modifiers.HasFlag(HotkeyModifiers.Control)) { keys.Add(0x11); keys.Add(0xA2); keys.Add(0xA3); }
-        if (binding.Modifiers.HasFlag(HotkeyModifiers.Alt)) { keys.Add(0x12); keys.Add(0xA4); keys.Add(0xA5); }
-        if (binding.Modifiers.HasFlag(HotkeyModifiers.Shift)) { keys.Add(0x10); keys.Add(0xA0); keys.Add(0xA1); }
-        if (binding.Modifiers.HasFlag(HotkeyModifiers.Windows)) { keys.Add(0x5B); keys.Add(0x5C); }
-        return keys;
-    }
-
     private nint MouseHook(int code, nint message, nint data)
     {
         if (code < 0 || !_remote) return CallNextHookEx(0, code, message, data);
         var m = Marshal.PtrToStructure<MouseData>(data);
-        if ((m.Flags & 1) != 0) return CallNextHookEx(0, code, message, data);
-        // Buttons and movement are emitted together by Raw Input, preserving their order.
-        return _remote ? 1 : CallNextHookEx(0, code, message, data);
+        return (m.Flags & 1) == 0 && _remote ? 1 : CallNextHookEx(0, code, message, data);
     }
     private void Raw(nint handle)
     {
         if (!_remote) return;
         uint size = (uint)Marshal.SizeOf<RawInput>();
-        uint read = GetRawInputData(handle, 0x10000003, out RawInput raw, ref size, (uint)Marshal.SizeOf<RawHeader>());
-        if (read == uint.MaxValue || raw.Header.Type != 0) return;
+        if (GetRawInputData(handle, 0x10000003, out var raw, ref size, (uint)Marshal.SizeOf<RawHeader>()) == uint.MaxValue || raw.Header.Type != 0) return;
+        if ((raw.Mouse.Flags & 1) != 0) { Deactivate(); Fault?.Invoke("절대 좌표 입력은 지원하지 않습니다. 노트북으로 복귀했습니다."); return; }
+        PointerPacket? packet = null;
         lock (_gate)
         {
             if (!_remote) return;
             var m = raw.Mouse;
-            if ((m.Flags & 1) != 0) { Deactivate(); Fault?.Invoke("절대 좌표 입력 장치 미지원 — 로컬 복귀"); return; }
-            ushort flags = (ushort)(m.Buttons & 0xFFFF);
-            short delta = unchecked((short)(m.Buttons >> 16));
-            for (int button = 0; button < 5; button++)
+            ushort flags = (ushort)m.Buttons;
+            for (int b = 0; b < 3; b++)
             {
-                if ((flags & (1 << (button * 2))) != 0) _buttons |= (byte)(1 << button);
-                if ((flags & (2 << (button * 2))) != 0) _buttons &= (byte)~(1 << button);
+                if ((flags & (1 << (b * 2))) != 0) _buttons |= (byte)(1 << b);
+                if ((flags & (2 << (b * 2))) != 0) _buttons &= (byte)~(1 << b);
             }
-            if ((flags & 0x400) != 0) _wheel += delta;
-            if ((flags & 0x800) != 0) _pan += delta;
-            int wheel = _wheel / 120, pan = _pan / 120;
-            _wheel %= 120; _pan %= 120;
-            if (m.X != 0 || m.Y != 0 || flags != 0)
-                Packet?.Invoke(new PointerPacket(_buttons, m.X, m.Y, wheel, pan));
+            if ((flags & 0x400) != 0) _wheel += unchecked((short)(m.Buttons >> 16));
+            int wheel = _wheel / 120; _wheel %= 120;
+            if (m.X != 0 || m.Y != 0 || flags != 0) packet = new(_buttons, m.X, m.Y, wheel);
         }
+        if (packet is not null) Packet?.Invoke(packet);
     }
     private sealed class Sink : NativeWindow
     {
         private readonly InputCapture _owner;
-        public Sink(InputCapture owner) { _owner = owner; CreateHandle(new CreateParams { Caption = "Con.Phone.InputSink", Parent = new nint(-3) }); }
+        public Sink(InputCapture owner) { _owner = owner; CreateHandle(new CreateParams { Caption = "ConPhone.InputSink", Parent = new nint(-3) }); }
         protected override void WndProc(ref Message m)
         {
-            try
-            {
-                if (m.Msg == 0xFF) _owner.Raw(m.LParam);
-                if (m.Msg == 0x8001) Application.ExitThread();
-            }
-            catch (Exception) { _owner.Deactivate(); _owner.Fault?.Invoke("마우스 처리 오류 — 로컬 복귀"); }
+            try { if (m.Msg == 0xFF) _owner.Raw(m.LParam); if (m.Msg == 0x8001) Application.ExitThread(); }
+            catch (Exception ex) { _owner.Deactivate(); _owner.Fault?.Invoke($"마우스 처리: {ex.GetType().Name}"); }
             base.WndProc(ref m);
         }
         public void Destroy() => DestroyHandle();
     }
     public void Dispose()
     {
-        Deactivate();
-        if (_sink is not null) PostMessage(_sink.Handle, 0x8001, 0, 0);
+        if (_disposed) return; _disposed = true; Deactivate();
+        if (_sink is { } s) PostMessage(s.Handle, 0x8001, 0, 0);
         if (Thread.CurrentThread != _thread) _thread.Join(1000);
     }
     private delegate nint Hook(int code, nint message, nint data);

@@ -1,99 +1,51 @@
 using System.ComponentModel;
-using System.Runtime.InteropServices;
-
+using ConPhone.Core;
 namespace ConPhone.Windows;
 
-/// <summary>
-/// Focus the box and press the desired key combination. The control records the combination
-/// instead of requiring the user to pick modifiers and a key from separate dropdowns.
-/// </summary>
-public sealed class HotkeyCaptureBox : TextBox
+// Recording is routed by the SAME low-level state machine as shortcuts, and takes priority over them.
+public sealed class HotkeyCaptureBox : Button
 {
     private HotkeyBinding _binding = new();
-
-    public event Action<HotkeyBinding>? BindingChanged;
-
-    [Browsable(false)]
-    [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
-    public HotkeyBinding Binding
-    {
-        get => _binding.Clone();
-        set
-        {
-            _binding = value?.Clone() ?? new HotkeyBinding();
-            Text = HotkeyCatalog.Display(_binding);
-        }
-    }
-
+    private HotkeyBinding? _before;
+    private InputCapture? _input;
+    public event Action<bool>? RecordingChanged;
+    [Browsable(false), DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
+    public HotkeyBinding Binding { get => _binding.Clone(); set { _binding=value.Clone(); Render(); } }
+    [Browsable(false), DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
+    public bool Recording { get; private set; }
     public HotkeyCaptureBox()
     {
-        ReadOnly = true;
-        ShortcutsEnabled = false;
-        TabStop = true;
-        Width = 220;
-        Height = 34;
-        BackColor = ConPhoneTheme.Surface;
-        ForeColor = ConPhoneTheme.Text;
-        BorderStyle = BorderStyle.FixedSingle;
-        Cursor = Cursors.Hand;
-        TextAlign = HorizontalAlignment.Center;
+        AutoSize=false; Height=40; MinimumSize=new Size(180,40); FlatStyle=FlatStyle.Flat;
+        FlatAppearance.BorderColor=Color.FromArgb(220,222,227);
+        BackColor=Color.White; ForeColor=Color.FromArgb(26,28,32); TabStop=true;
+        AccessibleDescription="클릭 또는 Enter를 누른 뒤 키 조합을 입력하고 다른 곳을 클릭하세요. Esc로 취소합니다.";
+        Click += (_,_) => StartRecording();
     }
-
-    protected override bool IsInputKey(Keys keyData) => true;
-
-    protected override void OnEnter(EventArgs e)
+    public void Attach(InputCapture input) => _input=input;
+    internal void StartRecording()
     {
-        base.OnEnter(e);
-        SelectAll();
-    }
-
-    protected override void OnKeyDown(KeyEventArgs e)
-    {
-        e.Handled = true;
-        e.SuppressKeyPress = true;
-
-        if (HotkeyCatalog.IsModifierKey((int)e.KeyCode))
+        if (_input is null) return;
+        if (!Recording) _before=_binding.Clone();
+        Recording=true; Text="키 조합을 누르세요 · Esc 취소"; BackColor=Color.FromArgb(255,242,236);
+        RecordingChanged?.Invoke(true);
+        _input.BeginRecording(value =>
         {
-            Text = HotkeyCatalog.DisplayModifiers(ReadModifiers());
-            return;
-        }
-
-        if (!HotkeyCatalog.IsAllowedKey((int)e.KeyCode))
-        {
-            System.Media.SystemSounds.Beep.Play();
-            return;
-        }
-
-        var next = new HotkeyBinding
-        {
-            Key = (int)e.KeyCode,
-            Modifiers = ReadModifiers()
-        };
-        _binding = next;
-        Text = HotkeyCatalog.Display(next);
-        BindingChanged?.Invoke(next.Clone());
-        SelectAll();
+            if (IsDisposed || !IsHandleCreated) return;
+            try { BeginInvoke(() => Receive(value)); } catch (InvalidOperationException) { }
+        });
     }
-
-    protected override void OnKeyUp(KeyEventArgs e)
+    private void Receive(KeyChord? chord)
     {
-        e.Handled = true;
-        e.SuppressKeyPress = true;
-        if (HotkeyCatalog.IsModifierKey((int)e.KeyCode))
-            Text = HotkeyCatalog.Display(_binding);
+        if (!Recording) return;
+        if (chord is null) { if (_before is not null) _binding=_before; FinishRecording(); return; }
+        try { KeyboardRouter.Validate(chord.Value); _binding=HotkeyBinding.From(chord.Value); Text=HotkeyCatalog.Display(_binding)+"  ✓"; }
+        catch (ArgumentException) { Text="예약 조합입니다 · 다른 키를 누르세요"; }
     }
-
-    private static HotkeyModifiers ReadModifiers()
+    public void FinishRecording()
     {
-        HotkeyModifiers modifiers = HotkeyModifiers.None;
-        if ((GetAsyncKeyState(0x11) & 0x8000) != 0) modifiers |= HotkeyModifiers.Control;
-        if ((GetAsyncKeyState(0x12) & 0x8000) != 0) modifiers |= HotkeyModifiers.Alt;
-        if ((GetAsyncKeyState(0x10) & 0x8000) != 0) modifiers |= HotkeyModifiers.Shift;
-        if ((GetAsyncKeyState(0x5B) & 0x8000) != 0 || (GetAsyncKeyState(0x5C) & 0x8000) != 0)
-            modifiers |= HotkeyModifiers.Windows;
-        return modifiers;
+        if (!Recording) return;
+        Recording=false; _input?.EndRecording(); BackColor=Color.White; Render(); RecordingChanged?.Invoke(false);
     }
-
-    [DllImport("user32.dll")]
-    private static extern short GetAsyncKeyState(int vKey);
+    protected override void OnLeave(EventArgs e) { FinishRecording(); base.OnLeave(e); }
+    private void Render() { if (!Recording) Text=HotkeyCatalog.Display(_binding); }
 }

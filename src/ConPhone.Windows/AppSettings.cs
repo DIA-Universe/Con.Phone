@@ -1,155 +1,82 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
-
+using ConPhone.Core;
 namespace ConPhone.Windows;
 
-[Flags]
-public enum HotkeyModifiers
-{
-    None = 0,
-    Control = 1,
-    Alt = 2,
-    Shift = 4,
-    Windows = 8
-}
-
+[Flags] public enum HotkeyModifiers { None = 0, Control = 1, Alt = 2, Shift = 4, Windows = 8 }
 public sealed class HotkeyBinding
 {
-    public int Key { get; set; } = 0x77; // F8
-    [JsonConverter(typeof(JsonStringEnumConverter))]
-    public HotkeyModifiers Modifiers { get; set; } = HotkeyModifiers.None;
-
+    public int Key { get; set; } = 0x77;
+    [JsonConverter(typeof(JsonStringEnumConverter))] public HotkeyModifiers Modifiers { get; set; }
+    [JsonIgnore] public KeyChord Chord => new(Key, (ChordModifiers)Modifiers);
     public HotkeyBinding Clone() => new() { Key = Key, Modifiers = Modifiers };
+    public static HotkeyBinding From(KeyChord value) => new() { Key = value.Key, Modifiers = (HotkeyModifiers)value.Modifiers };
 }
-
 public sealed class ConPhoneSettings
 {
     public int MouseSpeedPercent { get; set; } = 100;
     public int ScrollSpeedPercent { get; set; } = 100;
     public bool InvertScroll { get; set; }
-    public HotkeyBinding ToggleHotkey { get; set; } = new() { Key = 0x77 }; // F8
-    public HotkeyBinding EmergencyHotkey { get; set; } = new() { Key = 0x78 }; // F9
-    public HotkeyBinding LockAndReturnHotkey { get; set; } = new() { Key = (int)Keys.L, Modifiers = HotkeyModifiers.Control | HotkeyModifiers.Alt };
+    public int MouseReportIntervalMs { get; set; } = 16;
+    public HotkeyBinding ToggleHotkey { get; set; } = new() { Key = 0x77 };
+    public HotkeyBinding EmergencyHotkey { get; set; } = new() { Key = 0x78 };
+    public HotkeyBinding LockAndReturnHotkey { get; set; } = new() { Key = 0x4C, Modifiers = HotkeyModifiers.Control | HotkeyModifiers.Alt };
+    public bool EnablePhoneLock { get; set; } // Explicit opt-in; Android Meta+L compatibility test, not guaranteed lock.
     public int ClipboardHistoryLimit { get; set; } = 50;
     public bool CaptureClipboardText { get; set; } = true;
     public bool CaptureClipboardImages { get; set; } = true;
+    public bool PersistClipboardHistory { get; set; } // Session-only unless explicitly enabled.
+    public ConPhoneSettings Clone() => JsonSerializer.Deserialize<ConPhoneSettings>(JsonSerializer.Serialize(this))!;
+    public void Validate()
+    {
+        var router = new KeyboardRouter();
+        router.Configure(ToggleHotkey.Chord, EmergencyHotkey.Chord, LockAndReturnHotkey.Chord, EnablePhoneLock);
+        if (MouseSpeedPercent is <25 or >300 || ScrollSpeedPercent is <25 or >300 || MouseReportIntervalMs is <8 or >50 || ClipboardHistoryLimit is <10 or >200)
+            throw new ArgumentException("설정 범위를 확인하세요.");
+    }
 }
-
 public static class SettingsStore
 {
-    private static readonly string DirectoryPath = Path.Combine(
-        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "ConPhone");
-    public static readonly string FilePath = Path.Combine(DirectoryPath, "settings.json");
-
+    public static string Root => Environment.GetEnvironmentVariable("CONPHONE_TEST_DATA") ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "ConPhone");
+    public static string FilePath => Path.Combine(Root, "settings.json");
+    public static string Notice { get; private set; } = "";
     public static ConPhoneSettings Load()
     {
+        Notice = "";
         try
         {
-            if (!File.Exists(FilePath)) return new ConPhoneSettings();
-            var settings = JsonSerializer.Deserialize<ConPhoneSettings>(File.ReadAllText(FilePath));
-            return Normalize(settings ?? new ConPhoneSettings());
+            var s = File.Exists(FilePath) ? JsonSerializer.Deserialize<ConPhoneSettings>(File.ReadAllText(FilePath)) ?? new() : new ConPhoneSettings();
+            s.MouseSpeedPercent = Math.Clamp(s.MouseSpeedPercent,25,300);
+            s.ScrollSpeedPercent = Math.Clamp(s.ScrollSpeedPercent,25,300);
+            s.MouseReportIntervalMs = Math.Clamp(s.MouseReportIntervalMs,8,50);
+            s.ClipboardHistoryLimit = Math.Clamp(s.ClipboardHistoryLimit,10,200);
+            s.ToggleHotkey ??= new() { Key=0x77 }; s.EmergencyHotkey ??= new() { Key=0x78 };
+            s.LockAndReturnHotkey ??= new() { Key=0x4C, Modifiers=HotkeyModifiers.Control|HotkeyModifiers.Alt };
+            s.Validate(); return s;
         }
-        catch
-        {
-            return new ConPhoneSettings();
-        }
+        catch (Exception ex) { Notice = $"기존 설정을 읽지 못해 기본값을 사용합니다 ({ex.GetType().Name}). 원본 파일은 유지했습니다."; return new(); }
     }
-
     public static void Save(ConPhoneSettings settings)
     {
-        Directory.CreateDirectory(DirectoryPath);
-        var normalized = Normalize(settings);
-        var json = JsonSerializer.Serialize(normalized, new JsonSerializerOptions
-        {
-            WriteIndented = true,
-            Converters = { new JsonStringEnumConverter() }
-        });
-        var temp = FilePath + ".tmp";
-        File.WriteAllText(temp, json);
+        settings.Validate(); Directory.CreateDirectory(Root);
+        string temp = FilePath + ".tmp";
+        File.WriteAllText(temp, JsonSerializer.Serialize(settings,new JsonSerializerOptions { WriteIndented=true }));
         File.Move(temp, FilePath, true);
     }
-
-    public static ConPhoneSettings Normalize(ConPhoneSettings settings)
-    {
-        settings.MouseSpeedPercent = Math.Clamp(settings.MouseSpeedPercent, 25, 300);
-        settings.ScrollSpeedPercent = Math.Clamp(settings.ScrollSpeedPercent, 25, 300);
-        settings.ToggleHotkey ??= new HotkeyBinding { Key = 0x77 };
-        settings.EmergencyHotkey ??= new HotkeyBinding { Key = 0x78 };
-        settings.LockAndReturnHotkey ??= new HotkeyBinding { Key = (int)Keys.L, Modifiers = HotkeyModifiers.Control | HotkeyModifiers.Alt };
-        if (!HotkeyCatalog.IsAllowedKey(settings.ToggleHotkey.Key)) settings.ToggleHotkey = new HotkeyBinding { Key = 0x77 };
-        if (!HotkeyCatalog.IsAllowedKey(settings.EmergencyHotkey.Key)) settings.EmergencyHotkey = new HotkeyBinding { Key = 0x78 };
-        if (!HotkeyCatalog.IsAllowedKey(settings.LockAndReturnHotkey.Key))
-            settings.LockAndReturnHotkey = new HotkeyBinding { Key = (int)Keys.L, Modifiers = HotkeyModifiers.Control | HotkeyModifiers.Alt };
-        settings.ClipboardHistoryLimit = Math.Clamp(settings.ClipboardHistoryLimit, 10, 200);
-        return settings;
-    }
 }
-
 public static class HotkeyCatalog
 {
-    public static bool IsModifierKey(int key) => key is
-        (int)Keys.ControlKey or (int)Keys.LControlKey or (int)Keys.RControlKey or
-        (int)Keys.Menu or (int)Keys.LMenu or (int)Keys.RMenu or
-        (int)Keys.ShiftKey or (int)Keys.LShiftKey or (int)Keys.RShiftKey or
-        (int)Keys.LWin or (int)Keys.RWin;
-
-    public static bool IsAllowedKey(int key)
-    {
-        if (IsModifierKey(key)) return false;
-        if (key < 0x08 || key > 0xFE) return false;
-        return key is not (int)Keys.ProcessKey and not (int)Keys.Packet;
-    }
-
-    public static string NameOf(int key)
-    {
-        if (key is >= (int)Keys.A and <= (int)Keys.Z) return ((char)key).ToString();
-        if (key is >= (int)Keys.D0 and <= (int)Keys.D9) return ((char)key).ToString();
-        if (key is >= (int)Keys.F1 and <= (int)Keys.F24) return $"F{key - (int)Keys.F1 + 1}";
-        return key switch
-        {
-            (int)Keys.Space => "Space",
-            (int)Keys.Up => "↑",
-            (int)Keys.Down => "↓",
-            (int)Keys.Left => "←",
-            (int)Keys.Right => "→",
-            (int)Keys.PageUp => "Page Up",
-            (int)Keys.PageDown => "Page Down",
-            (int)Keys.Oemtilde => "`",
-            (int)Keys.OemMinus => "-",
-            (int)Keys.Oemplus => "=",
-            (int)Keys.OemOpenBrackets => "[",
-            (int)Keys.Oem6 => "]",
-            (int)Keys.Oem5 => "\\",
-            (int)Keys.Oem1 => ";",
-            (int)Keys.Oem7 => "'",
-            (int)Keys.Oemcomma => ",",
-            (int)Keys.OemPeriod => ".",
-            (int)Keys.OemQuestion => "/",
-            _ => new KeysConverter().ConvertToString((Keys)key) ?? $"VK 0x{key:X2}"
-        };
-    }
-
-    public static string DisplayModifiers(HotkeyModifiers modifiers)
-    {
-        var parts = new List<string>();
-        if (modifiers.HasFlag(HotkeyModifiers.Control)) parts.Add("Ctrl");
-        if (modifiers.HasFlag(HotkeyModifiers.Alt)) parts.Add("Alt");
-        if (modifiers.HasFlag(HotkeyModifiers.Shift)) parts.Add("Shift");
-        if (modifiers.HasFlag(HotkeyModifiers.Windows)) parts.Add("Win");
-        return parts.Count == 0 ? "키 조합을 입력하세요" : string.Join("+", parts) + "+…";
-    }
-
+    public static bool IsModifierKey(int key) => KeyboardRouter.IsModifier(key);
+    public static bool IsAllowedKey(int key) => key >= 8 && key <= 0xFE && !IsModifierKey(key) && key is not 0xE5 and not 0xE7;
+    public static bool Same(HotkeyBinding a, HotkeyBinding b) => a.Chord == b.Chord;
     public static string Display(HotkeyBinding binding)
     {
-        var parts = new List<string>();
-        if (binding.Modifiers.HasFlag(HotkeyModifiers.Control)) parts.Add("Ctrl");
-        if (binding.Modifiers.HasFlag(HotkeyModifiers.Alt)) parts.Add("Alt");
-        if (binding.Modifiers.HasFlag(HotkeyModifiers.Shift)) parts.Add("Shift");
-        if (binding.Modifiers.HasFlag(HotkeyModifiers.Windows)) parts.Add("Win");
-        parts.Add(NameOf(binding.Key));
-        return string.Join("+", parts);
+        List<string> p = [];
+        if (binding.Modifiers.HasFlag(HotkeyModifiers.Control)) p.Add("Ctrl");
+        if (binding.Modifiers.HasFlag(HotkeyModifiers.Alt)) p.Add("Alt");
+        if (binding.Modifiers.HasFlag(HotkeyModifiers.Shift)) p.Add("Shift");
+        if (binding.Modifiers.HasFlag(HotkeyModifiers.Windows)) p.Add("Win");
+        p.Add(binding.Key switch { >=0x41 and <=0x5A => ((char)binding.Key).ToString(), >=0x70 and <=0x87 => $"F{binding.Key-0x6F}", _ => new KeysConverter().ConvertToString((Keys)binding.Key) ?? $"0x{binding.Key:X2}" });
+        return string.Join(" + ",p);
     }
-
-    public static bool Same(HotkeyBinding a, HotkeyBinding b) =>
-        a.Key == b.Key && a.Modifiers == b.Modifiers;
 }
