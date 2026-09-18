@@ -71,6 +71,7 @@ class ClipboardBridgeService : Service() {
     @Volatile private var directConfig: DirectConfig? = null
     @Volatile private var p2p: P2PChannel? = null
     @Volatile private var pendingContent: ClipboardContent? = null
+    @Volatile private var pendingGeneration = 0
     @Volatile private var scanning = false
     @Volatile private var p2pNetwork: Network? = null
     @Volatile private var directNetworkCallback: ConnectivityManager.NetworkCallback? = null
@@ -608,7 +609,7 @@ class ClipboardBridgeService : Service() {
             return
         }
 
-        pendingContent = content
+        setPendingContent(content)
         showStatus(
             if (!bleAllowed)
                 "P2P 연결 후 이미지 전송 대기"
@@ -633,8 +634,27 @@ class ClipboardBridgeService : Service() {
 
         if (!canP2P && !canBle) return
 
-        pendingContent = null
+        clearPendingContent()
         sendContent(content)
+    }
+
+    private fun setPendingContent(content: ClipboardContent) {
+        pendingContent = content
+        val generation = pendingGeneration + 1
+        pendingGeneration = generation
+
+        main.postDelayed({
+            if (pendingGeneration == generation && pendingContent === content) {
+                pendingContent = null
+                pendingGeneration++
+                showStatus("Clipboard 전송 대기 시간이 만료됐습니다.")
+            }
+        }, 60_000)
+    }
+
+    private fun clearPendingContent() {
+        pendingContent = null
+        pendingGeneration++
     }
 
     private fun enqueueBle(content: ClipboardContent) {
