@@ -705,40 +705,53 @@ public sealed class BleHidServer : IDisposable
         if (id is null || !_running || !IsReady(id))
             throw new InvalidOperationException("승인된 휴대폰 입력 연결이 없습니다.");
 
-        GattSubscribedClient? client = null;
-        for (var i = 0; i < 8 && client is null; i++)
-        {
-            client = Client(_system, id);
-            if (client is null) await Task.Delay(100, token).ConfigureAwait(false);
-        }
-
-        if (_system is null || client is null)
-            throw new NotSupportedException(
-                "휴대폰이 시스템 잠금 HID Report를 구독하지 않았습니다. 0.2.1 HID 프로필로 다시 페어링한 뒤 확인하세요.");
+        var keyboardClient = Client(_keyboard, id);
+        if (_keyboard is null || keyboardClient is null)
+            throw new InvalidOperationException("휴대폰 키보드 HID 구독이 없습니다.");
 
         await _send.WaitAsync(token).ConfigureAwait(false);
         try
         {
-            var pressed = Hid.SystemReport(true);
-            if (pressed.Length > client.MaxNotificationSize)
-                throw new InvalidOperationException("시스템 잠금 Report가 알림 크기를 초과합니다.");
+            // Samsung DeX documents WIN/CMD + L as the lock shortcut. Use the standard
+            // keyboard report first because it works even when System Control is not subscribed.
+            byte[] winL = [0x08, 0x00, 0x0F, 0x00, 0x00, 0x00, 0x00, 0x00];
+            byte[] keyboardRelease = new byte[Hid.KeyboardReportLength];
 
-            _systemValue = pressed;
-            var down = await _system.NotifyValueAsync(pressed.AsBuffer(), client)
+            _keyboardValue = winL;
+            var keyDown = await _keyboard.NotifyValueAsync(winL.AsBuffer(), keyboardClient)
                 .AsTask(token).ConfigureAwait(false);
+            if (keyDown.Status != GattCommunicationStatus.Success)
+                throw new InvalidOperationException($"WIN+L 전송 실패: {keyDown.Status}");
 
-            if (down.Status != GattCommunicationStatus.Success)
-                throw new InvalidOperationException($"잠금 키 전송 실패: {down.Status}");
+            await Task.Delay(80, token).ConfigureAwait(false);
 
-            await Task.Delay(70, token).ConfigureAwait(false);
-
-            var released = Hid.SystemReport(false);
-            _systemValue = released;
-            var up = await _system.NotifyValueAsync(released.AsBuffer(), client)
+            _keyboardValue = keyboardRelease;
+            var keyUp = await _keyboard.NotifyValueAsync(keyboardRelease.AsBuffer(), keyboardClient)
                 .AsTask(token).ConfigureAwait(false);
+            if (keyUp.Status != GattCommunicationStatus.Success)
+                throw new InvalidOperationException($"WIN+L 해제 실패: {keyUp.Status}");
 
-            if (up.Status != GattCommunicationStatus.Success)
-                throw new InvalidOperationException($"잠금 키 해제 전송 실패: {up.Status}");
+            // If the phone also subscribed to System Control, follow with System Sleep.
+            // This is best-effort: lack of this optional characteristic must not make lock fail.
+            var systemClient = Client(_system, id);
+            if (_system is not null && systemClient is not null)
+            {
+                await Task.Delay(60, token).ConfigureAwait(false);
+
+                var pressed = Hid.SystemReport(true);
+                _systemValue = pressed;
+                var down = await _system.NotifyValueAsync(pressed.AsBuffer(), systemClient)
+                    .AsTask(token).ConfigureAwait(false);
+
+                if (down.Status == GattCommunicationStatus.Success)
+                {
+                    await Task.Delay(60, token).ConfigureAwait(false);
+                    var released = Hid.SystemReport(false);
+                    _systemValue = released;
+                    _ = await _system.NotifyValueAsync(released.AsBuffer(), systemClient)
+                        .AsTask(token).ConfigureAwait(false);
+                }
+            }
         }
         finally
         {
