@@ -26,6 +26,7 @@ public sealed class BleHidServer
     private volatile string? _approved;
     private volatile string _lastOperation = "Idle";
     private volatile bool _running;
+    private bool _everAdvertised;
     private bool _configured;
     private byte[] _keyboardValue = new byte[Hid.KeyboardReportLength], _mouseValue = new byte[Hid.MouseReportLength];
     public event Action? Changed;
@@ -82,8 +83,30 @@ public sealed class BleHidServer
             _provider = result.ServiceProvider;
             _provider.AdvertisementStatusChanged += (_, args) =>
             {
-                Status?.Invoke($"광고 상태: {args.Status}; 결과: {args.Error}");
-                if (args.Status == GattServiceProviderAdvertisementStatus.Aborted) { _running = false; _approved = null; }
+                if (IsAdvertising(args.Status))
+                {
+                    _everAdvertised = true;
+                    _running = true;
+                    Status?.Invoke($"광고 상태: {args.Status}; 결과: {args.Error}");
+                }
+                else if (args.Status == GattServiceProviderAdvertisementStatus.Aborted)
+                {
+                    if (_everAdvertised)
+                    {
+                        _running = false;
+                        _approved = null;
+                        Status?.Invoke($"광고 중단: {args.Status}; 결과: {args.Error}");
+                    }
+                    else
+                    {
+                        // WinRT can report Aborted once while a healthy provider is transitioning to Started.
+                        Status?.Invoke($"광고 준비 중: {args.Status}; 결과: {args.Error}");
+                    }
+                }
+                else
+                {
+                    Status?.Invoke($"광고 상태: {args.Status}; 결과: {args.Error}");
+                }
                 Changed?.Invoke();
             };
             await Characteristic(0x2A4A, GattCharacteristicProperties.Read, [0x11, 0x01, 0x00, 0x03]);
