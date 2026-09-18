@@ -6,6 +6,14 @@ public sealed record PointerPacket(byte Buttons, int X = 0, int Y = 0, int Wheel
 public sealed record Envelope(long Epoch, InputPacket Packet);
 public sealed record WireReport(bool Keyboard, byte[] Data);
 
+public enum HangulKeyMode
+{
+    RightAlt,
+    Lang1,
+    CtrlSpace,
+    ShiftSpace
+}
+
 public static class Hid
 {
     // HOGP: report IDs live in each Report Reference descriptor, not in notification payloads.
@@ -92,15 +100,29 @@ public sealed class KeyboardState
         bool changed = down ? _pressed.Add(usage) : _pressed.Remove(usage);
         return changed ? Snapshot() : null; // Host, not Windows repeat events, owns key repeat.
     }
-    public byte[] Snapshot()
+    public byte[] Snapshot() => BuildSnapshot(_pressed);
+
+    public byte[] SnapshotWith(params byte[] extraUsages)
+    {
+        var combined = new HashSet<byte>(_pressed);
+        foreach (var usage in extraUsages)
+            if (usage != 0) combined.Add(usage);
+        return BuildSnapshot(combined);
+    }
+
+    private static byte[] BuildSnapshot(IEnumerable<byte> pressed)
     {
         byte[] bytes = new byte[8];
-        foreach (var key in _pressed.Where(k => k is >= 0xE0 and <= 0xE7))
+        var keys = pressed.Distinct().ToArray();
+
+        foreach (var key in keys.Where(k => k is >= 0xE0 and <= 0xE7))
             bytes[0] |= (byte)(1 << (key - 0xE0));
-        var ordinary = _pressed.Where(k => k is < 0xE0 or > 0xE7).Order().ToArray();
-        if (ordinary.Length > 6) Array.Fill(bytes, (byte)1, 2, 6); // ErrorRollOver, not silent loss.
+
+        var ordinary = keys.Where(k => k is < 0xE0 or > 0xE7).Order().ToArray();
+        if (ordinary.Length > 6) Array.Fill(bytes, (byte)1, 2, 6);
         else ordinary.CopyTo(bytes, 2);
         return bytes;
     }
+
     public void Clear() => _pressed.Clear();
 }
