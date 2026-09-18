@@ -139,7 +139,7 @@ public sealed class BleHidServer : IDisposable
             {
                 var session=client.Session; var id=session.DeviceId.Id;
                 if(!_sessions.TryAdd(id,session)) continue;
-                session.SessionStatusChanged+=(_,e)=>
+                session.SessionStatusChanged+=(sessionSender,e)=>
                 {
                     if(e.Status==GattSessionStatus.Closed && _sessions.TryGetValue(id,out var active) && ReferenceEquals(active,session))
                     {
