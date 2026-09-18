@@ -15,7 +15,7 @@ Con.Phone의 키보드/마우스 경로와 클립보드 데이터 경로를 분�
 3. 최신 클립보드가 Companion에 전달된다.
 4. 대상 앱이 해당 형식을 지원하면 붙여넣는다.
 
-휴대폰 → Windows는 모바일 OS의 클립보드 개인정보 보호 정책 때문에 Companion의 **현재 클립보드를 PC로 보내기** 동작을 사용한다.
+휴대폰 → Windows는 Companion의 명시적 전송을 사용한다. Android는 ACTION_SEND Share Target으로 다른 앱의 텍스트/이미지를 바로 Con.Phone에 넘길 수 있고, iOS는 Share Extension이 App Group에 payload를 staging한 뒤 Con.Phone 앱이 활성화될 때 기존 BLE/P2P 전송 엔진으로 보낸다.
 
 ## 전송 경로
 
@@ -153,3 +153,23 @@ Direct Wi-Fi/P2P 링크 자체의 WPA2 비밀번호만 신뢰하지 않는다.
 - 사용자가 로컬 입력 상태에서 수동 전송하는 작은 이미지는 설정된 BLE 한도 내에서 fallback 가능
 
 이 정책은 이미지 전송 때문에 상대좌표 mouse report가 Bluetooth queue에 밀리는 현상을 줄이기 위한 것이다.
+
+
+## 휴대폰 → PC 공유 UX
+
+### Android
+
+- 다른 앱의 공유 메뉴에서 Con.Phone을 선택할 수 있다.
+- 텍스트는 즉시 서비스 대기열에 넣는다.
+- 이미지는 앱 cache에 임시 staging 후 40 MiB staging cap과 40MP decode cap을 적용한다.
+- PC 연결이 아직 없으면 memory pending queue에 유지하고 BLE credential 또는 P2P 연결 준비 시 자동 전송한다.
+- 파일/폴더 공유는 받지 않는다.
+
+### iOS / iPadOS
+
+- Share Extension은 텍스트 또는 이미지 하나만 받는다.
+- Share Extension 자체가 BLE/P2P 장기 연결을 수행하지 않는다.
+- App Group `group.universe.dia.conphone`에 payload를 staging하고 Con.Phone 본 앱이 활성화될 때 읽는다.
+- 작은 payload는 BLE, 큰 이미지는 사용자 승인형 P2P 경로로 전송한다.
+- 120초 안에 transport가 준비되지 않으면 memory pending은 만료시키되 App Group payload는 유지하여 다음 앱 실행 때 재시도한다.
+- 실제 transport queue에 들어간 뒤에만 App Group payload를 삭제한다.
