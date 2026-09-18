@@ -1,7 +1,13 @@
 name: Windows build and core tests
 on:
   push:
+    branches:
+      - main
   pull_request:
+    types:
+      - opened
+      - reopened
+      - ready_for_review
   workflow_dispatch:
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
