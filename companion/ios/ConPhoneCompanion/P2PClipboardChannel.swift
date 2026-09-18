@@ -8,7 +8,7 @@ final class P2PClipboardChannel {
     private let secret: Data
     private let deviceHash: Data
     private let aad: Data
-    private let queue = DispatchQueue(label: "ConPhone.LanClipboard")
+    private let queue = DispatchQueue(label: "ConPhone.P2PClipboard")
     private let onFrame: (Data) -> Void
     private let onStatus: (String) -> Void
 
