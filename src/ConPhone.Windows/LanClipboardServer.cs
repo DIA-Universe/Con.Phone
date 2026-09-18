@@ -9,7 +9,6 @@ namespace ConPhone.Windows;
 
 public sealed class LanClipboardServer : IAsyncDisposable
 {
-    public const int DiscoveryPort = 47910;
     public const int DataPort = 47911;
 
     private static readonly byte[] Hello = "CPHELLO1"u8.ToArray();
@@ -22,9 +21,7 @@ public sealed class LanClipboardServer : IAsyncDisposable
     private readonly object _clientGate = new();
     private ClientConnection? _client;
     private TcpListener? _listener;
-    private UdpClient? _discovery;
     private Task? _acceptLoop;
-    private Task? _discoveryLoop;
 
     public event Action<string, ClipboardContent>? Received;
     public event Action<string>? Status;
@@ -49,38 +46,9 @@ public sealed class LanClipboardServer : IAsyncDisposable
         _listener = new TcpListener(IPAddress.Any, DataPort);
         _listener.Start();
 
-        _discovery = new UdpClient(new IPEndPoint(IPAddress.Any, DiscoveryPort));
-        _discovery.EnableBroadcast = true;
-
         _acceptLoop = Task.Run(() => AcceptLoopAsync(_lifetime.Token));
-        _discoveryLoop = Task.Run(() => DiscoveryLoopAsync(_lifetime.Token));
-        Status?.Invoke($"Clipboard LAN/P2P 대기 · TCP {DataPort} / UDP {DiscoveryPort}");
+        Status?.Invoke($"Clipboard P2P 보안 채널 대기 · TCP {DataPort}");
         return Task.CompletedTask;
-    }
-
-    private async Task DiscoveryLoopAsync(CancellationToken token)
-    {
-        var expected = Encoding.ASCII.GetBytes("CONPHONE_DISCOVER_V1");
-        var response = Encoding.ASCII.GetBytes($"CONPHONE_HERE_V1:{DataPort}");
-
-        while (!token.IsCancellationRequested)
-        {
-            try
-            {
-                var result = await _discovery!.ReceiveAsync(token).ConfigureAwait(false);
-                if (_enabled() && result.Buffer.AsSpan().SequenceEqual(expected))
-                    await _discovery.SendAsync(response, result.RemoteEndPoint, token).ConfigureAwait(false);
-            }
-            catch (OperationCanceledException) when (token.IsCancellationRequested)
-            {
-                break;
-            }
-            catch (Exception ex)
-            {
-                Status?.Invoke($"Clipboard LAN 검색 응답 오류: {ex.Message}");
-                await Task.Delay(500, token).ConfigureAwait(false);
-            }
-        }
     }
 
     private async Task AcceptLoopAsync(CancellationToken token)
@@ -158,7 +126,7 @@ public sealed class LanClipboardServer : IAsyncDisposable
             }
             replaced?.Close();
 
-            Status?.Invoke("Clipboard LAN/P2P 보안 채널 연결됨.");
+            Status?.Invoke("Clipboard P2P 보안 채널 연결됨.");
 
             var reassembler = new ClipboardReassembler();
             try
@@ -176,7 +144,7 @@ public sealed class LanClipboardServer : IAsyncDisposable
             }
             catch (Exception ex) when (ex is IOException or SocketException or CryptographicException or InvalidDataException)
             {
-                Status?.Invoke($"Clipboard LAN/P2P 연결 종료: {ex.Message}");
+                Status?.Invoke($"Clipboard P2P 연결 종료: {ex.Message}");
             }
             finally
             {
@@ -201,7 +169,7 @@ public sealed class LanClipboardServer : IAsyncDisposable
             client = _client is { Closed: false } current &&
                      string.Equals(current.DeviceId, deviceId, StringComparison.Ordinal)
                 ? current
-                : throw new InvalidOperationException("Clipboard LAN/P2P 연결이 없습니다.");
+                : throw new InvalidOperationException("Clipboard P2P 연결이 없습니다.");
         }
 
         foreach (var frame in ClipboardWireCodec.Encode(content))
@@ -218,7 +186,7 @@ public sealed class LanClipboardServer : IAsyncDisposable
         }
 
         client?.Close();
-        Status?.Invoke("Clipboard LAN/P2P 연결 종료.");
+        Status?.Invoke("Clipboard P2P 연결 종료.");
     }
 
     private static async Task<bool> ReadExactAsync(Stream stream, Memory<byte> buffer, CancellationToken token)
@@ -338,11 +306,10 @@ public sealed class LanClipboardServer : IAsyncDisposable
         client?.Close();
 
         try { _listener?.Stop(); } catch { }
-        _discovery?.Dispose();
 
-        foreach (var task in new[] { _acceptLoop, _discoveryLoop }.Where(x => x is not null))
+        if (_acceptLoop is not null)
         {
-            try { await task!; }
+            try { await _acceptLoop; }
             catch (OperationCanceledException) { }
         }
 
