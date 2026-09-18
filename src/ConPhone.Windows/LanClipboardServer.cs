@@ -17,6 +17,7 @@ public sealed class LanClipboardServer : IAsyncDisposable
     private static readonly byte[] AadPrefix = "ConPhone-Clipboard-LAN-v1"u8.ToArray();
 
     private readonly Func<string?> _approvedDeviceId;
+    private readonly Func<bool> _enabled;
     private readonly CancellationTokenSource _lifetime = new();
     private readonly object _clientGate = new();
     private ClientConnection? _client;
@@ -28,8 +29,11 @@ public sealed class LanClipboardServer : IAsyncDisposable
     public event Action<string, ClipboardContent>? Received;
     public event Action<string>? Status;
 
-    public LanClipboardServer(Func<string?> approvedDeviceId) =>
+    public LanClipboardServer(Func<string?> approvedDeviceId, Func<bool> enabled)
+    {
         _approvedDeviceId = approvedDeviceId;
+        _enabled = enabled;
+    }
 
     public bool HasClient(string deviceId)
     {
@@ -106,6 +110,7 @@ public sealed class LanClipboardServer : IAsyncDisposable
         {
             tcp.NoDelay = true;
             var stream = tcp.GetStream();
+            if (!_enabled()) return;
             var approved = _approvedDeviceId();
             if (approved is null) return;
 
@@ -187,6 +192,9 @@ public sealed class LanClipboardServer : IAsyncDisposable
 
     public async Task SendAsync(string deviceId, ClipboardContent content, CancellationToken token)
     {
+        if (!_enabled())
+            throw new InvalidOperationException("Clipboard sync is disabled.");
+
         ClientConnection client;
         lock (_clientGate)
         {
