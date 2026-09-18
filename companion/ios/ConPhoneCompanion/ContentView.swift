@@ -2,6 +2,7 @@ import SwiftUI
 
 struct ContentView: View {
     @EnvironmentObject private var bridge: ClipboardBridge
+    @Environment(\.scenePhase) private var scenePhase
 
     var body: some View {
         NavigationStack {
