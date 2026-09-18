@@ -24,13 +24,9 @@ targets:
       path: ConPhoneCompanion/Info.plist
       properties:
         CFBundleDisplayName: Con.Phone Companion
-        CFBundleURLTypes:
-          - CFBundleURLName: universe.dia.conphone
-            CFBundleURLSchemes:
-              - conphone
         UILaunchScreen: {}
         NSBluetoothAlwaysUsageDescription: Con.Phone PC와 텍스트 및 이미지를 Bluetooth로 동기화합니다.
-        NSLocalNetworkUsageDescription: Windows와 Direct Wi-Fi/P2P로 직접 연결해 클립보드를 빠르게 전송하기 위해 사용합니다.
+        NSLocalNetworkUsageDescription: Windows가 직접 만든 P2P 링크에서 클립보드를 빠르게 전송하기 위해 사용합니다.
         UIBackgroundModes:
           - bluetooth-central
 
