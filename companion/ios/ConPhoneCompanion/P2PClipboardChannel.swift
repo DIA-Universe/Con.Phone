@@ -11,6 +11,7 @@ final class P2PClipboardChannel {
     private let queue = DispatchQueue(label: "ConPhone.P2PClipboard")
     private let onFrame: (Data) -> Void
     private let onStatus: (String) -> Void
+    private let onReady: () -> Void
 
     private var pendingWrites: [Data] = []
     private var writing = false
@@ -25,13 +26,15 @@ final class P2PClipboardChannel {
         deviceHash: Data,
         secret: Data,
         onFrame: @escaping (Data) -> Void,
-        onStatus: @escaping (String) -> Void
+        onStatus: @escaping (String) -> Void,
+        onReady: @escaping () -> Void = {}
     ) {
         self.deviceHash = deviceHash
         self.secret = secret
         self.aad = Data("ConPhone-Clipboard-P2P-v2".utf8) + deviceHash
         self.onFrame = onFrame
         self.onStatus = onStatus
+        self.onReady = onReady
 
         let endpointPort = NWEndpoint.Port(rawValue: port)!
         self.connection = NWConnection(
@@ -128,6 +131,7 @@ final class P2PClipboardChannel {
 
                     self.ready = true
                     self.onStatus("Clipboard P2P 고속 채널 연결됨")
+                    self.onReady()
                     self.readEncryptedLoop()
                     self.pumpWrites()
                 }
