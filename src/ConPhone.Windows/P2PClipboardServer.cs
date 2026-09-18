@@ -274,7 +274,8 @@ public sealed class P2PClipboardServer : IAsyncDisposable
                 return null;
 
             var bodyLength = BinaryPrimitives.ReadInt32LittleEndian(prefix);
-            if (bodyLength < 28 || bodyLength > ClipboardContent.MaxImageBytes + 1024 * 1024)
+            if (bodyLength < 28 ||
+                bodyLength > ClipboardWireCodec.MaxEncodedFrameBytes + 28)
                 throw new InvalidDataException("Invalid encrypted clipboard frame length.");
 
             var body = new byte[bodyLength];
