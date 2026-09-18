@@ -36,6 +36,22 @@ jobs:
         run: dotnet run --project "$env:RUNNER_TEMP/conphone-src/tests/ConPhone.Tests" -c Release
       - name: Build Windows application
         run: dotnet build "$env:RUNNER_TEMP/conphone-src/src/ConPhone.Windows" -c Release
+      - name: Real Windows clipboard roundtrip
+        run: dotnet run --project "$env:RUNNER_TEMP/conphone-src/src/ConPhone.Windows" -c Release -- --clipboard-selftest
+      - name: Render all UI tabs
+        run: |
+          $shots = Join-Path $env:RUNNER_TEMP 'ConPhone-ui'
+          New-Item -ItemType Directory -Force -Path $shots | Out-Null
+          dotnet run --project "$env:RUNNER_TEMP/conphone-src/src/ConPhone.Windows" -c Release -- --snapshot $shots
+          $pngs = @(Get-ChildItem $shots -Filter '*.png' -File)
+          if ($pngs.Count -ne 4) { throw "Expected 4 UI snapshots, got $($pngs.Count)." }
+      - name: Upload UI snapshots
+        uses: actions/upload-artifact@v4
+        with:
+          name: ConPhone-ui-snapshots
+          path: ${{ runner.temp }}/ConPhone-ui/*.png
+          if-no-files-found: error
+          retention-days: 14
       - name: Publish one self-contained Windows x64 EXE
         run: |
           dotnet publish "$env:RUNNER_TEMP/conphone-src/src/ConPhone.Windows" `
