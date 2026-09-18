@@ -377,24 +377,13 @@ public sealed class MainForm : Form
         BackColor = Color.Transparent
     };
 
-    private static ConPhoneCard CardFlow()
+    private static ConPhoneCard CardFlow() => new()
     {
-        var card = new ConPhoneCard { Width = 790, AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink };
-        var flow = new FlowLayoutPanel
-        {
-            Dock = DockStyle.Fill,
-            AutoSize = true,
-            AutoSizeMode = AutoSizeMode.GrowAndShrink,
-            FlowDirection = FlowDirection.TopDown,
-            WrapContents = false,
-            BackColor = Color.Transparent,
-            MaximumSize = new Size(748, 0)
-        };
-        card.Controls.Add(flow);
-        return card;
-    }
-
-    private static ControlCollectionProxy ControlsOf(ConPhoneCard card) => new(card);
+        Width = 790,
+        MaximumSize = new Size(790, 0),
+        AutoSize = true,
+        AutoSizeMode = AutoSizeMode.GrowAndShrink
+    };
 
     private Control HotkeyRow(string title, HotkeyCaptureBox box, string help)
     {
