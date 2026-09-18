@@ -216,6 +216,8 @@ class ClipboardBridgeService : Service() {
         ) {
             if (status == BluetoothGatt.GATT_SUCCESS)
                 handleCharacteristicRead(characteristic, characteristic.value ?: byteArrayOf())
+            else if (characteristic.uuid == SECRET_UUID)
+                retrySecretRead(g)
         }
 
         override fun onCharacteristicRead(
@@ -226,6 +228,8 @@ class ClipboardBridgeService : Service() {
         ) {
             if (status == BluetoothGatt.GATT_SUCCESS)
                 handleCharacteristicRead(characteristic, value)
+            else if (characteristic.uuid == SECRET_UUID)
+                retrySecretRead(g)
         }
 
         @Suppress("DEPRECATION")
@@ -252,6 +256,13 @@ class ClipboardBridgeService : Service() {
                 else showStatus("BLE Clipboard 쓰기 실패: $status")
             }
         }
+    }
+
+    private fun retrySecretRead(g: BluetoothGatt) {
+        main.postDelayed({
+            if (checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT) == PackageManager.PERMISSION_GRANTED)
+                secretCharacteristic?.let { g.readCharacteristic(it) }
+        }, 2000)
     }
 
     private fun handleCharacteristicRead(
