@@ -197,7 +197,7 @@ public sealed class MainForm : Form
         if (_previewMode)
         {
             _tray.Visible = false;
-            _state.Text = "노트북 조작 중 · 광고:Started · K:1 M:1 LOCK:1 · 승인:준비됨";
+            _state.Text = "노트북 조작 중 · 검색:Started · K:1 M:1 LOCK:1 · 승인:준비됨";
             _peers.Items.Add(new Peer(
                 "preview-device",
                 "Galaxy / Android",
@@ -315,10 +315,10 @@ public sealed class MainForm : Form
             "0.2.1은 0.1.6의 HID 경로를 기준으로 연결 유지 로직을 보강했습니다. 잠금 Report가 추가되어 첫 사용 시 휴대폰에서 기존 PC 등록을 삭제하고 한 번 다시 페어링하는 것을 권장합니다."));
         connect.Controls.Add(Row(
             ActionButton("Bluetooth 다시 검사", async () => _diagnosis.Text = await BleHidServer.DiagnoseAsync()),
-            ActionButton("광고 확인 / 시작", async () =>
+            ActionButton("Bluetooth 검색 신호 확인 / 시작", async () =>
             {
                 await _ble.StartAsync();
-                Log("Bluetooth HID 광고 상태를 확인했습니다.");
+                Log("Bluetooth HID 검색 신호 상태를 확인했습니다.");
             }, primary: true),
             ActionButton("서비스 중지", async () =>
             {
@@ -725,7 +725,7 @@ public sealed class MainForm : Form
             var emergency = HotkeyCatalog.Display(_settings.EmergencyHotkey);
             _state.Text = _input.IsRemote
                 ? $"휴대폰 조작 중 · {emergency}로 즉시 복귀"
-                : $"노트북 조작 중 · 광고:{_ble.Advertisement} · K:{_ble.KeyboardSubscribers} M:{_ble.MouseSubscribers} LOCK:{_ble.SystemSubscribers} · 승인:{(_ble.Ready ? "준비됨" : "대기")}";
+                : $"노트북 조작 중 · 검색:{_ble.Advertisement} · K:{_ble.KeyboardSubscribers} M:{_ble.MouseSubscribers} LOCK:{_ble.SystemSubscribers} · 승인:{(_ble.Ready ? "준비됨" : "대기")}";
 
             _tray.Text = _input.IsRemote
                 ? $"Con.Phone · 휴대폰 입력 / {emergency} 복귀"
@@ -756,7 +756,7 @@ public sealed class MainForm : Form
             if (_settings.ClipboardSyncEnabled && _clipboardSync is not null)
                 await _clipboardSync.StartAsync();
 
-            Log("Bluetooth HID 광고를 시작했습니다.");
+            Log("Bluetooth HID 검색 신호를 시작했습니다.");
             Log("0.2.1은 잠금용 System Control Report가 추가되어 LOCK:0이면 휴대폰에서 기존 PC 등록을 삭제하고 다시 페어링해 주세요.");
         });
     }
@@ -1096,7 +1096,7 @@ public sealed class MainForm : Form
         _lastError = $"{ex.GetType().Name}:0x{ex.HResult:X8}";
 
         var ble = ex.HResult == unchecked((int)0x8000000E)
-            ? $" · BLE:{_ble.LastOperation} · 광고:{_ble.Advertisement}"
+            ? $" · BLE:{_ble.LastOperation} · 검색:{_ble.Advertisement}"
             : "";
 
         Log($"{ex.Message} ({_lastError}{ble})");
@@ -1412,7 +1412,7 @@ public sealed class MainForm : Form
             {
                 await Task.Delay(1200);
                 await _ble.StartAsync();
-                Log("절전 복귀 · Bluetooth HID 광고를 다시 확인했습니다.");
+                Log("절전 복귀 · Bluetooth HID 검색 신호를 다시 확인했습니다.");
             });
         }
     }
@@ -1422,7 +1422,7 @@ public sealed class MainForm : Form
         if (e.Reason == SessionSwitchReason.SessionLock)
         {
             ImmediateLocal();
-            Log("Windows 잠금 감지 · Bluetooth 승인/광고는 유지하고 입력만 노트북으로 복귀했습니다.");
+            Log("Windows 잠금 감지 · Bluetooth 승인/검색 신호는 유지하고 입력만 노트북으로 복귀했습니다.");
         }
         else if (e.Reason == SessionSwitchReason.SessionLogoff)
         {
