@@ -14,6 +14,11 @@ import android.content.*
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.net.ConnectivityManager
+import android.net.Network
+import android.net.NetworkCapabilities
+import android.net.NetworkRequest
+import android.net.wifi.WifiNetworkSpecifier
 import android.os.*
 import android.widget.Toast
 import java.io.*
@@ -44,6 +49,7 @@ class ClipboardBridgeService : Service() {
         private val TX_UUID = UUID.fromString("67A7F002-7E5B-4A2E-9B8B-1C9A5B6D1001")
         private val RX_UUID = UUID.fromString("67A7F003-7E5B-4A2E-9B8B-1C9A5B6D1001")
         private val SECRET_UUID = UUID.fromString("67A7F004-7E5B-4A2E-9B8B-1C9A5B6D1001")
+        private val DIRECT_LINK_UUID = UUID.fromString("67A7F006-7E5B-4A2E-9B8B-1C9A5B6D1001")
         private val CCCD_UUID = UUID.fromString("00002902-0000-1000-8000-00805f9b34fb")
     }
 
@@ -58,13 +64,19 @@ class ClipboardBridgeService : Service() {
     @Volatile private var tx: BluetoothGattCharacteristic? = null
     @Volatile private var rx: BluetoothGattCharacteristic? = null
     @Volatile private var secretCharacteristic: BluetoothGattCharacteristic? = null
+    @Volatile private var directLinkCharacteristic: BluetoothGattCharacteristic? = null
     @Volatile private var mtu = 23
     @Volatile private var bleWriting = false
     @Volatile private var credential: Credential? = null
+    @Volatile private var directConfig: DirectConfig? = null
     @Volatile private var lan: LanChannel? = null
     @Volatile private var scanning = false
+    @Volatile private var lanDiscoveryRunning = false
+    @Volatile private var p2pNetwork: Network? = null
+    @Volatile private var directNetworkCallback: ConnectivityManager.NetworkCallback? = null
 
     private data class Credential(val deviceHash: ByteArray, val secret: ByteArray)
+    private data class DirectConfig(val ssid: String, val passphrase: String)
 
     override fun onCreate() {
         super.onCreate()
@@ -160,7 +172,10 @@ class ClipboardBridgeService : Service() {
                 tx = null
                 rx = null
                 secretCharacteristic = null
+                directLinkCharacteristic = null
                 credential = null
+                directConfig = null
+                releaseDirectNetwork()
                 lan?.close()
                 lan = null
                 showStatus("PC 연결 끊김 · 재연결 대기")
@@ -187,12 +202,14 @@ class ClipboardBridgeService : Service() {
             tx = service.getCharacteristic(TX_UUID)
             rx = service.getCharacteristic(RX_UUID)
             secretCharacteristic = service.getCharacteristic(SECRET_UUID)
+            directLinkCharacteristic = service.getCharacteristic(DIRECT_LINK_UUID)
 
             val txLocal = tx ?: return
             if (checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT) != PackageManager.PERMISSION_GRANTED) return
 
             g.setCharacteristicNotification(txLocal, true)
-            txLocal.getDescriptor(CCCD_UUID)?.let { descriptor ->
+            val descriptor = txLocal.getDescriptor(CCCD_UUID)
+            if (descriptor != null) {
                 if (Build.VERSION.SDK_INT >= 33) {
                     g.writeDescriptor(descriptor, BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE)
                 } else {
@@ -202,10 +219,24 @@ class ClipboardBridgeService : Service() {
                         g.writeDescriptor(descriptor)
                     }
                 }
+            } else {
+                secretCharacteristic?.let { g.readCharacteristic(it) }
             }
-
-            secretCharacteristic?.let { g.readCharacteristic(it) }
             showStatus("BLE Clipboard 준비 중")
+        }
+
+        override fun onDescriptorWrite(
+            g: BluetoothGatt,
+            descriptor: BluetoothGattDescriptor,
+            status: Int
+        ) {
+            if (descriptor.uuid == CCCD_UUID) {
+                if (status == BluetoothGatt.GATT_SUCCESS) {
+                    secretCharacteristic?.let { g.readCharacteristic(it) }
+                } else {
+                    showStatus("BLE Clipboard 알림 구독 실패: $status")
+                }
+            }
         }
 
         @Suppress("DEPRECATION")
@@ -218,6 +249,8 @@ class ClipboardBridgeService : Service() {
                 handleCharacteristicRead(characteristic, characteristic.value ?: byteArrayOf())
             else if (characteristic.uuid == SECRET_UUID)
                 retrySecretRead(g)
+            else if (characteristic.uuid == DIRECT_LINK_UUID)
+                showStatus("P2P 설정 읽기 실패 · LAN/BLE fallback 유지")
         }
 
         override fun onCharacteristicRead(
@@ -230,6 +263,8 @@ class ClipboardBridgeService : Service() {
                 handleCharacteristicRead(characteristic, value)
             else if (characteristic.uuid == SECRET_UUID)
                 retrySecretRead(g)
+            else if (characteristic.uuid == DIRECT_LINK_UUID)
+                showStatus("P2P 설정 읽기 실패 · LAN/BLE fallback 유지")
         }
 
         @Suppress("DEPRECATION")
@@ -269,10 +304,37 @@ class ClipboardBridgeService : Service() {
         characteristic: BluetoothGattCharacteristic,
         value: ByteArray
     ) {
-        if (characteristic.uuid != SECRET_UUID || value.size != 64) return
-        credential = Credential(value.copyOfRange(0, 32), value.copyOfRange(32, 64))
-        showStatus("BLE Clipboard 연결됨 · LAN/P2P 승격 확인")
-        startLanDiscovery()
+        when (characteristic.uuid) {
+            SECRET_UUID -> {
+                if (value.size != 64) return
+                credential = Credential(value.copyOfRange(0, 32), value.copyOfRange(32, 64))
+                showStatus("BLE Clipboard 연결됨 · LAN/P2P 승격 확인")
+                startLanDiscovery()
+                if (checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT) == PackageManager.PERMISSION_GRANTED)
+                    directLinkCharacteristic?.let { gatt?.readCharacteristic(it) }
+            }
+            DIRECT_LINK_UUID -> {
+                directConfig = parseDirectConfig(value)
+                if (directConfig != null) {
+                    showStatus("P2P 고속 링크 준비됨 · 현재 LAN 우선 확인")
+                    main.postDelayed({
+                        if (lan == null) requestDirectNetwork()
+                    }, 3500)
+                }
+            }
+        }
+    }
+
+    private fun parseDirectConfig(value: ByteArray): DirectConfig? {
+        if (value.isEmpty() || value[0].toInt() != 1 || value.size < 3) return null
+        val ssidLength = value[1].toInt() and 0xFF
+        val passLength = value[2].toInt() and 0xFF
+        if (ssidLength !in 1..32 || passLength !in 8..63 ||
+            value.size != 3 + ssidLength + passLength) return null
+
+        val ssid = value.copyOfRange(3, 3 + ssidLength).toString(Charsets.UTF_8)
+        val passphrase = value.copyOfRange(3 + ssidLength, value.size).toString(Charsets.UTF_8)
+        return DirectConfig(ssid, passphrase)
     }
 
     private fun handleCharacteristicChanged(
@@ -290,19 +352,32 @@ class ClipboardBridgeService : Service() {
     }
 
     private fun startLanDiscovery() {
-        if (credential == null || lan != null) return
+        if (credential == null || lan != null || lanDiscoveryRunning) return
+        lanDiscoveryRunning = true
         executor.execute {
-            while (credential != null && lan == null && !Thread.currentThread().isInterrupted) {
-                runCatching { discoverAndConnectLan() }
-                    .onFailure { Thread.sleep(3000) }
-                if (lan == null) Thread.sleep(2000)
+            try {
+                var attempts = 0
+                while (credential != null && lan == null && !Thread.currentThread().isInterrupted) {
+                    attempts++
+                    runCatching { discoverAndConnectLan(null) }
+                    if (lan != null) break
+
+                    if (attempts >= 2 && directConfig != null) {
+                        main.post { requestDirectNetwork() }
+                        break
+                    }
+                    Thread.sleep(1600)
+                }
+            } finally {
+                lanDiscoveryRunning = false
             }
         }
     }
 
-    private fun discoverAndConnectLan() {
+    private fun discoverAndConnectLan(network: Network?) {
         val cred = credential ?: return
         DatagramSocket().use { udp ->
+            network?.bindSocket(udp)
             udp.broadcast = true
             udp.soTimeout = 1600
             val query = "CONPHONE_DISCOVER_V1".toByteArray(Charsets.US_ASCII)
@@ -315,20 +390,86 @@ class ClipboardBridgeService : Service() {
             if (!text.startsWith("CONPHONE_HERE_V1:")) return
             val port = text.substringAfterLast(':').toIntOrNull() ?: return
 
+            val socket = network?.socketFactory?.createSocket() ?: Socket()
+            socket.connect(InetSocketAddress(response.address, port), 2500)
+            socket.tcpNoDelay = true
+            socket.soTimeout = 0
+
             val channel = LanChannel(
-                Socket().apply {
-                    connect(InetSocketAddress(response.address, port), 2500)
-                    tcpNoDelay = true
-                    soTimeout = 0
-                },
+                socket,
                 cred,
                 ::onLanFrame,
                 ::onLanClosed
             )
             channel.handshake()
             lan = channel
-            showStatus("Clipboard LAN/P2P 고속 채널 연결됨")
+            showStatus(if (network == null)
+                "Clipboard LAN 고속 채널 연결됨"
+            else
+                "Clipboard P2P 고속 채널 연결됨")
             executor.execute { channel.readLoop() }
+        }
+    }
+
+    private fun requestDirectNetwork() {
+        if (lan != null || p2pNetwork != null || directNetworkCallback != null) return
+        val config = directConfig ?: return
+
+        val hasPermission =
+            if (Build.VERSION.SDK_INT >= 33)
+                checkSelfPermission(Manifest.permission.NEARBY_WIFI_DEVICES) == PackageManager.PERMISSION_GRANTED
+            else
+                checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED
+
+        if (!hasPermission) {
+            showStatus("P2P 고속 링크 권한 필요 · BLE fallback 유지")
+            return
+        }
+
+        val specifier = WifiNetworkSpecifier.Builder()
+            .setSsid(config.ssid)
+            .setWpa2Passphrase(config.passphrase)
+            .build()
+
+        val request = NetworkRequest.Builder()
+            .addTransportType(NetworkCapabilities.TRANSPORT_WIFI)
+            .removeCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+            .setNetworkSpecifier(specifier)
+            .build()
+
+        val connectivity = getSystemService(ConnectivityManager::class.java)
+        val callback = object : ConnectivityManager.NetworkCallback() {
+            override fun onAvailable(network: Network) {
+                p2pNetwork = network
+                showStatus("P2P Wi-Fi 링크 연결됨 · 보안 채널 승격 중")
+                executor.execute {
+                    runCatching { discoverAndConnectLan(network) }
+                        .onFailure { showStatus("P2P 데이터 채널 연결 실패 · BLE fallback 유지") }
+                }
+            }
+
+            override fun onLost(network: Network) {
+                if (p2pNetwork == network) p2pNetwork = null
+                if (lan == null) showStatus("P2P 링크 종료 · BLE fallback 유지")
+            }
+
+            override fun onUnavailable() {
+                directNetworkCallback = null
+                showStatus("P2P 링크 사용 불가/거부 · BLE fallback 유지")
+            }
+        }
+
+        directNetworkCallback = callback
+        showStatus("P2P 고속 링크 연결 승인 대기")
+        connectivity.requestNetwork(request, callback, 15_000)
+    }
+
+    private fun releaseDirectNetwork() {
+        val callback = directNetworkCallback ?: return
+        directNetworkCallback = null
+        p2pNetwork = null
+        runCatching {
+            getSystemService(ConnectivityManager::class.java).unregisterNetworkCallback(callback)
         }
     }
 
@@ -344,7 +485,11 @@ class ClipboardBridgeService : Service() {
     private fun onLanClosed() {
         lan = null
         showStatus("LAN/P2P 종료 · BLE fallback 유지")
-        startLanDiscovery()
+        val direct = p2pNetwork
+        if (direct != null)
+            executor.execute { runCatching { discoverAndConnectLan(direct) } }
+        else
+            startLanDiscovery()
     }
 
     private fun sendCurrentClipboard() {
@@ -507,6 +652,7 @@ class ClipboardBridgeService : Service() {
         scanning = false
         lan?.close()
         lan = null
+        releaseDirectNetwork()
         if (checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT) == PackageManager.PERMISSION_GRANTED)
             runCatching { gatt?.close() }
         gatt = null
