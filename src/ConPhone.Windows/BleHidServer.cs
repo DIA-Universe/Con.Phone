@@ -60,6 +60,8 @@ public sealed class BleHidServer : IDisposable
     public int ConsumerSubscribers => LiveClientCount(_consumer);
     public string? ApprovedId => _approved;
     public bool Ready => _running && _approved is { } id && IsReady(id);
+    public bool ConsumerReady =>
+        _running && _approved is { } id && Client(_consumer, id) is not null;
 
     private static Guid Uuid(ushort n) => new($"0000{n:x4}-0000-1000-8000-00805f9b34fb");
 
