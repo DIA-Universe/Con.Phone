@@ -458,6 +458,18 @@ public sealed class BleHidServer
     }
     public void Revoke() { ClearApproval(preserveTrusted: false); Changed?.Invoke(); }
 
+    public void SuspendApproval()
+    {
+        ClearApproval(preserveTrusted: true);
+        Changed?.Invoke();
+    }
+
+    public void RestoreTrustedApproval()
+    {
+        TryRestoreTrustedApproval();
+        Changed?.Invoke();
+    }
+
     public async Task SendSystemPowerAsync(CancellationToken token)
     {
         var id = _approved ?? throw new InvalidOperationException("승인된 휴대폰 연결이 없습니다.");
@@ -505,9 +517,9 @@ public sealed class BleHidServer
         }
         finally { _send.Release(); }
     }
-    public void Stop()
+    public void Stop(bool preserveTrusted = false)
     {
-        _running = false; ClearApproval(preserveTrusted: false);
+        _running = false; ClearApproval(preserveTrusted);
         if (_provider is not null)
         {
             try
