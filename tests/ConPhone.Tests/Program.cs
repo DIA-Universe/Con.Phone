@@ -134,10 +134,9 @@ Check("ble fragment out-of-order reassembly", bleMessage is not null && bleMessa
 
 var allRoutes = ClipboardTransportPolicy.Candidates(
     clipText,
-    new ClipboardTransportCapabilities(Lan: true, PeerToPeer: true, BluetoothLe: true));
-Check("transport priority lan first", allRoutes.SequenceEqual(new[]
+    new ClipboardTransportCapabilities(PeerToPeer: true, BluetoothLe: true));
+Check("transport priority p2p first", allRoutes.SequenceEqual(new[]
 {
-    ClipboardTransportKind.Lan,
     ClipboardTransportKind.PeerToPeer,
     ClipboardTransportKind.BluetoothLe
 }));
@@ -146,7 +145,7 @@ pngBytes.CopyTo(largePng, 0);
 var largeImage = ClipboardContent.FromImage(ClipboardContentKind.Png, largePng);
 var largeRoutes = ClipboardTransportPolicy.Candidates(
     largeImage,
-    new ClipboardTransportCapabilities(Lan: false, PeerToPeer: false, BluetoothLe: true));
+    new ClipboardTransportCapabilities(PeerToPeer: false, BluetoothLe: true));
 Check("large image skips ble when no fast local path", largeRoutes.Count == 0);
 
 
