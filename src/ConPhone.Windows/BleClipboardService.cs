@@ -68,8 +68,10 @@ public sealed class BleClipboardService : IDisposable
     public static readonly Guid RxUuid = Guid.Parse("67A7F003-7E5B-4A2E-9B8B-1C9A5B6D1001");
     public static readonly Guid SecretUuid = Guid.Parse("67A7F004-7E5B-4A2E-9B8B-1C9A5B6D1001");
     public static readonly Guid CapabilitiesUuid = Guid.Parse("67A7F005-7E5B-4A2E-9B8B-1C9A5B6D1001");
+    public static readonly Guid DirectLinkUuid = Guid.Parse("67A7F006-7E5B-4A2E-9B8B-1C9A5B6D1001");
 
     private readonly Func<string?> _approvedDeviceId;
+    private readonly Func<DirectLinkConfig?> _directLinkConfig;
     private readonly SemaphoreSlim _sendGate = new(1, 1);
     private readonly ConcurrentDictionary<string, BleFragmentReassembler> _bleReassemblers = new();
     private readonly ConcurrentDictionary<string, ClipboardReassembler> _clipboardReassemblers = new();
@@ -79,13 +81,19 @@ public sealed class BleClipboardService : IDisposable
     private GattLocalCharacteristic? _rx;
     private GattLocalCharacteristic? _secret;
     private GattLocalCharacteristic? _capabilities;
+    private GattLocalCharacteristic? _directLink;
     private bool _disposed;
 
     public event Action<string, ClipboardContent>? Received;
     public event Action<string>? Status;
 
-    public BleClipboardService(Func<string?> approvedDeviceId) =>
+    public BleClipboardService(
+        Func<string?> approvedDeviceId,
+        Func<DirectLinkConfig?> directLinkConfig)
+    {
         _approvedDeviceId = approvedDeviceId;
+        _directLinkConfig = directLinkConfig;
+    }
 
     public bool Running => _provider?.AdvertisementStatus is
         GattServiceProviderAdvertisementStatus.Started or
@@ -135,12 +143,19 @@ public sealed class BleClipboardService : IDisposable
             GattProtectionLevel.EncryptionRequired,
             GattProtectionLevel.EncryptionRequired);
 
+        _directLink = await CreateCharacteristicAsync(
+            DirectLinkUuid,
+            GattCharacteristicProperties.Read,
+            GattProtectionLevel.EncryptionRequired,
+            GattProtectionLevel.EncryptionRequired);
+
         _tx.SubscribedClientsChanged += (_, _) =>
             Status?.Invoke($"Clipboard BLE 구독: {Subscribers}");
 
         _rx.WriteRequested += RxWriteRequested;
         _secret.ReadRequested += SecretReadRequested;
         _capabilities.ReadRequested += CapabilitiesReadRequested;
+        _directLink.ReadRequested += DirectLinkReadRequested;
 
         StartAdvertising();
     }
@@ -228,6 +243,38 @@ public sealed class BleClipboardService : IDisposable
 
             // protocol v1, text, image, LAN-upgrade supported.
             request.RespondWithValue(new byte[] { 1, 1, 1, 1 }.AsBuffer());
+        }
+        finally
+        {
+            deferral.Complete();
+        }
+    }
+
+    private async void DirectLinkReadRequested(
+        GattLocalCharacteristic sender,
+        GattReadRequestedEventArgs args)
+    {
+        var deferral = args.GetDeferral();
+        try
+        {
+            var request = await args.GetRequestAsync();
+            if (request is null) return;
+
+            if (!IsApproved(args.Session.DeviceId.Id))
+            {
+                request.RespondWithProtocolError(0x05);
+                return;
+            }
+
+            var config = _directLinkConfig();
+            request.RespondWithValue(
+                config is null
+                    ? new byte[] { 0 }.AsBuffer()
+                    : config.Encode().AsBuffer());
+        }
+        catch (Exception ex)
+        {
+            Status?.Invoke($"Clipboard P2P 설정 읽기 실패: {ex.Message}");
         }
         finally
         {
