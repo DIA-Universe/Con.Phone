@@ -42,7 +42,7 @@ enum SharedPayloadStore {
         let directory = try sharedDirectory()
         cleanupStaleFiles(in: directory)
 
-        let fileName = "share-(UUID().uuidString).bin"
+        let fileName = "share-\(UUID().uuidString).bin"
         let destination = directory.appendingPathComponent(fileName)
         try FileManager.default.copyItem(at: source, to: destination)
 
@@ -62,7 +62,7 @@ enum SharedPayloadStore {
         let directory = try sharedDirectory()
         cleanupStaleFiles(in: directory)
 
-        let fileName = "share-(UUID().uuidString).bin"
+        let fileName = "share-\(UUID().uuidString).bin"
         let destination = directory.appendingPathComponent(fileName)
         try data.write(to: destination, options: .atomic)
 
@@ -116,6 +116,17 @@ enum SharedPayloadStore {
         guard let defaults = UserDefaults(suiteName: appGroup) else {
             throw StoreError.appGroupUnavailable
         }
+
+        if let previousData = defaults.data(forKey: defaultsKey),
+           let previous = try? JSONDecoder().decode(
+                SharedPayloadEnvelope.self,
+                from: previousData),
+           let name = previous.fileName,
+           let directory = try? sharedDirectory() {
+            try? FileManager.default.removeItem(
+                at: directory.appendingPathComponent(name))
+        }
+
         let data = try JSONEncoder().encode(envelope)
         defaults.set(data, forKey: defaultsKey)
     }
@@ -151,8 +162,17 @@ enum SharedPayloadStore {
         }
     }
 
-    enum StoreError: Error {
+    enum StoreError: LocalizedError {
         case tooLarge
         case appGroupUnavailable
+
+        var errorDescription: String? {
+            switch self {
+            case .tooLarge:
+                return "공유 내용이 안전 크기 제한을 초과합니다."
+            case .appGroupUnavailable:
+                return "Con.Phone 공유 저장소를 사용할 수 없습니다."
+            }
+        }
     }
 }
