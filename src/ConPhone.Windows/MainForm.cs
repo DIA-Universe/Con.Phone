@@ -358,7 +358,7 @@ public sealed class MainForm : Form
         var flow = TabFlow();
         tab.Controls.Add(flow);
 
-        var connect = Section(170);
+        var connect = Section(220);
         connect.Controls.Add(SectionTitle("Bluetooth 연결"));
         connect.Controls.Add(Help(
             "HID 프로필에 잠금 및 미디어키 Report가 포함됩니다. 이전 프로필로 페어링했던 기기는 새 기능 테스트 전 한 번 재페어링하는 것을 권장합니다."));
