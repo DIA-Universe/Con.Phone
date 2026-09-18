@@ -25,7 +25,7 @@ public sealed class MainForm : Form
 
     public MainForm()
     {
-        Text = "Con.Phone 0.1 · 동글 없는 무선 입력";
+        Text = "Con.Phone 0.1.1 · 동글 없는 무선 입력";
         Width = 880; Height = 820; MinimumSize = new Size(780, 660);
         StartPosition = FormStartPosition.CenterScreen;
         Font = new Font("Segoe UI", 10);
@@ -34,16 +34,16 @@ public sealed class MainForm : Form
         Controls.Add(layout);
         layout.Controls.Add(new Label { Text = "Con.Phone", Font = new Font("Segoe UI", 25, FontStyle.Bold), AutoSize = true });
         layout.Controls.Add(new Label { Text = "내장 Bluetooth → 갤럭시 / iPhone · 추가 동글 / 서버 / 계정 없음", AutoSize = true });
-        layout.Controls.Add(new Label { Text = "실험 버전: Android·iPhone 모두 실기기 검증 전입니다. 연결 성공과 입력 성공은 다릅니다.", AutoSize = true, ForeColor = Color.DarkRed, Margin = new Padding(3, 10, 3, 10) });
+        layout.Controls.Add(new Label { Text = "실행하면 Bluetooth 검색을 자동 시작합니다. Android·iPhone 모두 실기기 검증 전이며 연결 성공과 입력 성공은 별개입니다.", AutoSize = true, ForeColor = Color.DarkRed, Margin = new Padding(3, 10, 3, 10) });
         _profile.Items.AddRange(["갤럭시 / Android", "iPhone (실기기 검증 전)"]); _profile.SelectedIndex = 0;
         layout.Controls.Add(_profile);
         layout.Controls.Add(_state);
         layout.Controls.Add(Row(
-            Button("1. Bluetooth 검사", async () => _diagnosis.Text = await BleHidServer.DiagnoseAsync()),
-            Button("2. 휴대폰 검색 허용", async () => { await _ble.StartAsync(); Log("휴대폰 Bluetooth 설정에서 이 PC를 검색하고 양쪽 페어링을 확인하세요."); }),
+            Button("Bluetooth 다시 검사", async () => _diagnosis.Text = await BleHidServer.DiagnoseAsync()),
+            Button("Bluetooth 검색 다시 시작", async () => { await _ble.StartAsync(); Log("휴대폰 Bluetooth 설정에서 이 PC를 검색하고 양쪽 페어링을 확인하세요."); }),
             Button("서비스 중지", async () => { await ReturnLocalAsync(); _ble.Stop(); })));
         layout.Controls.Add(_diagnosis);
-        layout.Controls.Add(new Label { Text = "3. 휴대폰에서 페어링 → 목록 갱신 → 대상 선택 → 승인", AutoSize = true, Margin = new Padding(3, 12, 3, 3) });
+        layout.Controls.Add(new Label { Text = "휴대폰에서 페어링 → 대상 확인 → 승인", AutoSize = true, Margin = new Padding(3, 12, 3, 3) });
         layout.Controls.Add(_peers);
         layout.Controls.Add(Row(
             Button("연결 목록 갱신", RefreshPeersAsync),
@@ -84,7 +84,13 @@ public sealed class MainForm : Form
             _tray.Text = _input.IsRemote ? "Con.Phone · 휴대폰 입력 / F9 복귀" : "Con.Phone · 노트북 입력";
         };
         _timer.Start();
-        Shown += (_, _) => Dispatch(async () => { await _input.Started; _diagnosis.Text = await BleHidServer.DiagnoseAsync(); });
+        Shown += (_, _) => Dispatch(async () =>
+        {
+            await _input.Started;
+            _diagnosis.Text = await BleHidServer.DiagnoseAsync();
+            await _ble.StartAsync();
+            Log("Bluetooth 검색을 자동 시작했습니다. 휴대폰 Bluetooth 설정에서 이 PC를 찾아 페어링하세요.");
+        });
         _pump = Task.Run(PumpAsync);
         SystemEvents.PowerModeChanged += PowerChanged;
         SystemEvents.SessionSwitch += SessionChanged;
@@ -155,6 +161,7 @@ public sealed class MainForm : Form
     {
         var peers = await _ble.GetPeersAsync();
         _peers.Items.Clear(); foreach (var peer in peers) _peers.Items.Add(peer);
+        if (peers.Count == 1 && _peers.SelectedIndex < 0) _peers.SelectedIndex = 0;
         if (peers.Count == 0) Log("HID 구독 기기가 없습니다. Bluetooth 페어링만 됐거나 휴대폰이 HID로 인식하지 못했을 수 있습니다.");
     }
     private async Task PumpAsync()
@@ -187,7 +194,7 @@ public sealed class MainForm : Form
         if (dialog.ShowDialog(this) != DialogResult.OK) return;
         var report = new
         {
-            Version = "0.1.0", OS = Environment.OSVersion.Version.ToString(), Runtime = Environment.Version.ToString(),
+            Version = "0.1.1", OS = Environment.OSVersion.Version.ToString(), Runtime = Environment.Version.ToString(),
             TargetProfile = _profile.SelectedIndex == 0 ? "Android" : "iPhone", Bluetooth = await BleHidServer.DiagnoseAsync(),
             Advertisement = _ble.Advertisement, ApprovedAndSubscribed = _ble.Ready,
             SendOperations = Interlocked.Read(ref _sent), Pending = _outbox.Count, LastError = _lastError,
