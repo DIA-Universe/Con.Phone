@@ -164,8 +164,15 @@ public sealed class DirectClipboardLink : IDisposable
                  nic.Description.Contains("Wi-Fi Direct", StringComparison.OrdinalIgnoreCase)))
             .SelectMany(nic =>
             {
-                try { return nic.GetIPProperties().UnicastAddresses; }
-                catch (NetworkInformationException) { return []; }
+                try
+                {
+                    return nic.GetIPProperties().UnicastAddresses
+                        .Cast<UnicastIPAddressInformation>();
+                }
+                catch (NetworkInformationException)
+                {
+                    return Enumerable.Empty<UnicastIPAddressInformation>();
+                }
             })
             .Select(x => x.Address)
             .FirstOrDefault(address =>
