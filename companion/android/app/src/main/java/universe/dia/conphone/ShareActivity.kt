@@ -14,7 +14,7 @@ import java.util.UUID
 
 class ShareActivity : Activity() {
     companion object {
-        private const val MAX_STAGED_IMAGE_BYTES = 40L * 1024 * 1024
+        private const val MAX_STAGED_IMAGE_BYTES = 32L * 1024 * 1024
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -79,7 +79,7 @@ class ShareActivity : Activity() {
                         if (read <= 0) break
                         total += read
                         require(total <= MAX_STAGED_IMAGE_BYTES) {
-                            "공유 이미지가 임시 저장 한도(40 MiB)를 초과합니다."
+                            "공유 이미지가 임시 저장 한도(32 MiB)를 초과합니다."
                         }
                         output.write(buffer, 0, read)
                     }
