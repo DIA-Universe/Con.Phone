@@ -1852,7 +1852,8 @@ public sealed class MainForm : Form
             candidate.Sha256);
         Log(
             $"업데이트 적용 시작 · {current} → {candidate.Version} · " +
-            $"SHA256:{candidate.Sha256[..12]}… · 검증:{candidate.ChecksumVerified}");
+            $"SHA256:{candidate.Sha256[..12]}… · 체크섬:{candidate.ChecksumVerified} · " +
+            $"동일서명자:{candidate.SignatureVerified}");
 
         _exitRequested = true;
         BeginInvoke(Close);
