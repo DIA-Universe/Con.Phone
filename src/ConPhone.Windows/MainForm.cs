@@ -17,7 +17,7 @@ public sealed class MainForm : Form
     private readonly TextBox _events = new() { Multiline = true, ReadOnly = true, ScrollBars = ScrollBars.Vertical, Width = 810, Height = 100 };
     private readonly ComboBox _profile = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 240 };
     private readonly NotifyIcon _tray = new() { Text = "Con.Phone · 로컬 입력", Icon = SystemIcons.Application, Visible = true };
-    private readonly System.Windows.Forms.Timer _timer = new() { Interval = 400 };
+    private readonly System.Windows.Forms.Timer _timer = new() { Interval = 400 };\n    private readonly System.Windows.Forms.Timer _peerTimer = new() { Interval = 1500 };
     private Task? _pump;
     private long _epoch, _sent;
     private bool _closing, _closed;
@@ -25,7 +25,7 @@ public sealed class MainForm : Form
 
     public MainForm()
     {
-        Text = "Con.Phone 0.1.1 · 동글 없는 무선 입력";
+        Text = "Con.Phone 0.1.2 · 동글 없는 무선 입력";
         Width = 880; Height = 820; MinimumSize = new Size(780, 660);
         StartPosition = FormStartPosition.CenterScreen;
         Font = new Font("Segoe UI", 10);
@@ -46,7 +46,7 @@ public sealed class MainForm : Form
         layout.Controls.Add(new Label { Text = "휴대폰에서 페어링 → 대상 확인 → 승인", AutoSize = true, Margin = new Padding(3, 12, 3, 3) });
         layout.Controls.Add(_peers);
         layout.Controls.Add(Row(
-            Button("연결 목록 갱신", RefreshPeersAsync),
+            Button("연결 목록 갱신", () => RefreshPeersAsync(false)),
             Button("선택한 기기 승인", async () =>
             {
                 await ReturnLocalAsync();
@@ -84,6 +84,12 @@ public sealed class MainForm : Form
             _tray.Text = _input.IsRemote ? "Con.Phone · 휴대폰 입력 / F9 복귀" : "Con.Phone · 노트북 입력";
         };
         _timer.Start();
+        _peerTimer.Tick += (_, _) =>
+        {
+            if (_ble.Advertisement is "Started" or "StartedWithoutAllAdvertisementData")
+                Dispatch(() => RefreshPeersAsync(true));
+        };
+        _peerTimer.Start();
         Shown += (_, _) => Dispatch(async () =>
         {
             await _input.Started;
@@ -194,7 +200,7 @@ public sealed class MainForm : Form
         if (dialog.ShowDialog(this) != DialogResult.OK) return;
         var report = new
         {
-            Version = "0.1.1", OS = Environment.OSVersion.Version.ToString(), Runtime = Environment.Version.ToString(),
+            Version = "0.1.2", OS = Environment.OSVersion.Version.ToString(), Runtime = Environment.Version.ToString(),
             TargetProfile = _profile.SelectedIndex == 0 ? "Android" : "iPhone", Bluetooth = await BleHidServer.DiagnoseAsync(),
             Advertisement = _ble.Advertisement, ApprovedAndSubscribed = _ble.Ready,
             SendOperations = Interlocked.Read(ref _sent), Pending = _outbox.Count, LastError = _lastError,
@@ -218,7 +224,7 @@ public sealed class MainForm : Form
         _lifetime.Cancel(); _ble.Stop(); _input.Dispose();
         if (_pump is not null) { try { await _pump; } catch (OperationCanceledException) { } }
         SystemEvents.PowerModeChanged -= PowerChanged; SystemEvents.SessionSwitch -= SessionChanged;
-        _timer.Stop(); _timer.Dispose(); _tray.Visible = false; _tray.Dispose();
+        _timer.Stop(); _timer.Dispose(); _peerTimer.Stop(); _peerTimer.Dispose(); _tray.Visible = false; _tray.Dispose();
         _closed = true; Close();
     }
 }
