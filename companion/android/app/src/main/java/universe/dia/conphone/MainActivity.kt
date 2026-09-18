@@ -28,7 +28,7 @@ class MainActivity : Activity() {
         root.addView(TextView(this).apply {
             text = "Windows Con.Phone과 텍스트/이미지 클립보드를 동기화합니다. " +
                 "같은 Wi-Fi를 사용하지 않아도 Windows Direct Wi-Fi/P2P로 연결하고, 사용할 수 없으면 BLE로 fallback합니다.\n\n" +
-                "Android → PC 전송은 Android의 클립보드 개인정보 보호 정책 때문에 이 화면의 전송 버튼을 눌러 실행합니다."
+                "Android → PC는 이 화면의 전송 버튼 또는 다른 앱의 공유 메뉴에서 Con.Phone을 선택해 보낼 수 있습니다."
             textSize = 16f
         })
 
