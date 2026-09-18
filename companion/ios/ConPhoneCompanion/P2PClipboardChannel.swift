@@ -295,5 +295,6 @@ final class P2PClipboardChannel {
     private enum ChannelError: Error {
         case closed
         case sequence
+        case sessionKey
     }
 }
