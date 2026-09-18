@@ -9,7 +9,7 @@ public sealed class MainForm : Form
     private static readonly Color Bg = ColorTranslator.FromHtml("#F7F8F9");
     private static readonly Color Surface = Color.White;
     private static readonly Color Border = ColorTranslator.FromHtml("#DCDEE3");
-    private static readonly Color Text = ColorTranslator.FromHtml("#1A1C20");
+    private static readonly Color TextColor = ColorTranslator.FromHtml("#1A1C20");
     private static readonly Color Secondary = ColorTranslator.FromHtml("#555D6D");
     private static readonly Color Tertiary = ColorTranslator.FromHtml("#868B94");
     private static readonly Color Brand = ColorTranslator.FromHtml("#FF6600");
@@ -29,7 +29,7 @@ public sealed class MainForm : Form
     {
         AutoSize = true,
         Font = new Font("Segoe UI", 11, FontStyle.Bold),
-        ForeColor = Text
+        ForeColor = TextColor
     };
 
     private readonly TextBox _diagnosis = new()
@@ -48,7 +48,7 @@ public sealed class MainForm : Form
         Width = 820,
         Height = 120,
         BackColor = Color.White,
-        ForeColor = Text
+        ForeColor = TextColor
     };
 
     private readonly TextBox _events = new()
@@ -95,7 +95,7 @@ public sealed class MainForm : Form
         Width = 820,
         Height = 270,
         BackColor = Color.White,
-        ForeColor = Text
+        ForeColor = TextColor
     };
 
     private readonly Label _clipboardDetail = new()
@@ -117,14 +117,14 @@ public sealed class MainForm : Form
     {
         Text = "텍스트 기록",
         AutoSize = true,
-        ForeColor = Text
+        ForeColor = TextColor
     };
 
     private readonly CheckBox _captureClipboardImages = new()
     {
         Text = "이미지 / 캡처 기록",
         AutoSize = true,
-        ForeColor = Text
+        ForeColor = TextColor
     };
 
     private ClipboardHistoryService? _clipboard;
@@ -176,7 +176,7 @@ public sealed class MainForm : Form
         Height = 34,
         TextAlign = HorizontalAlignment.Center,
         BackColor = Color.White,
-        ForeColor = Text,
+        ForeColor = TextColor,
         BorderStyle = BorderStyle.FixedSingle,
         TabStop = false
     };
@@ -212,7 +212,7 @@ public sealed class MainForm : Form
             Text = "Con.Phone",
             AutoSize = true,
             Font = new Font("Segoe UI", 24, FontStyle.Bold),
-            ForeColor = Text,
+            ForeColor = TextColor,
             Margin = new Padding(0)
         });
 
@@ -355,7 +355,7 @@ public sealed class MainForm : Form
         info.Controls.Add(SectionTitle("Windows 클립보드 기록"));
         info.Controls.Add(Help(
             "텍스트와 스크린샷/이미지를 이 PC에만 보관하고, 나중에 다시 Windows 클립보드로 복원해 다른 프로그램에 붙여넣을 수 있습니다.",
-            Text));
+            TextColor));
         info.Controls.Add(Help(
             "휴대폰에서 복사한 실제 내용은 Bluetooth HID만으로 PC에 전달되지 않습니다. 휴대폰 → PC 자동 동기화는 Android 보조앱과 별도 데이터 채널이 필요합니다.",
             Secondary));
@@ -464,7 +464,7 @@ public sealed class MainForm : Form
         Text = text,
         AutoSize = true,
         Font = new Font("Segoe UI", 12, FontStyle.Bold),
-        ForeColor = Text,
+        ForeColor = TextColor,
         Margin = new Padding(0, 0, 0, 6)
     };
 
@@ -511,7 +511,7 @@ public sealed class MainForm : Form
             Width = 145,
             Height = 34,
             TextAlign = ContentAlignment.MiddleLeft,
-            ForeColor = Text
+            ForeColor = TextColor
         });
 
         row.Controls.Add(control);
@@ -536,7 +536,7 @@ public sealed class MainForm : Form
             Width = 185,
             Height = 36,
             TextAlign = ContentAlignment.MiddleLeft,
-            ForeColor = Text
+            ForeColor = TextColor
         });
 
         row.Controls.Add(box);
@@ -548,7 +548,7 @@ public sealed class MainForm : Form
             MinimumSize = new Size(72, 34),
             FlatStyle = FlatStyle.Flat,
             BackColor = Color.White,
-            ForeColor = Text
+            ForeColor = TextColor
         };
         change.FlatAppearance.BorderColor = Border;
         change.Click += (_, _) =>
@@ -572,7 +572,7 @@ public sealed class MainForm : Form
             FlatStyle = FlatStyle.Flat,
             Font = new Font("Segoe UI", 9.5f, FontStyle.Bold),
             BackColor = primary ? Brand : Color.White,
-            ForeColor = primary ? Color.White : Text
+            ForeColor = primary ? Color.White : TextColor
         };
 
         button.FlatAppearance.BorderColor = primary ? Brand : Border;
