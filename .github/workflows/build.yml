@@ -85,11 +85,19 @@ jobs:
           $hash = (Get-FileHash $exe -Algorithm SHA256).Hash
           $size = (Get-Item $exe).Length
           Write-Host "ConPhone.exe size=$size SHA256=$hash"
+          Set-Content -Path "$env:RUNNER_TEMP/ConPhone.exe.sha256" -Value "$hash  ConPhone.exe" -NoNewline
       - name: Upload ConPhone.exe
         uses: actions/upload-artifact@v4
         with:
           name: ConPhone-win-x64-single-exe
           path: ${{ runner.temp }}/ConPhone-win-x64/ConPhone.exe
+          if-no-files-found: error
+          retention-days: 14
+      - name: Upload ConPhone.exe SHA256
+        uses: actions/upload-artifact@v4
+        with:
+          name: ConPhone-win-x64-sha256
+          path: ${{ runner.temp }}/ConPhone.exe.sha256
           if-no-files-found: error
           retention-days: 14
       - name: Report successful single-EXE build to PR
