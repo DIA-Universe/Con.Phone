@@ -12,24 +12,11 @@ public static class Hid
     // This descriptor intentionally matches the minimal composite layout measured working on Galaxy Android 16.
     public const int KeyboardReportLength = 8;
     public const int MouseReportLength = 6;
-    public const int SystemControlReportLength = 1;
-    public const byte SystemPowerDownValue = 2;
     public static byte[] ReportMap => Convert.FromHexString(
         "05010906A1018501050719E029E715002501750195088102950175088101" +
         "95067508150025650507190029658100C0" +
         "05010902A10185020901A10005091901290315002501950375018102950175058101" +
-        "05010930093116018026FF7F75109502810609381581257F750895018106C0C0" +
-        "05010980A101850315012503750295010982098109838160750695018103C0");
-
-    public static byte[] KeyboardReport(byte usage = 0, byte modifiers = 0)
-    {
-        var report = new byte[KeyboardReportLength];
-        report[0] = modifiers;
-        if (usage != 0) report[2] = usage;
-        return report;
-    }
-
-    public static byte[] SystemControlReport(byte value = 0) => [value];
+        "05010930093116018026FF7F75109502810609381581257F750895018106C0C0");
 
     public static IEnumerable<WireReport> Encode(InputPacket packet)
     {
