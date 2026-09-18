@@ -36,6 +36,17 @@ Check("pointer wheel conserved", chunks.Sum(r => (int)unchecked((sbyte)r.Data[5]
 Check("drag buttons preserved", chunks.All(r => r.Data[0] == 1));
 Check("release emitted without motion", Hid.Encode(new PointerPacket(0)).Single().Data.All(b => b == 0));
 Check("keyboard no embedded report id", Hid.Encode(new KeyboardPacket(new byte[8])).Single().Data.Length == 8);
+var scaler = new PointerScaler();
+scaler.Configure(50, 100, false);
+Check("50 percent pointer keeps fractional first step", scaler.Apply(new PointerPacket(0, 1)).X == 0);
+Check("50 percent pointer carries fraction", scaler.Apply(new PointerPacket(0, 1)).X == 1);
+scaler.Configure(200, 100, false);
+Check("200 percent pointer doubles motion", scaler.Apply(new PointerPacket(0, 3, -2)).X == 6);
+scaler.Configure(100, 50, false);
+Check("50 percent scroll carries first notch", scaler.Apply(new PointerPacket(0, Wheel: 1)).Wheel == 0);
+Check("50 percent scroll carries second notch", scaler.Apply(new PointerPacket(0, Wheel: 1)).Wheel == 1);
+scaler.Configure(100, 100, true);
+Check("scroll inversion", scaler.Apply(new PointerPacket(0, Wheel: 1)).Wheel == -1);
 var box = new Outbox(2);
 Check("enqueue movement", box.TryAdd(new(1, new PointerPacket(0, 10, 20))));
 Check("merge movement", box.TryAdd(new(1, new PointerPacket(0, -5, 10))) && box.Count == 1);
