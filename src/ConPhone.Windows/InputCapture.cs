@@ -20,6 +20,7 @@ public sealed class InputCapture : IDisposable
     private HotkeyBinding _lockAndReturnHotkey = new() { Key = (int)Keys.L, Modifiers = HotkeyModifiers.Control | HotkeyModifiers.Alt };
     private readonly HashSet<int> _downKeys = [];
     private readonly HashSet<int> _suppressUntilUp = [];
+    private readonly HashSet<int> _localPassthroughUntilUp = [];
     private byte _buttons;
     private int _wheel, _pan;
     public event Action<InputPacket>? Packet;
@@ -86,9 +87,14 @@ public sealed class InputCapture : IDisposable
         {
             if (!_started.Task.IsCompletedSuccessfully) throw new InvalidOperationException("입력 수집이 준비되지 않았습니다.");
             var allowed = HotkeyPhysicalKeys(_toggleHotkey);
+            _localPassthroughUntilUp.Clear();
             for (int vk = 1; vk < 255; vk++)
-                if (!allowed.Contains(vk) && (GetAsyncKeyState(vk) & 0x8000) != 0)
+            {
+                if ((GetAsyncKeyState(vk) & 0x8000) == 0) continue;
+                if (!allowed.Contains(vk))
                     throw new InvalidOperationException("입력 전환 단축키 외의 키와 마우스 버튼을 모두 놓아 주세요.");
+                if (vk != _toggleHotkey.Key) _localPassthroughUntilUp.Add(vk);
+            }
             _keys.Clear(); _buttons = 0; _wheel = 0; _pan = 0; _remote = true;
         }
     }
@@ -116,6 +122,8 @@ public sealed class InputCapture : IDisposable
 
                 if (up && _suppressUntilUp.Remove(key))
                     return 1;
+                if (up && _localPassthroughUntilUp.Remove(key))
+                    return CallNextHookEx(0, code, message, data);
 
                 toggle = _toggleHotkey.Clone();
                 emergency = _emergencyHotkey.Clone();
