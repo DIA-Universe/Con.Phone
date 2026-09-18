@@ -1738,19 +1738,6 @@ public sealed class MainForm : Form
         var candidate = LocalUpdateService.Inspect(dialog.FileName);
         var current = LocalUpdateService.CurrentVersion;
 
-        if (!candidate.ChecksumVerified)
-        {
-            if (MessageBox.Show(
-                    this,
-                    "선택한 EXE 옆에 ConPhone.exe.sha256 검증 파일이 없습니다.\r\n" +
-                    $"계산된 SHA-256:\r\n{candidate.Sha256}\r\n\r\n" +
-                    "출처를 직접 확인한 파일일 때만 계속하세요.",
-                    "업데이트 무결성 확인",
-                    MessageBoxButtons.YesNo,
-                    MessageBoxIcon.Warning) != DialogResult.Yes)
-                return Task.CompletedTask;
-        }
-
         if (candidate.Version <= current)
         {
             if (MessageBox.Show(
@@ -1773,7 +1760,9 @@ public sealed class MainForm : Form
         }
 
         var staged = LocalUpdateService.Stage(candidate);
-        LocalUpdateService.LaunchInstaller(staged);
+        LocalUpdateService.LaunchInstaller(
+            staged,
+            candidate.Sha256);
         Log(
             $"업데이트 적용 시작 · {current} → {candidate.Version} · " +
             $"SHA256:{candidate.Sha256[..12]}… · 검증:{candidate.ChecksumVerified}");
