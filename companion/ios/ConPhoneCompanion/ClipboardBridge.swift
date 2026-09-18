@@ -194,12 +194,14 @@ final class ClipboardBridge: NSObject, ObservableObject {
     }
 
     private func retryDirectConfigRead(_ peripheral: CBPeripheral) {
-        guard directConfigReadAttempt < 8,
-              let characteristic = directLinkCharacteristic else { return }
+        guard let characteristic = directLinkCharacteristic else { return }
 
         directConfigReadAttempt += 1
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { [weak self, weak peripheral] in
-            guard let self, let peripheral else { return }
+        let delay = directConfigReadAttempt <= 8 ? 1.2 : 5.0
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self, weak peripheral] in
+            guard let self,
+                  let peripheral,
+                  self.p2p?.ready != true else { return }
             peripheral.readValue(for: characteristic)
         }
     }
