@@ -141,12 +141,18 @@ enum ClipboardProtocol {
         let hash = frame.subdata(in: 34..<66)
         let payloadLength = Int(frame.int32LE(at: 66))
 
+        let maxTotal = kind == .text ? maxText : maxImage
+        let maxCount = (maxTotal + 255) / 256
+
         guard count > 0,
+              count <= maxCount,
               index >= 0,
               index < count,
               total > 0,
-              payloadLength >= 0,
+              total <= maxTotal,
+              payloadLength > 0,
               payloadLength <= maxChunk,
+              payloadLength <= total,
               frame.count == wireHeader + payloadLength else {
             throw ProtocolError.invalidFrame
         }
@@ -216,6 +222,7 @@ final class ClipboardWireReassembler {
         let hash: Data
         let created = Date()
         var parts: [Int: Data] = [:]
+        var bytes = 0
     }
 
     private var pending: [Data: Pending] = [:]
@@ -244,7 +251,12 @@ final class ClipboardWireReassembler {
         }
 
         if state.parts[chunk.index] == nil {
+            guard state.bytes + chunk.payload.count <= state.total else {
+                pending.removeValue(forKey: chunk.transferId)
+                throw ClipboardProtocol.ProtocolError.tooLarge
+            }
             state.parts[chunk.index] = chunk.payload
+            state.bytes += chunk.payload.count
         }
         pending[chunk.transferId] = state
 
