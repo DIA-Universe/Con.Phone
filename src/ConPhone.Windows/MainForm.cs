@@ -951,8 +951,14 @@ public sealed class MainForm : Form
         {
             SettingsStore.Save(_settings);
             Log($"클립보드 설정 저장 · 최대 {_settings.ClipboardHistoryLimit}개 · 동기화:{_settings.ClipboardSyncEnabled} · BLE 이미지 {_settings.ClipboardBleImageLimitKb} KiB");
-            if (_settings.ClipboardSyncEnabled && _clipboardSync is not null)
-                _ = StartClipboardSyncSafeAsync();
+
+            if (_clipboardSync is not null)
+            {
+                if (_settings.ClipboardSyncEnabled)
+                    _ = StartClipboardSyncSafeAsync();
+                else
+                    _ = _clipboardSync.SetActiveAsync(false);
+            }
         }
     }
 
