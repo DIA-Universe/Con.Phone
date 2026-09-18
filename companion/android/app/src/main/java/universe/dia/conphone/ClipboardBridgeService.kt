@@ -60,6 +60,7 @@ class ClipboardBridgeService : Service() {
     private val bleQueue = ConcurrentLinkedQueue<ByteArray>()
     private val bleReassembler = BleReassembler()
     private val wireReassembler = ClipboardWireReassembler()
+    private val credentialStore by lazy { SecureCredentialStore(this) }
 
     @Volatile private var gatt: BluetoothGatt? = null
     @Volatile private var tx: BluetoothGattCharacteristic? = null
@@ -88,7 +89,17 @@ class ClipboardBridgeService : Service() {
     override fun onCreate() {
         super.onCreate()
         createNotificationChannel()
+
+        credentialStore.loadCredential()?.let { (deviceHash, secret) ->
+            credential = Credential(deviceHash, secret)
+        }
+        relayEndpoint = credentialStore.loadRelayEndpoint()
+
         showStatus("연결 준비 중")
+
+        val savedEndpoint = relayEndpoint
+        if (credential != null && savedEndpoint != null)
+            startRelay(savedEndpoint)
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -331,7 +342,25 @@ class ClipboardBridgeService : Service() {
         when (characteristic.uuid) {
             SECRET_UUID -> {
                 if (value.size != 64) return
-                credential = Credential(value.copyOfRange(0, 32), value.copyOfRange(32, 64))
+                val incoming = Credential(
+                    value.copyOfRange(0, 32),
+                    value.copyOfRange(32, 64)
+                )
+
+                val changed = credential?.let {
+                    !it.deviceHash.contentEquals(incoming.deviceHash) ||
+                        !it.secret.contentEquals(incoming.secret)
+                } ?: true
+
+                if (changed) {
+                    relayGeneration++
+                    relay?.close()
+                    relay = null
+                }
+
+                credential = incoming
+                credentialStore.saveCredential(incoming.deviceHash, incoming.secret)
+
                 showStatus("BLE Clipboard 연결됨 · LAN/P2P 승격 확인")
                 startLanDiscovery()
                 if (checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT) == PackageManager.PERMISSION_GRANTED) {
@@ -358,6 +387,8 @@ class ClipboardBridgeService : Service() {
             RELAY_CONFIG_UUID -> {
                 val endpoint = parseRelayEndpoint(value)
                 relayEndpoint = endpoint
+                credentialStore.saveRelayEndpoint(endpoint)
+
                 if (endpoint == null) {
                     relayGeneration++
                     relay?.close()
