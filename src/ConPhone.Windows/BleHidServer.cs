@@ -17,10 +17,14 @@ public sealed record Peer(
     bool Mouse,
     bool SystemControl,
     bool Paired,
-    bool Connected)
+    bool Connected,
+    bool Trusted = false,
+    bool Active = false)
 {
     public override string ToString() =>
-        $"{Name} [{Fingerprint}]  키보드:{Keyboard} 마우스:{Mouse} 잠금:{SystemControl} 페어링:{Paired} 연결:{Connected}";
+        $"{(Active ? "▶ " : "")}{Name} [{Fingerprint}]  " +
+        $"키보드:{Keyboard} 마우스:{Mouse} 잠금:{SystemControl} " +
+        $"등록:{Trusted} 연결:{Connected}";
 }
 
 public sealed class BleHidServer : IDisposable
@@ -59,6 +63,8 @@ public sealed class BleHidServer : IDisposable
     public int MouseSubscribers => LiveClientCount(_mouse);
     public int SystemSubscribers => LiveClientCount(_system);
     public string? ApprovedId => _approved;
+    public int TrustedDeviceCount => TrustedDeviceStore.LoadAll().Count;
+    public bool IsTrustedDevice(string id) => TrustedDeviceStore.Contains(id);
     public bool Ready => _running && _approved is { } id && IsReady(id);
     public int MousePacingIntervalMs =>
         _approved is { } id && _connectionIntervalMs.TryGetValue(id, out var value)
@@ -607,23 +613,31 @@ public sealed class BleHidServer : IDisposable
         ThrowIfDisposed();
         _lastOperation = "EnumerateSubscribedClients";
 
-        var ids = new HashSet<string>(StringComparer.Ordinal);
-        foreach (var c in new[] { _keyboard, _mouse, _system })
+        var trustedIds = TrustedDeviceStore.LoadAll();
+        var ids = new HashSet<string>(trustedIds, StringComparer.Ordinal);
+
+        foreach (var characteristic in new[] { _keyboard, _mouse, _system })
         {
-            if (c is null) continue;
+            if (characteristic is null) continue;
 
             try
             {
-                foreach (var client in c.SubscribedClients)
-                    if (TryActiveSession(client, out _, out var id))
-                        ids.Add(id);
+                foreach (var client in characteristic.SubscribedClients)
+                {
+                    if (!TryActiveSession(client, out _, out var id))
+                        continue;
+
+                    ids.Add(id);
+                    await EnsureDeviceAsync(id).ConfigureAwait(false);
+                }
             }
             catch (InvalidOperationException ex) when (IsIllegalState(ex)) { }
             catch (ObjectDisposedException) { }
         }
 
-        foreach (var id in ids)
-            await EnsureDeviceAsync(id).ConfigureAwait(false);
+        // Remembered devices should stay visible even while temporarily disconnected.
+        foreach (var trustedId in trustedIds)
+            await EnsureDeviceAsync(trustedId).ConfigureAwait(false);
 
         var peers = new List<Peer>();
         foreach (var id in ids)
@@ -632,19 +646,30 @@ public sealed class BleHidServer : IDisposable
             var fingerprint = Convert.ToHexString(
                 SHA256.HashData(Encoding.UTF8.GetBytes(id)))[..8];
 
+            var trusted = trustedIds.Contains(id, StringComparer.Ordinal);
+            var active = string.Equals(_approved, id, StringComparison.Ordinal);
+
             peers.Add(new Peer(
                 id,
-                string.IsNullOrWhiteSpace(device?.Name) ? "이름 확인 불가" : device.Name,
+                string.IsNullOrWhiteSpace(device?.Name)
+                    ? (trusted ? "저장된 기기 (오프라인)" : "이름 확인 불가")
+                    : device.Name,
                 fingerprint,
                 Client(_keyboard, id) is not null,
                 Client(_mouse, id) is not null,
                 Client(_system, id) is not null,
                 device?.DeviceInformation.Pairing.IsPaired == true,
-                device?.ConnectionStatus != BluetoothConnectionStatus.Disconnected));
+                device?.ConnectionStatus == BluetoothConnectionStatus.Connected,
+                trusted,
+                active));
         }
 
         _lastOperation = "PeerRefreshComplete";
-        return peers;
+        return peers
+            .OrderByDescending(x => x.Active)
+            .ThenByDescending(x => x.Trusted)
+            .ThenBy(x => x.Name, StringComparer.CurrentCultureIgnoreCase)
+            .ToArray();
     }
 
     public async Task ApproveAsync(string id)
@@ -654,7 +679,7 @@ public sealed class BleHidServer : IDisposable
 
         if (!_devices.TryGetValue(id, out var device) ||
             device.DeviceInformation.Pairing.IsPaired != true)
-            throw new InvalidOperationException("Windows에서 페어링된 기기만 승인할 수 있습니다.");
+            throw new InvalidOperationException("Windows에서 페어링된 기기만 등록할 수 있습니다.");
 
         if (!_running)
             throw new InvalidOperationException("Bluetooth HID 서비스가 실행 중이 아닙니다.");
@@ -670,31 +695,74 @@ public sealed class BleHidServer : IDisposable
                 $"HID 구독 미완료 · 키보드:{keyboard} 마우스:{mouse}. 휴대폰 Bluetooth 상세에서 입력 장치를 확인하세요.");
         }
 
+        var slot = TrustedDeviceStore.Remember(id);
+        await SelectTargetAsync(id).ConfigureAwait(false);
+
+        Status?.Invoke(
+            $"기기 등록/활성화 완료 · 슬롯:{slot}/{TrustedDeviceStore.MaxDevices} · " +
+            $"K:{(Client(_keyboard, id) is null ? 0 : 1)} M:{(Client(_mouse, id) is null ? 0 : 1)} " +
+            $"LOCK:{(Client(_system, id) is null ? 0 : 1)}");
+        Changed?.Invoke();
+    }
+
+    public async Task SelectTargetAsync(string id)
+    {
+        ThrowIfDisposed();
+
+        if (!TrustedDeviceStore.Contains(id))
+            throw new InvalidOperationException("먼저 이 기기를 신뢰 기기로 등록해 주세요.");
+
+        await EnsureDeviceAsync(id).ConfigureAwait(false);
+
+        if (!_running)
+            throw new InvalidOperationException("Bluetooth HID 서비스가 실행 중이 아닙니다.");
+
+        if (!IsReady(id))
+            throw new InvalidOperationException(
+                "선택한 기기의 키보드·마우스 HID 연결이 현재 준비되지 않았습니다.");
+
+        SetInteractiveMode(false);
         _keyboardValue = new byte[Hid.KeyboardReportLength];
         _mouseValue = new byte[Hid.MouseReportLength];
         _systemValue = new byte[Hid.SystemReportLength];
+
         _approved = id;
-        TrustedDeviceStore.Save(id);
-        RefreshConnectionInterval(id, device);
-        if (_interactiveMode)
-            ApplyInteractiveLinkTuning(id, device);
+        TrustedDeviceStore.SetActive(id);
+
+        if (_devices.TryGetValue(id, out var device))
+        {
+            RefreshConnectionInterval(id, device);
+            if (_interactiveMode)
+                ApplyInteractiveLinkTuning(id, device);
+        }
 
         if (_sessions.TryGetValue(id, out var session))
             TryMaintainConnection(session);
 
         Status?.Invoke(
-            $"입력 대상 승인 완료 · K:{(Client(_keyboard, id) is null ? 0 : 1)} M:{(Client(_mouse, id) is null ? 0 : 1)} LOCK:{(Client(_system, id) is null ? 0 : 1)}");
+            $"활성 입력 대상 전환 · {Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(id)))[..8]}");
         Changed?.Invoke();
     }
 
-    public string? Revoke()
+    public string? Revoke(string? deviceId = null)
     {
-        var previous = _approved;
-        SetInteractiveMode(false);
-        _approved = null;
-        TrustedDeviceStore.Clear();
+        var target = deviceId ?? _approved;
+        if (target is null) return null;
+
+        if (string.Equals(_approved, target, StringComparison.Ordinal))
+            SetInteractiveMode(false);
+
+        TrustedDeviceStore.Remove(target);
+        ReleaseThroughputRequest(target);
+        _connectionIntervalMs.TryRemove(target, out _);
+
+        if (string.Equals(_approved, target, StringComparison.Ordinal))
+            _approved = TrustedDeviceStore.LoadActive();
+
+        Status?.Invoke(
+            $"신뢰 기기 해제 · 남은 등록 {TrustedDeviceStore.LoadAll().Count}/{TrustedDeviceStore.MaxDevices}");
         Changed?.Invoke();
-        return previous;
+        return target;
     }
 
     public async Task SendSystemLockAsync(CancellationToken token)
