@@ -38,8 +38,18 @@ public sealed class ClipboardSyncCoordinator : IAsyncDisposable
 
     public async Task StartAsync()
     {
-        if (_started) return;
-        _started = true;
+        if (!_started)
+        {
+            _started = true;
+            try
+            {
+                await _lan.StartAsync().ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                Status?.Invoke($"Clipboard LAN/P2P 시작 실패; BLE fallback 유지: {ex.Message}");
+            }
+        }
 
         try
         {
@@ -52,21 +62,26 @@ public sealed class ClipboardSyncCoordinator : IAsyncDisposable
 
         try
         {
-            await _lan.StartAsync().ConfigureAwait(false);
-        }
-        catch (Exception ex)
-        {
-            Status?.Invoke($"Clipboard LAN/P2P 시작 실패; BLE fallback 유지: {ex.Message}");
-        }
-
-        try
-        {
             await _ble.StartAsync().ConfigureAwait(false);
         }
         catch (Exception ex)
         {
             Status?.Invoke($"Clipboard BLE fallback 시작 실패: {ex.Message}");
         }
+    }
+
+    public async Task SetActiveAsync(bool active)
+    {
+        if (active)
+        {
+            await StartAsync().ConfigureAwait(false);
+            return;
+        }
+
+        _ble.StopAdvertising();
+        _direct.Stop();
+        _lan.Deactivate();
+        Status?.Invoke("기기간 복붙 비활성화 · Bluetooth/P2P 검색 신호 중지");
     }
 
     public async Task<bool> SendAsync(
