@@ -85,15 +85,26 @@ class MainActivity : Activity() {
 
     private fun hasBluetoothPermissions(): Boolean =
         checkSelfPermission(Manifest.permission.BLUETOOTH_SCAN) == PackageManager.PERMISSION_GRANTED &&
-            checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT) == PackageManager.PERMISSION_GRANTED
+            checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT) == PackageManager.PERMISSION_GRANTED &&
+            hasNearbyWifiPermission()
+
+    private fun hasNearbyWifiPermission(): Boolean =
+        if (android.os.Build.VERSION.SDK_INT >= 33)
+            checkSelfPermission(Manifest.permission.NEARBY_WIFI_DEVICES) == PackageManager.PERMISSION_GRANTED
+        else
+            checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED
 
     private fun requestPermissions() {
         val permissions = mutableListOf(
             Manifest.permission.BLUETOOTH_SCAN,
             Manifest.permission.BLUETOOTH_CONNECT
         )
-        if (android.os.Build.VERSION.SDK_INT >= 33)
+        if (android.os.Build.VERSION.SDK_INT >= 33) {
             permissions += Manifest.permission.POST_NOTIFICATIONS
+            permissions += Manifest.permission.NEARBY_WIFI_DEVICES
+        } else {
+            permissions += Manifest.permission.ACCESS_FINE_LOCATION
+        }
 
         requestPermissions(permissions.toTypedArray(), requestCode)
     }
