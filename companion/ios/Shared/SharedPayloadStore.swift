@@ -48,13 +48,18 @@ enum SharedPayloadStore {
         let destination = directory.appendingPathComponent(fileName)
         try FileManager.default.copyItem(at: source, to: destination)
 
-        try saveEnvelope(SharedPayloadEnvelope(
-            id: UUID(),
-            kind: .image,
-            text: nil,
-            fileName: fileName,
-            createdAt: Date()
-        ))
+        do {
+            try saveEnvelope(SharedPayloadEnvelope(
+                id: UUID(),
+                kind: .image,
+                text: nil,
+                fileName: fileName,
+                createdAt: Date()
+            ))
+        } catch {
+            try? FileManager.default.removeItem(at: destination)
+            throw error
+        }
     }
 
     static func saveImageData(_ data: Data) throws {
@@ -69,13 +74,18 @@ enum SharedPayloadStore {
         let destination = directory.appendingPathComponent(fileName)
         try data.write(to: destination, options: .atomic)
 
-        try saveEnvelope(SharedPayloadEnvelope(
-            id: UUID(),
-            kind: .image,
-            text: nil,
-            fileName: fileName,
-            createdAt: Date()
-        ))
+        do {
+            try saveEnvelope(SharedPayloadEnvelope(
+                id: UUID(),
+                kind: .image,
+                text: nil,
+                fileName: fileName,
+                createdAt: Date()
+            ))
+        } catch {
+            try? FileManager.default.removeItem(at: destination)
+            throw error
+        }
     }
 
     static func peek() -> (SharedPayloadEnvelope, Data?)? {
@@ -101,7 +111,10 @@ enum SharedPayloadStore {
                 return nil
             }
 
-            let file = directory.appendingPathComponent(name)
+            guard let file = safeFileURL(name, in: directory) else {
+                clear(envelope.id)
+                return nil
+            }
             guard let imageData = try? Data(contentsOf: file),
                   !imageData.isEmpty,
                   imageData.count <= maxImageBytes else {
@@ -127,8 +140,9 @@ enum SharedPayloadStore {
 
         if let name = envelope.fileName,
            let directory = try? sharedDirectory() {
-            try? FileManager.default.removeItem(
-                at: directory.appendingPathComponent(name))
+            if let file = safeFileURL(name, in: directory) {
+                try? FileManager.default.removeItem(at: file)
+            }
         }
     }
 
@@ -162,6 +176,17 @@ enum SharedPayloadStore {
             at: directory,
             withIntermediateDirectories: true)
         return directory
+    }
+
+    private static func safeFileURL(
+        _ fileName: String,
+        in directory: URL
+    ) -> URL? {
+        guard !fileName.isEmpty,
+              (fileName as NSString).lastPathComponent == fileName else {
+            return nil
+        }
+        return directory.appendingPathComponent(fileName)
     }
 
     private static func cleanupStaleFiles(in directory: URL) {
