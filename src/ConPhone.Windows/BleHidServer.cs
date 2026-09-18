@@ -19,11 +19,12 @@ public sealed record Peer(
     bool Paired,
     bool Connected,
     bool Trusted = false,
-    bool Active = false)
+    bool Active = false,
+    bool ConsumerControl = false)
 {
     public override string ToString() =>
         $"{(Active ? "▶ " : "")}{Name} [{Fingerprint}]  " +
-        $"키보드:{Keyboard} 마우스:{Mouse} 잠금:{SystemControl} " +
+        $"키보드:{Keyboard} 마우스:{Mouse} 잠금:{SystemControl} 미디어:{ConsumerControl} " +
         $"등록:{Trusted} 연결:{Connected}";
 }
 
@@ -31,7 +32,7 @@ public sealed class BleHidServer : IDisposable
 {
     private GattServiceProvider? _provider;
     private GattServiceProvider? _batteryProvider;
-    private GattLocalCharacteristic? _keyboard, _mouse, _system;
+    private GattLocalCharacteristic? _keyboard, _mouse, _system, _consumer;
 
     private readonly ConcurrentDictionary<string, byte> _protocol = new();
     private readonly ConcurrentDictionary<string, bool> _suspended = new();
@@ -53,6 +54,7 @@ public sealed class BleHidServer : IDisposable
     private byte[] _keyboardValue = new byte[Hid.KeyboardReportLength];
     private byte[] _mouseValue = new byte[Hid.MouseReportLength];
     private byte[] _systemValue = new byte[Hid.SystemReportLength];
+    private byte[] _consumerValue = new byte[Hid.ConsumerReportLength];
 
     public event Action? Changed;
     public event Action<string>? Status;
@@ -62,6 +64,7 @@ public sealed class BleHidServer : IDisposable
     public int KeyboardSubscribers => LiveClientCount(_keyboard);
     public int MouseSubscribers => LiveClientCount(_mouse);
     public int SystemSubscribers => LiveClientCount(_system);
+    public int ConsumerSubscribers => LiveClientCount(_consumer);
     public string? ApprovedId => _approved;
     public int TrustedDeviceCount => TrustedDeviceStore.LoadAll().Count;
     public bool IsTrustedDevice(string id) => TrustedDeviceStore.Contains(id);
@@ -174,6 +177,12 @@ public sealed class BleHidServer : IDisposable
                 reportLength: Hid.SystemReportLength,
                 label: "시스템 잠금",
                 currentValue: id => id == _approved ? _systemValue : new byte[Hid.SystemReportLength]);
+
+            _consumer = await InputCharacteristic(
+                reportId: 4,
+                reportLength: Hid.ConsumerReportLength,
+                label: "미디어키",
+                currentValue: id => id == _approved ? _consumerValue : new byte[Hid.ConsumerReportLength]);
 
             await CreateBatteryServiceAsync();
 
@@ -626,7 +635,7 @@ public sealed class BleHidServer : IDisposable
         var trustedIds = TrustedDeviceStore.LoadAll();
         var ids = new HashSet<string>(trustedIds, StringComparer.Ordinal);
 
-        foreach (var characteristic in new[] { _keyboard, _mouse, _system })
+        foreach (var characteristic in new[] { _keyboard, _mouse, _system, _consumer })
         {
             if (characteristic is null) continue;
 
@@ -671,7 +680,8 @@ public sealed class BleHidServer : IDisposable
                 device?.DeviceInformation.Pairing.IsPaired == true,
                 device?.ConnectionStatus == BluetoothConnectionStatus.Connected,
                 trusted,
-                active));
+                active,
+                Client(_consumer, id) is not null));
         }
 
         _lastOperation = "PeerRefreshComplete";
@@ -711,7 +721,7 @@ public sealed class BleHidServer : IDisposable
         Status?.Invoke(
             $"기기 등록/활성화 완료 · 슬롯:{slot}/{TrustedDeviceStore.MaxDevices} · " +
             $"K:{(Client(_keyboard, id) is null ? 0 : 1)} M:{(Client(_mouse, id) is null ? 0 : 1)} " +
-            $"LOCK:{(Client(_system, id) is null ? 0 : 1)}");
+            $"LOCK:{(Client(_system, id) is null ? 0 : 1)} MEDIA:{(Client(_consumer, id) is null ? 0 : 1)}");
         Changed?.Invoke();
     }
 
@@ -735,6 +745,7 @@ public sealed class BleHidServer : IDisposable
         _keyboardValue = new byte[Hid.KeyboardReportLength];
         _mouseValue = new byte[Hid.MouseReportLength];
         _systemValue = new byte[Hid.SystemReportLength];
+        _consumerValue = new byte[Hid.ConsumerReportLength];
 
         _approved = id;
         TrustedDeviceStore.SetActive(id);
@@ -837,6 +848,46 @@ public sealed class BleHidServer : IDisposable
         }
     }
 
+    public async Task SendConsumerAsync(
+        ConsumerAction action,
+        CancellationToken token)
+    {
+        ThrowIfDisposed();
+
+        var id = _approved;
+        if (id is null || !_running || !IsReady(id))
+            throw new InvalidOperationException("승인된 휴대폰 입력 연결이 없습니다.");
+
+        var client = Client(_consumer, id);
+        if (_consumer is null || client is null)
+            throw new NotSupportedException(
+                "휴대폰이 미디어 Consumer Control Report를 구독하지 않았습니다. 새 HID 프로필로 다시 페어링해 주세요.");
+
+        await _send.WaitAsync(token).ConfigureAwait(false);
+        try
+        {
+            var pressed = Hid.ConsumerReport(action, true);
+            _consumerValue = pressed;
+            var down = await _consumer.NotifyValueAsync(pressed.AsBuffer(), client)
+                .AsTask(token).ConfigureAwait(false);
+            if (down.Status != GattCommunicationStatus.Success)
+                throw new InvalidOperationException($"미디어키 전송 실패: {down.Status}");
+
+            await Task.Delay(60, token).ConfigureAwait(false);
+
+            var released = Hid.ConsumerReport(action, false);
+            _consumerValue = released;
+            var up = await _consumer.NotifyValueAsync(released.AsBuffer(), client)
+                .AsTask(token).ConfigureAwait(false);
+            if (up.Status != GattCommunicationStatus.Success)
+                throw new InvalidOperationException($"미디어키 해제 실패: {up.Status}");
+        }
+        finally
+        {
+            _send.Release();
+        }
+    }
+
     public async Task SendAsync(
         WireReport report,
         Func<bool> current,
@@ -886,6 +937,7 @@ public sealed class BleHidServer : IDisposable
         _keyboardValue = new byte[Hid.KeyboardReportLength];
         _mouseValue = new byte[Hid.MouseReportLength];
         _systemValue = new byte[Hid.SystemReportLength];
+        _consumerValue = new byte[Hid.ConsumerReportLength];
 
         foreach (var session in _sessions.Values)
         {
