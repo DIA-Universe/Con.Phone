@@ -248,7 +248,7 @@ public sealed class BleClipboardService : IDisposable
                 return;
             }
 
-            // protocol v1, text, image, LAN-upgrade supported.
+            // protocol v1: text, image, direct P2P upgrade supported.
             request.RespondWithValue(new byte[] { 1, 1, 1, 1 }.AsBuffer());
         }
         finally
