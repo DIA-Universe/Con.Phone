@@ -31,32 +31,29 @@ public static class LocalUpdateService
         if (file.Length < 1024 * 1024)
             throw new InvalidOperationException("업데이트 실행 파일 크기가 비정상적으로 작습니다.");
 
-        var sha256 = Convert.ToHexString(
-            System.Security.Cryptography.SHA256.HashData(
-                File.ReadAllBytes(path)));
+        var sha256 = ComputeSha256(path);
 
         var checksumPath = path + ".sha256";
-        var checksumVerified = false;
+        if (!File.Exists(checksumPath))
+            throw new InvalidOperationException(
+                "업데이트 SHA-256 검증 파일이 없습니다. ConPhone.exe.sha256을 같은 폴더에 두세요.");
 
-        if (File.Exists(checksumPath))
-        {
-            var expected = File.ReadAllText(checksumPath)
-                .Trim()
-                .Split([' ', '\t'], StringSplitOptions.RemoveEmptyEntries)
-                .FirstOrDefault();
+        var expected = File.ReadAllText(checksumPath)
+            .Trim()
+            .Split([' ', '\t'], StringSplitOptions.RemoveEmptyEntries)
+            .FirstOrDefault();
 
-            if (expected is null ||
-                expected.Length != 64 ||
-                !expected.All(Uri.IsHexDigit))
-                throw new InvalidOperationException(
-                    "업데이트 SHA-256 파일 형식이 올바르지 않습니다.");
+        if (expected is null ||
+            expected.Length != 64 ||
+            !expected.All(Uri.IsHexDigit))
+            throw new InvalidOperationException(
+                "업데이트 SHA-256 파일 형식이 올바르지 않습니다.");
 
-            if (!string.Equals(expected, sha256, StringComparison.OrdinalIgnoreCase))
-                throw new InvalidOperationException(
-                    "업데이트 SHA-256이 일치하지 않습니다. 파일을 적용하지 않습니다.");
+        if (!string.Equals(expected, sha256, StringComparison.OrdinalIgnoreCase))
+            throw new InvalidOperationException(
+                "업데이트 SHA-256이 일치하지 않습니다. 파일을 적용하지 않습니다.");
 
-            checksumVerified = true;
-        }
+        var checksumVerified = true;
 
         return new UpdateCandidate(
             path,
@@ -97,10 +94,24 @@ public static class LocalUpdateService
             directory,
             $"ConPhone-update-{Guid.NewGuid():N}.exe");
         File.Copy(candidate.Path, staged, overwrite: false);
+
+        var stagedHash = ComputeSha256(staged);
+        if (!string.Equals(
+                stagedHash,
+                candidate.Sha256,
+                StringComparison.OrdinalIgnoreCase))
+        {
+            try { File.Delete(staged); } catch { }
+            throw new InvalidOperationException(
+                "업데이트 staging 파일의 SHA-256 검증에 실패했습니다.");
+        }
+
         return staged;
     }
 
-    public static void LaunchInstaller(string stagedPath)
+    public static void LaunchInstaller(
+        string stagedPath,
+        string expectedSha256)
     {
         var target = Environment.ProcessPath
             ?? throw new InvalidOperationException("현재 Con.Phone 실행 파일 경로를 확인할 수 없습니다.");
@@ -113,14 +124,21 @@ public static class LocalUpdateService
         start.ArgumentList.Add("--apply-update");
         start.ArgumentList.Add(target);
         start.ArgumentList.Add(Environment.ProcessId.ToString());
+        start.ArgumentList.Add(expectedSha256);
         Process.Start(start)
             ?? throw new InvalidOperationException("업데이트 프로세스를 시작하지 못했습니다.");
     }
 
     public static void ApplyFromStagedProcess(
         string targetPath,
-        int oldProcessId)
+        int oldProcessId,
+        string expectedSha256)
     {
+        if (expectedSha256.Length != 64 ||
+            !expectedSha256.All(Uri.IsHexDigit))
+            throw new InvalidOperationException(
+                "업데이트 SHA-256 인수가 올바르지 않습니다.");
+
         var source = Environment.ProcessPath
             ?? throw new InvalidOperationException("업데이트 실행 파일 경로를 확인할 수 없습니다.");
 
@@ -139,37 +157,68 @@ public static class LocalUpdateService
         var target = Path.GetFullPath(targetPath);
         Directory.CreateDirectory(Path.GetDirectoryName(target)!);
 
-        Exception? last = null;
-        for (var attempt = 0; attempt < 20; attempt++)
+        var sourceHash = ComputeSha256(source);
+        if (!string.Equals(
+                sourceHash,
+                expectedSha256,
+                StringComparison.OrdinalIgnoreCase))
+            throw new InvalidOperationException(
+                "실행 중인 staging 파일의 SHA-256이 변경되었습니다. 업데이트를 중단합니다.");
+
+        var replacement = target + $".new-{Guid.NewGuid():N}";
+        try
+        {
+            File.Copy(source, replacement, overwrite: false);
+
+            var replacementHash = ComputeSha256(replacement);
+            if (!string.Equals(
+                    replacementHash,
+                    expectedSha256,
+                    StringComparison.OrdinalIgnoreCase))
+                throw new InvalidOperationException(
+                    "교체용 업데이트 파일의 SHA-256 검증에 실패했습니다.");
+
+            File.Move(replacement, target, overwrite: true);
+
+            var targetHash = ComputeSha256(target);
+            if (!string.Equals(
+                    targetHash,
+                    expectedSha256,
+                    StringComparison.OrdinalIgnoreCase))
+                throw new InvalidOperationException(
+                    "업데이트 적용 후 SHA-256 검증에 실패했습니다.");
+        }
+        finally
         {
             try
             {
-                File.Copy(source, target, overwrite: true);
-                last = null;
-                break;
+                if (File.Exists(replacement))
+                    File.Delete(replacement);
             }
-            catch (IOException ex)
+            catch
             {
-                last = ex;
-                Thread.Sleep(250);
-            }
-            catch (UnauthorizedAccessException ex)
-            {
-                last = ex;
-                break;
             }
         }
-
-        if (last is not null)
-            throw new InvalidOperationException(
-                "기존 Con.Phone 실행 파일을 교체하지 못했습니다. 쓰기 권한을 확인해 주세요.",
-                last);
 
         Process.Start(new ProcessStartInfo
         {
             FileName = target,
             UseShellExecute = true
         });
+    }
+
+    private static string ComputeSha256(string path)
+    {
+        using var stream = new FileStream(
+            path,
+            FileMode.Open,
+            FileAccess.Read,
+            FileShare.Read,
+            bufferSize: 1024 * 1024,
+            options: FileOptions.SequentialScan);
+
+        return Convert.ToHexString(
+            System.Security.Cryptography.SHA256.HashData(stream));
     }
 
     private static string? NormalizeVersion(string? value)
