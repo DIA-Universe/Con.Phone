@@ -58,14 +58,15 @@ class ShareActivity : Activity() {
             return
         }
 
-        runCatching {
-            val directory = File(cacheDir, "shared").apply { mkdirs() }
-            directory.listFiles()?.forEach {
-                if (System.currentTimeMillis() - it.lastModified() > 24 * 60 * 60 * 1000L)
-                    runCatching { it.delete() }
-            }
+        val directory = File(cacheDir, "shared").apply { mkdirs() }
+        directory.listFiles()?.forEach {
+            if (System.currentTimeMillis() - it.lastModified() > 24 * 60 * 60 * 1000L)
+                runCatching { it.delete() }
+        }
 
-            val target = File(directory, "share-${UUID.randomUUID()}.bin")
+        val target = File(directory, "share-${UUID.randomUUID()}.bin")
+
+        runCatching {
             contentResolver.openInputStream(uri).use { input ->
                 requireNotNull(input) { "공유 이미지를 열 수 없습니다." }
                 FileOutputStream(target).use { output ->
@@ -92,6 +93,7 @@ class ShareActivity : Activity() {
             )
             Toast.makeText(this, "PC 이미지 전송 대기열에 추가했습니다.", Toast.LENGTH_SHORT).show()
         }.onFailure {
+            runCatching { target.delete() }
             Toast.makeText(this, "이미지 공유 준비 실패: ${it.message}", Toast.LENGTH_SHORT).show()
         }
 
