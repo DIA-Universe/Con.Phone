@@ -94,4 +94,62 @@ Check("descriptor keyboard input 64 bits", bits[(1, 0x80)] == 64);
 Check("descriptor has no output reports", !bits.ContainsKey((1, 0x90)));
 Check("descriptor pointer input 48 bits", bits[(2, 0x80)] == 48);
 Check("descriptor system-control input 8 bits", bits[(3, 0x80)] == 8);
+
+// Clipboard text/image sync protocol.
+var clipText = ClipboardContent.FromText(string.Concat(Enumerable.Repeat("한글🙂abc", 120)));
+Check("clipboard text utf8 roundtrip", clipText.GetText() == string.Concat(Enumerable.Repeat("한글🙂abc", 120)));
+Check("clipboard text hash sha256", clipText.Hash.Length == 64);
+var clipFrames = ClipboardWireCodec.Encode(clipText, 256);
+Check("clipboard chunked into multiple frames", clipFrames.Count > 1);
+var clipReassembler = new ClipboardReassembler();
+ClipboardContent? rebuilt = null;
+foreach (var frame in clipFrames.Reverse())
+    rebuilt = clipReassembler.Add(ClipboardWireCodec.Decode(frame)) ?? rebuilt;
+Check("clipboard out-of-order reassembly", rebuilt is not null && rebuilt.GetText() == clipText.GetText());
+var duplicateReassembler = new ClipboardReassembler();
+var firstChunk = ClipboardWireCodec.Decode(clipFrames[0]);
+Check("clipboard duplicate first chunk accepted", duplicateReassembler.Add(firstChunk) is null);
+Check("clipboard duplicate does not complete early", duplicateReassembler.Add(firstChunk) is null);
+ClipboardContent? duplicateResult = null;
+foreach (var frame in clipFrames.Skip(1))
+    duplicateResult = duplicateReassembler.Add(ClipboardWireCodec.Decode(frame)) ?? duplicateResult;
+Check("clipboard duplicate chunk reassembly", duplicateResult?.Hash == clipText.Hash);
+
+var pngBytes = new byte[] { 137, 80, 78, 71, 13, 10, 26, 10, 1, 2, 3, 4 };
+var clipImage = ClipboardContent.FromImage(ClipboardContentKind.Png, pngBytes);
+Check("clipboard png signature accepted", clipImage.Kind == ClipboardContentKind.Png);
+bool badPngRejected = false;
+try { ClipboardContent.FromImage(ClipboardContentKind.Png, new byte[] { 1, 2, 3, 4, 5, 6, 7, 8 }); }
+catch (ArgumentException) { badPngRejected = true; }
+Check("clipboard bad png rejected", badPngRejected);
+
+var wholeFrame = ClipboardWireCodec.Encode(clipText, 1024).Single();
+var bleParts = BleFragmentCodec.Split(wholeFrame, 20, 42);
+Check("ble clipboard uses mtu-sized fragments", bleParts.All(x => x.Length <= 20) && bleParts.Count > 1);
+var bleReassembler = new BleFragmentReassembler();
+byte[]? bleMessage = null;
+foreach (var part in bleParts.Reverse())
+    bleMessage = bleReassembler.Add(BleFragmentCodec.Decode(part)) ?? bleMessage;
+Check("ble fragment out-of-order reassembly", bleMessage is not null && bleMessage.SequenceEqual(wholeFrame));
+
+var allRoutes = ClipboardTransportPolicy.Candidates(
+    clipText,
+    new ClipboardTransportCapabilities(Lan: true, PeerToPeer: true, BluetoothLe: true, Relay: true),
+    relayEnabled: true);
+Check("transport priority lan first", allRoutes.SequenceEqual(new[]
+{
+    ClipboardTransportKind.Lan,
+    ClipboardTransportKind.PeerToPeer,
+    ClipboardTransportKind.BluetoothLe,
+    ClipboardTransportKind.Relay
+}));
+var largePng = new byte[ClipboardTransportPolicy.DefaultBleImageLimit + 1];
+pngBytes.CopyTo(largePng, 0);
+var largeImage = ClipboardContent.FromImage(ClipboardContentKind.Png, largePng);
+var largeRoutes = ClipboardTransportPolicy.Candidates(
+    largeImage,
+    new ClipboardTransportCapabilities(Lan: false, PeerToPeer: false, BluetoothLe: true, Relay: true),
+    relayEnabled: true);
+Check("large image skips ble and uses relay", largeRoutes.SequenceEqual(new[] { ClipboardTransportKind.Relay }));
+
 Console.WriteLine($"{passed} checks passed. No Windows/Bluetooth/phone hardware has been tested by these checks.");
