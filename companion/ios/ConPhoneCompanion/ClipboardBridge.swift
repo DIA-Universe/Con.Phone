@@ -143,15 +143,23 @@ final class ClipboardBridge: NSObject, ObservableObject {
     ) throws {
         if let p2p, p2p.ready {
             let cursor = try ClipboardProtocol.makeFrameCursor(content)
-            p2p.send(cursor: cursor) { [weak self] in
-                DispatchQueue.main.async {
-                    guard let self else { return }
-                    if let sharedPayloadId {
-                        SharedPayloadStore.clear(sharedPayloadId)
-                        self.sendPendingShareIfPresent()
+            p2p.send(
+                cursor: cursor,
+                completion: { [weak self] in
+                    DispatchQueue.main.async {
+                        guard let self else { return }
+                        if let sharedPayloadId {
+                            SharedPayloadStore.clear(sharedPayloadId)
+                            self.sendPendingShareIfPresent()
+                        }
                     }
-                }
-            }
+                },
+                failure: { [weak self] error in
+                    self?.recoverP2PTransfer(
+                        content,
+                        sharedPayloadId: sharedPayloadId,
+                        error: error)
+                })
             return
         }
 
@@ -211,15 +219,23 @@ final class ClipboardBridge: NSObject, ObservableObject {
                 pendingGeneration += 1
 
                 let cursor = try ClipboardProtocol.makeFrameCursor(content)
-                p2p.send(cursor: cursor) { [weak self] in
-                    DispatchQueue.main.async {
-                        guard let self else { return }
-                        if let sharedId {
-                            SharedPayloadStore.clear(sharedId)
-                            self.sendPendingShareIfPresent()
+                p2p.send(
+                    cursor: cursor,
+                    completion: { [weak self] in
+                        DispatchQueue.main.async {
+                            guard let self else { return }
+                            if let sharedId {
+                                SharedPayloadStore.clear(sharedId)
+                                self.sendPendingShareIfPresent()
+                            }
                         }
-                    }
-                }
+                    },
+                    failure: { [weak self] error in
+                        self?.recoverP2PTransfer(
+                            content,
+                            sharedPayloadId: sharedId,
+                            error: error)
+                    })
                 return
             }
 
@@ -251,6 +267,34 @@ final class ClipboardBridge: NSObject, ObservableObject {
             }
         } catch {
             status = "대기 중 Clipboard 전송 실패: \(error.localizedDescription)"
+        }
+    }
+
+    private func recoverP2PTransfer(
+        _ content: ClipboardContent,
+        sharedPayloadId: UUID?,
+        error: Error
+    ) {
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+
+            if self.pendingContent == nil {
+                self.setPendingContent(
+                    content,
+                    sharedPayloadId: sharedPayloadId)
+                self.status =
+                    "P2P 전송 실패 · Clipboard를 재전송 대기 상태로 복원했습니다. (\(error.localizedDescription))"
+            } else if sharedPayloadId != nil {
+                // The durable App Group share queue still owns the payload.
+                self.status =
+                    "P2P 전송 실패 · 공유 항목은 영구 대기열에 보존했습니다."
+            } else {
+                self.status =
+                    "P2P 전송 실패 · 기존 대기 항목이 있어 현재 클립보드는 다시 보내야 합니다."
+            }
+
+            self.start()
+            self.flushPendingContent()
         }
     }
 
