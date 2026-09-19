@@ -50,6 +50,21 @@ class MainActivity : Activity() {
         })
 
         root.addView(Button(this).apply {
+            text = "P2P 고속 전송 권한 확인"
+            setOnClickListener {
+                if (hasNearbyWifiPermission()) {
+                    android.widget.Toast.makeText(
+                        this@MainActivity,
+                        "P2P 고속 전송 권한이 허용되어 있습니다.",
+                        android.widget.Toast.LENGTH_SHORT
+                    ).show()
+                } else {
+                    requestP2PPermission()
+                }
+            }
+        })
+
+        root.addView(Button(this).apply {
             text = "연결 서비스 중지"
             setOnClickListener {
                 startService(
@@ -120,6 +135,16 @@ class MainActivity : Activity() {
         else
             checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED
 
+    private fun requestP2PPermission() {
+        val permission =
+            if (android.os.Build.VERSION.SDK_INT >= 33)
+                Manifest.permission.NEARBY_WIFI_DEVICES
+            else
+                Manifest.permission.ACCESS_FINE_LOCATION
+
+        requestPermissions(arrayOf(permission), requestCode + 1)
+    }
+
     private fun requestPermissions() {
         val permissions = mutableListOf(
             Manifest.permission.BLUETOOTH_SCAN,
@@ -141,7 +166,22 @@ class MainActivity : Activity() {
         grantResults: IntArray
     ) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
-        if (requestCode == this.requestCode && hasBluetoothPermissions())
+        if (requestCode == this.requestCode && hasBluetoothPermissions()) {
             ensurePermissionsAndStart()
+        } else if (requestCode == this.requestCode + 1) {
+            if (hasNearbyWifiPermission()) {
+                android.widget.Toast.makeText(
+                    this,
+                    "P2P 고속 전송 권한이 허용되었습니다.",
+                    android.widget.Toast.LENGTH_SHORT
+                ).show()
+            } else {
+                android.widget.Toast.makeText(
+                    this,
+                    "P2P 권한 없이도 BLE 복붙은 계속 사용할 수 있습니다.",
+                    android.widget.Toast.LENGTH_SHORT
+                ).show()
+            }
+        }
     }
 }
