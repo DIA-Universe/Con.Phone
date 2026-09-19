@@ -711,7 +711,8 @@ public sealed class BleClipboardService : IDisposable
         FailAllAcks(
             new ObjectDisposedException(nameof(BleClipboardService)));
 
-        _sendGate.Dispose();
+        // Do not dispose _sendGate here: an in-flight SendAsync may still be
+        // unwinding from NotifyValueAsync and must be able to Release() safely.
         _bleReassemblers.Clear();
         _clipboardReassemblers.Clear();
     }
