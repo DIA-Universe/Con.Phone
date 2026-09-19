@@ -58,6 +58,13 @@ final class ShareViewController: UIViewController {
             return
         }
 
+        if let url = providers.first(where: {
+            $0.hasItemConformingToTypeIdentifier(UTType.url.identifier)
+        }) {
+            stageURL(url)
+            return
+        }
+
         finishStaging(.failure(ShareError.unsupported))
     }
 
@@ -76,6 +83,41 @@ final class ShareViewController: UIViewController {
                 text = value
             } else if let value = item as? NSAttributedString {
                 text = value.string
+            } else {
+                text = nil
+            }
+
+            guard let text, !text.isEmpty else {
+                self.finishStaging(.failure(ShareError.empty))
+                return
+            }
+
+            do {
+                try SharedPayloadStore.saveText(text)
+                self.finishStaging(.success(()))
+            } catch {
+                self.finishStaging(.failure(error))
+            }
+        }
+    }
+
+    private func stageURL(_ provider: NSItemProvider) {
+        provider.loadItem(
+            forTypeIdentifier: UTType.url.identifier,
+            options: nil
+        ) { item, error in
+            if let error {
+                self.finishStaging(.failure(error))
+                return
+            }
+
+            let text: String?
+            if let url = item as? URL {
+                text = url.absoluteString
+            } else if let url = item as? NSURL {
+                text = url.absoluteString
+            } else if let value = item as? String {
+                text = value
             } else {
                 text = nil
             }
