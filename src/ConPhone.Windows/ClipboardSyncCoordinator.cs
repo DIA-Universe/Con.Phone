@@ -238,22 +238,26 @@ public sealed class ClipboardSyncCoordinator : IAsyncDisposable
             }
 
             var isImage = content.Kind != ClipboardContentKind.TextUtf8;
+            var largeText =
+                content.Kind == ClipboardContentKind.TextUtf8 &&
+                content.Data.Length > 64 * 1024;
+            var bulkTransfer = isImage || largeText;
             var bleAllowed =
                 !isImage ||
                 content.Data.Length <= bleImageLimitBytes;
 
-            // Images prefer the direct P2P path even when they are small enough for BLE.
-            // If P2P is unavailable, small images may still use BLE, but BLE bulk chunks
-            // pause whenever recent pointer movement is detected.
-            if (isImage && !_p2p.HasClient(id))
+            // Images and unusually large text prefer direct P2P so bulk clipboard
+            // traffic does not compete with HID. BLE remains a fallback, but bulk
+            // fragments pause whenever recent pointer movement is detected.
+            if (bulkTransfer && !_p2p.HasClient(id))
             {
                 _ = GetDirectLinkConfig();
 
                 var interactive = _interactiveInput();
                 Status?.Invoke(
                     interactive
-                        ? "입력 품질 보호 · 이미지 P2P 연결을 우선 확인합니다."
-                        : "이미지 전송 · P2P 고속 링크를 우선 확인합니다.");
+                        ? "입력 품질 보호 · 대용량 Clipboard는 P2P 연결을 우선 확인합니다."
+                        : "대용량 Clipboard 전송 · P2P 고속 링크를 우선 확인합니다.");
 
                 var wait = !bleAllowed
                     ? TimeSpan.FromSeconds(15)
@@ -300,7 +304,7 @@ public sealed class ClipboardSyncCoordinator : IAsyncDisposable
                         id,
                         content,
                         token,
-                        isImage && _interactiveInput()
+                        bulkTransfer && _interactiveInput()
                             ? _pointerBusy
                             : null).ConfigureAwait(false);
                     Status?.Invoke($"Clipboard 전송 완료 · BLE · {Describe(content)}");
