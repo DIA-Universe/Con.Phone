@@ -77,6 +77,8 @@ public sealed class BleClipboardService : IDisposable
     private readonly Func<int> _bleImageLimitBytes;
     private readonly Func<DirectLinkConfig?> _directLinkConfig;
     private readonly SemaphoreSlim _sendGate = new(1, 1);
+    private readonly object _ackGate = new();
+    private readonly Dictionary<(string DeviceId, Guid TransferId), TaskCompletionSource<bool>> _ackWaiters = [];
     private readonly ConcurrentDictionary<string, BleFragmentReassembler> _bleReassemblers = new();
     private readonly ConcurrentDictionary<string, ClipboardReassembler> _clipboardReassemblers = new();
 
@@ -328,19 +330,29 @@ public sealed class BleClipboardService : IDisposable
             var valid = false;
             try
             {
-                var fragment = BleFragmentCodec.Decode(request.Value.ToArray());
-                var ble = _bleReassemblers.GetOrAdd(id, _ => new BleFragmentReassembler());
-                var frame = ble.Add(fragment);
-                if (frame is not null)
-                {
-                    var chunk = ClipboardWireCodec.Decode(frame);
-                    var clipboard = _clipboardReassemblers.GetOrAdd(id, _ => new ClipboardReassembler());
-                    var content = clipboard.Add(chunk);
-                    if (content is not null)
-                        Received?.Invoke(id, content);
-                }
+                var bytes = request.Value.ToArray();
 
-                valid = true;
+                if (ClipboardAckCodec.TryDecode(bytes, out var ackTransferId))
+                {
+                    CompleteAck(id, ackTransferId);
+                    valid = true;
+                }
+                else
+                {
+                    var fragment = BleFragmentCodec.Decode(bytes);
+                    var ble = _bleReassemblers.GetOrAdd(id, _ => new BleFragmentReassembler());
+                    var frame = ble.Add(fragment);
+                    if (frame is not null)
+                    {
+                        var chunk = ClipboardWireCodec.Decode(frame);
+                        var clipboard = _clipboardReassemblers.GetOrAdd(id, _ => new ClipboardReassembler());
+                        var content = clipboard.Add(chunk);
+                        if (content is not null)
+                            Received?.Invoke(id, content);
+                    }
+
+                    valid = true;
+                }
             }
             catch (Exception ex) when (ex is InvalidDataException or ArgumentException)
             {
@@ -408,31 +420,90 @@ public sealed class BleClipboardService : IDisposable
         await _sendGate.WaitAsync(token).ConfigureAwait(false);
         try
         {
-            foreach (var wireFrame in ClipboardWireCodec.Enumerate(content, 16 * 1024))
+            using var wireFrames =
+                ClipboardWireCodec.Enumerate(content, 16 * 1024).GetEnumerator();
+
+            if (!wireFrames.MoveNext())
+                throw new InvalidDataException("Clipboard BLE transfer has no frames.");
+
+            var firstWireFrame = wireFrames.Current;
+            var contentTransferId =
+                ClipboardWireCodec.Decode(firstWireFrame).TransferId;
+
+            var ack = new TaskCompletionSource<bool>(
+                TaskCreationOptions.RunContinuationsAsynchronously);
+            var ackKey = (deviceId, contentTransferId);
+
+            lock (_ackGate)
             {
-                var transferId = BitConverter.ToUInt32(RandomNumberGenerator.GetBytes(4));
-                var fragmentIndex = 0;
-                foreach (var fragment in BleFragmentCodec.Split(wireFrame, maxGattValue, transferId))
+                if (_ackWaiters.ContainsKey(ackKey))
+                    throw new InvalidOperationException(
+                        "Clipboard BLE ACK transfer id collision.");
+
+                _ackWaiters.Add(ackKey, ack);
+            }
+
+            try
+            {
+                async Task SendWireFrameAsync(byte[] wireFrame)
                 {
-                    if (!IsActive(deviceId))
-                        throw new InvalidOperationException(
-                            "활성 휴대폰이 변경되어 이전 기기의 Clipboard BLE 전송을 중단했습니다.");
+                    var transportTransferId =
+                        BitConverter.ToUInt32(
+                            RandomNumberGenerator.GetBytes(4));
+                    var fragmentIndex = 0;
 
-                    if (isImage && pauseBulk is not null)
+                    foreach (var fragment in BleFragmentCodec.Split(
+                                 wireFrame,
+                                 maxGattValue,
+                                 transportTransferId))
                     {
-                        while (pauseBulk())
-                            await Task.Delay(25, token).ConfigureAwait(false);
+                        if (!IsActive(deviceId))
+                            throw new InvalidOperationException(
+                                "활성 휴대폰이 변경되어 이전 기기의 Clipboard BLE 전송을 중단했습니다.");
+
+                        if (isImage && pauseBulk is not null)
+                        {
+                            while (pauseBulk())
+                                await Task.Delay(
+                                    25,
+                                    token).ConfigureAwait(false);
+                        }
+
+                        var result = await _tx.NotifyValueAsync(
+                                fragment.AsBuffer(),
+                                client)
+                            .AsTask(token).ConfigureAwait(false);
+
+                        if (result.Status != GattCommunicationStatus.Success)
+                            throw new InvalidOperationException(
+                                $"Clipboard BLE 전송 실패: {result.Status}");
+
+                        fragmentIndex++;
+                        if (isImage && fragmentIndex % 4 == 0)
+                            await Task.Delay(
+                                2,
+                                token).ConfigureAwait(false);
                     }
+                }
 
-                    var result = await _tx.NotifyValueAsync(fragment.AsBuffer(), client)
-                        .AsTask(token).ConfigureAwait(false);
+                await SendWireFrameAsync(firstWireFrame)
+                    .ConfigureAwait(false);
 
-                    if (result.Status != GattCommunicationStatus.Success)
-                        throw new InvalidOperationException($"Clipboard BLE 전송 실패: {result.Status}");
+                while (wireFrames.MoveNext())
+                {
+                    await SendWireFrameAsync(wireFrames.Current)
+                        .ConfigureAwait(false);
+                }
 
-                    fragmentIndex++;
-                    if (isImage && fragmentIndex % 4 == 0)
-                        await Task.Delay(2, token).ConfigureAwait(false);
+                await ack.Task.WaitAsync(token).ConfigureAwait(false);
+            }
+            finally
+            {
+                lock (_ackGate)
+                {
+                    if (_ackWaiters.TryGetValue(ackKey, out var current) &&
+                        ReferenceEquals(current, ack))
+                        _ackWaiters.Remove(ackKey);
                 }
             }
         }
@@ -440,6 +511,36 @@ public sealed class BleClipboardService : IDisposable
         {
             _sendGate.Release();
         }
+    }
+
+    private void CompleteAck(
+        string deviceId,
+        Guid transferId)
+    {
+        TaskCompletionSource<bool>? completion = null;
+        var key = (deviceId, transferId);
+
+        lock (_ackGate)
+        {
+            if (_ackWaiters.Remove(key, out var waiter))
+                completion = waiter;
+        }
+
+        completion?.TrySetResult(true);
+    }
+
+    private void FailAllAcks(Exception error)
+    {
+        List<TaskCompletionSource<bool>> waiters;
+
+        lock (_ackGate)
+        {
+            waiters = _ackWaiters.Values.ToList();
+            _ackWaiters.Clear();
+        }
+
+        foreach (var waiter in waiters)
+            waiter.TrySetException(error);
     }
 
     private bool IsTrusted(string id) =>
@@ -490,6 +591,9 @@ public sealed class BleClipboardService : IDisposable
         catch
         {
         }
+
+        FailAllAcks(
+            new ObjectDisposedException(nameof(BleClipboardService)));
 
         _sendGate.Dispose();
         _bleReassemblers.Clear();
