@@ -107,11 +107,26 @@ internal static class Program
             captureImages: false);
 
         var syncEvents = 0;
+        var remoteSyncEvents = 0;
+        var remoteText = marker + " remote";
+
         history.ContentCaptured += content =>
         {
-            if (content.Kind == ConPhone.Core.ClipboardContentKind.TextUtf8 &&
-                string.Equals(content.GetText(), marker, StringComparison.Ordinal))
+            if (content.Kind !=
+                ConPhone.Core.ClipboardContentKind.TextUtf8)
+                return;
+
+            var text = content.GetText();
+            if (string.Equals(
+                    text,
+                    marker,
+                    StringComparison.Ordinal))
                 Interlocked.Increment(ref syncEvents);
+            else if (string.Equals(
+                         text,
+                         remoteText,
+                         StringComparison.Ordinal))
+                Interlocked.Increment(ref remoteSyncEvents);
         };
 
         history.CaptureNow();
@@ -156,7 +171,7 @@ internal static class Program
 
         var remoteMarker =
             ConPhone.Core.ClipboardContent.FromText(
-                marker + " remote");
+                remoteText);
 
         if (!history.ApplyRemote(
                 remoteMarker,
@@ -171,6 +186,39 @@ internal static class Program
             replayChanged)
             throw new InvalidOperationException(
                 "Remote clipboard replay incorrectly created a new change.");
+
+        // Simulate a delayed WM_CLIPBOARDUPDATE arriving after ApplyRemote
+        // released its immediate self-write guard.
+        history.CaptureNow();
+        deadline = DateTime.UtcNow.AddSeconds(2);
+        while (DateTime.UtcNow < deadline)
+        {
+            Application.DoEvents();
+            Thread.Sleep(40);
+        }
+
+        if (Volatile.Read(ref remoteSyncEvents) != 0)
+            throw new InvalidOperationException(
+                "A delayed self clipboard notification was incorrectly published as a new sync intent.");
+
+        // Once the one-shot suppression token is consumed, a real later user
+        // copy of the identical value must still be publishable.
+        Clipboard.SetText(
+            remoteText,
+            TextDataFormat.UnicodeText);
+        history.CaptureNow();
+
+        deadline = DateTime.UtcNow.AddSeconds(4);
+        while (DateTime.UtcNow < deadline &&
+               Volatile.Read(ref remoteSyncEvents) < 1)
+        {
+            Application.DoEvents();
+            Thread.Sleep(40);
+        }
+
+        if (Volatile.Read(ref remoteSyncEvents) < 1)
+            throw new InvalidOperationException(
+                "A real re-copy after self-write suppression was incorrectly hidden.");
 
         Clipboard.SetText("temporary replacement", TextDataFormat.UnicodeText);
         if (!history.Restore(entry.Id))
