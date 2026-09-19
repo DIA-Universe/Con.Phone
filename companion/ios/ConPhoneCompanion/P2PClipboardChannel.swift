@@ -17,6 +17,7 @@ final class P2PClipboardChannel {
     private struct PendingTransfer {
         let cursor: ClipboardProtocol.FrameCursor
         let completion: () -> Void
+        let failure: (Error) -> Void
     }
 
     private var pendingTransfers: [PendingTransfer] = []
@@ -27,6 +28,7 @@ final class P2PClipboardChannel {
     private var receiveSequence: UInt64 = 0
     private(set) var ready = false
     private var closedNotified = false
+    private var intentionalClose = false
 
     init(
         host: String,
@@ -75,11 +77,17 @@ final class P2PClipboardChannel {
             case .failed(let error):
                 self.connectionGeneration += 1
                 self.ready = false
+                if !self.intentionalClose {
+                    self.failAllTransfers(error)
+                }
                 self.onStatus("P2P TCP 연결 실패: \(error.localizedDescription)")
                 self.notifyClosedOnce()
             case .cancelled:
                 self.connectionGeneration += 1
                 self.ready = false
+                if !self.intentionalClose {
+                    self.failAllTransfers(ChannelError.closed)
+                }
                 self.notifyClosedOnce()
             default:
                 break
@@ -90,20 +98,28 @@ final class P2PClipboardChannel {
 
     func send(
         cursor: ClipboardProtocol.FrameCursor,
-        completion: @escaping () -> Void = {}
+        completion: @escaping () -> Void = {},
+        failure: @escaping (Error) -> Void = { _ in }
     ) {
         queue.async { [weak self] in
-            guard let self, self.ready else { return }
+            guard let self else { return }
+
+            guard self.ready else {
+                failure(ChannelError.closed)
+                return
+            }
 
             guard self.pendingTransfers.count < 8 else {
                 self.onStatus("P2P 전송 대기열이 가득 찼습니다.")
+                failure(ChannelError.busy)
                 return
             }
 
             self.pendingTransfers.append(
                 PendingTransfer(
                     cursor: cursor,
-                    completion: completion))
+                    completion: completion,
+                    failure: failure))
             self.pumpWrites()
         }
     }
@@ -111,6 +127,7 @@ final class P2PClipboardChannel {
     func close() {
         queue.async { [weak self] in
             guard let self else { return }
+            self.intentionalClose = true
             self.connectionGeneration += 1
             self.handshakeGeneration += 1
             self.ready = false
@@ -128,6 +145,21 @@ final class P2PClipboardChannel {
         pendingTransfers.removeAll()
         activeTransfer = nil
         onClosed()
+    }
+
+    private func failAllTransfers(_ error: Error) {
+        var failed: [PendingTransfer] = []
+        if let activeTransfer {
+            failed.append(activeTransfer)
+        }
+        failed.append(contentsOf: pendingTransfers)
+
+        activeTransfer = nil
+        pendingTransfers.removeAll()
+
+        for transfer in failed {
+            transfer.failure(error)
+        }
     }
 
     private func handshake() {
@@ -247,8 +279,7 @@ final class P2PClipboardChannel {
                     self.writing = false
                     if let error {
                         self.ready = false
-                        self.pendingTransfers.removeAll()
-                        self.activeTransfer = nil
+                        self.failAllTransfers(error)
                         self.onStatus("P2P Clipboard 전송 실패: \(error.localizedDescription)")
                         self.connection.cancel()
                         return
@@ -259,8 +290,7 @@ final class P2PClipboardChannel {
             })
         } catch {
             writing = false
-            pendingTransfers.removeAll()
-            activeTransfer = nil
+            failAllTransfers(error)
             onStatus("P2P Clipboard 암호화 실패: \(error.localizedDescription)")
             connection.cancel()
         }
@@ -387,6 +417,7 @@ final class P2PClipboardChannel {
     }
 
     private enum ChannelError: Error {
+        case busy
         case closed
         case sequence
         case sessionKey
