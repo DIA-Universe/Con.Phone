@@ -140,6 +140,9 @@ final class ClipboardBridge: NSObject, ObservableObject {
             p2p.send(frames: frames)
             if let sharedPayloadId {
                 SharedPayloadStore.clear(sharedPayloadId)
+                DispatchQueue.main.async { [weak self] in
+                    self?.sendPendingShareIfPresent()
+                }
             }
             return
         }
@@ -156,6 +159,9 @@ final class ClipboardBridge: NSObject, ObservableObject {
             try enqueueBle(content, peripheral: peripheral)
             if let sharedPayloadId {
                 SharedPayloadStore.clear(sharedPayloadId)
+                DispatchQueue.main.async { [weak self] in
+                    self?.sendPendingShareIfPresent()
+                }
             }
             return
         }
@@ -238,6 +244,9 @@ final class ClipboardBridge: NSObject, ObservableObject {
 
         if clearSharedStore, let sharedId {
             SharedPayloadStore.clear(sharedId)
+            DispatchQueue.main.async { [weak self] in
+                self?.sendPendingShareIfPresent()
+            }
         }
     }
 
