@@ -750,6 +750,21 @@ class ClipboardBridgeService : Service() {
     }
 
     private fun sendContent(content: ClipboardContent) {
+        val hasOlderPending = synchronized(pendingLock) {
+            pruneExpiredPendingLocked()
+            pendingQueue.isNotEmpty()
+        }
+
+        if (hasOlderPending) {
+            if (setPendingContent(content))
+                flushPendingContent()
+            return
+        }
+
+        sendContentInternal(content)
+    }
+
+    private fun sendContentInternal(content: ClipboardContent) {
         val fast = p2p
         if (fast?.ready == true) {
             executor.execute {
@@ -822,7 +837,7 @@ class ClipboardBridgeService : Service() {
             first
         }
 
-        sendContent(pending.content)
+        sendContentInternal(pending.content)
     }
 
     private fun setPendingContent(content: ClipboardContent): Boolean {
