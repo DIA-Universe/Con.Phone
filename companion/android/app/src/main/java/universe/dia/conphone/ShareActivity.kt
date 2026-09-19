@@ -92,6 +92,7 @@ class ShareActivity : Activity() {
                 Intent(this, ClipboardBridgeService::class.java)
                     .setAction(ClipboardBridgeService.ACTION_SEND_SHARED_IMAGE)
                     .putExtra(ClipboardBridgeService.EXTRA_SHARED_IMAGE_PATH, target.absolutePath)
+                    .putExtra(ClipboardBridgeService.EXTRA_SHARED_IMAGE_MIME, intent.type)
             )
             Toast.makeText(this, "PC 이미지 전송 대기열에 추가했습니다.", Toast.LENGTH_SHORT).show()
         }.onFailure {
@@ -116,19 +117,9 @@ class ShareActivity : Activity() {
         startActivity(setup)
     }
 
-    private fun hasTransportPermissions(): Boolean {
-        val bluetoothReady =
-            checkSelfPermission(Manifest.permission.BLUETOOTH_SCAN) == PackageManager.PERMISSION_GRANTED &&
+    private fun hasTransportPermissions(): Boolean =
+        checkSelfPermission(Manifest.permission.BLUETOOTH_SCAN) == PackageManager.PERMISSION_GRANTED &&
             checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT) == PackageManager.PERMISSION_GRANTED
-
-        val nearbyReady =
-            if (Build.VERSION.SDK_INT >= 33)
-                checkSelfPermission(Manifest.permission.NEARBY_WIFI_DEVICES) == PackageManager.PERMISSION_GRANTED
-            else
-                checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED
-
-        return bluetoothReady && nearbyReady
-    }
 
     private fun sharedUri(): Uri? =
         if (Build.VERSION.SDK_INT >= 33) {
