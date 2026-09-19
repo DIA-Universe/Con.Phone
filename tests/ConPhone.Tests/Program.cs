@@ -42,6 +42,7 @@ static short I16(byte lo, byte hi) => unchecked((short)(lo | (hi << 8)));
 Check("pointer x conserved", chunks.Sum(r => (int)I16(r.Data[1], r.Data[2])) == 300);
 Check("pointer y conserved", chunks.Sum(r => (int)I16(r.Data[3], r.Data[4])) == -300);
 Check("pointer wheel conserved", chunks.Sum(r => (int)unchecked((sbyte)r.Data[5])) == 2);
+Check("pointer horizontal pan conserved", chunks.Sum(r => (int)unchecked((sbyte)r.Data[6])) == -1);
 Check("drag buttons preserved", chunks.All(r => r.Data[0] == 1));
 Check("release emitted without motion", Hid.Encode(new PointerPacket(0)).Single().Data.All(b => b == 0));
 Check("keyboard no embedded report id", Hid.Encode(new KeyboardPacket(new byte[8])).Single().Data.Length == 8);
@@ -105,7 +106,7 @@ for (int i = 0; i < map.Length;)
 Check("descriptor collections balanced", depth == 0);
 Check("descriptor keyboard input 64 bits", bits[(1, 0x80)] == 64);
 Check("descriptor has no output reports", !bits.ContainsKey((1, 0x90)));
-Check("descriptor pointer input 48 bits", bits[(2, 0x80)] == 48);
+Check("descriptor pointer input 56 bits", bits[(2, 0x80)] == 56);
 Check("descriptor system-control input 8 bits", bits[(3, 0x80)] == 8);
 Check("descriptor consumer-control input 8 bits", bits[(4, 0x80)] == 8);
 
