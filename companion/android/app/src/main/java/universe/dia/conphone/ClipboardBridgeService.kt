@@ -781,7 +781,7 @@ class ClipboardBridgeService : Service() {
         if (fast?.ready == true) {
             executor.execute {
                 runCatching {
-                    ClipboardProtocol.encode(content).forEach(fast::sendFrame)
+                    ClipboardProtocol.encodeSequence(content).forEach(fast::sendFrame)
                 }.onSuccess {
                     showStatus("Clipboard 전송 완료 · P2P")
                     flushPendingContent()
@@ -948,7 +948,7 @@ class ClipboardBridgeService : Service() {
         }
 
         val maxGatt = maxOf(20, mtu - 3)
-        ClipboardProtocol.encode(content, 16 * 1024).forEach { frame ->
+        ClipboardProtocol.encodeSequence(content, 16 * 1024).forEach { frame ->
             val transfer = secureRandom.nextInt().toUInt()
             ClipboardProtocol.splitBle(frame, maxGatt, transfer).forEach(bleQueue::add)
         }
