@@ -58,6 +58,10 @@ final class ClipboardBridge: NSObject, ObservableObject {
     private var pendingContent: ClipboardContent?
     private var pendingSharedPayloadId: UUID?
     private var pendingGeneration = 0
+    private let sharePreparationQueue = DispatchQueue(
+        label: "ConPhone.SharePreparation",
+        qos: .userInitiated)
+    private var sharePreparationRunning = false
     private var lastAppliedHash: Data?
     private var lastAppliedAt: Date?
 
@@ -94,62 +98,101 @@ final class ClipboardBridge: NSObject, ObservableObject {
     }
 
     func sendPendingShareIfPresent() {
-        guard let (envelope, imageData) = SharedPayloadStore.peek() else {
-            return
-        }
-
-        if pendingSharedPayloadId == envelope.id {
-            return
-        }
-
-        do {
-            let content: ClipboardContent
-
-            switch envelope.kind {
-            case .text:
-                guard let text = envelope.text, !text.isEmpty else {
-                    throw ClipboardProtocol.ProtocolError.invalidContent
-                }
-                content = try ClipboardProtocol.text(text)
-
-            case .image:
-                guard let imageData else {
-                    throw ClipboardProtocol.ProtocolError.invalidContent
-                }
-
-                try ensureSafeImageDimensions(imageData)
-
-                if let kind = detectEncodedImageKind(imageData),
-                   kind == .png || kind == .jpeg {
-                    content =
-                        try ClipboardProtocol.image(
-                            kind,
-                            imageData)
-                } else {
-                    // Windows System.Drawing does not reliably decode WebP.
-                    // Normalize WebP and other UIImage-decodable shares to PNG.
-                    guard let image = UIImage(data: imageData),
-                          let png = image.pngData() else {
-                        throw ClipboardProtocol.ProtocolError.invalidContent
-                    }
-
-                    try ensureSafeImageDimensions(
-                        width: Int(image.size.width * image.scale),
-                        height: Int(image.size.height * image.scale))
-                    content =
-                        try ClipboardProtocol.image(
-                            .png,
-                            png)
-                }
-            }
-
-            try sendOrQueue(content, sharedPayloadId: envelope.id)
-        } catch {
-            SharedPayloadStore.clear(envelope.id)
-            status = "공유 내용이 올바르지 않아 대기열에서 제거했습니다: \(error.localizedDescription)"
+        if !Thread.isMainThread {
             DispatchQueue.main.async { [weak self] in
                 self?.sendPendingShareIfPresent()
             }
+            return
+        }
+
+        guard !sharePreparationRunning,
+              pendingContent == nil,
+              bleActiveContent == nil else {
+            return
+        }
+
+        sharePreparationRunning = true
+
+        sharePreparationQueue.async { [weak self] in
+            guard let self else { return }
+
+            guard let (envelope, imageData) = SharedPayloadStore.peek() else {
+                DispatchQueue.main.async {
+                    self.sharePreparationRunning = false
+                }
+                return
+            }
+
+            let result = Result {
+                try self.prepareSharedContent(
+                    envelope: envelope,
+                    imageData: imageData)
+            }
+
+            DispatchQueue.main.async {
+                self.sharePreparationRunning = false
+
+                switch result {
+                case .success(let content):
+                    do {
+                        try self.sendOrQueue(
+                            content,
+                            sharedPayloadId: envelope.id)
+                    } catch {
+                        self.status =
+                            "공유 Clipboard 전송 준비 실패: \(error.localizedDescription)"
+                    }
+
+                case .failure(let error):
+                    SharedPayloadStore.clear(envelope.id)
+                    self.status =
+                        "공유 내용이 올바르지 않아 대기열에서 제거했습니다: \(error.localizedDescription)"
+                    self.sendPendingShareIfPresent()
+                }
+            }
+        }
+    }
+
+    private func prepareSharedContent(
+        envelope: SharedPayloadEnvelope,
+        imageData: Data?
+    ) throws -> ClipboardContent {
+        switch envelope.kind {
+        case .text:
+            guard let text = envelope.text,
+                  !text.isEmpty else {
+                throw ClipboardProtocol.ProtocolError.invalidContent
+            }
+            return try ClipboardProtocol.text(text)
+
+        case .image:
+            guard let imageData else {
+                throw ClipboardProtocol.ProtocolError.invalidContent
+            }
+
+            try ensureSafeImageDimensions(imageData)
+
+            if let kind = detectEncodedImageKind(imageData),
+               kind == .png || kind == .jpeg {
+                return try ClipboardProtocol.image(
+                    kind,
+                    imageData)
+            }
+
+            // Windows System.Drawing does not reliably decode WebP.
+            // Decode off the main thread and normalize to PNG.
+            guard let image = UIImage(data: imageData),
+                  let png = image.pngData() else {
+                throw ClipboardProtocol.ProtocolError.invalidContent
+            }
+
+            try ensureSafeImageDimensions(
+                width: Int(image.size.width * image.scale),
+                height: Int(image.size.height * image.scale))
+
+            return try ClipboardProtocol.image(
+                .png,
+                png)
         }
     }
 
