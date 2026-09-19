@@ -35,6 +35,7 @@ final class ClipboardBridge: NSObject, ObservableObject {
     private var p2pGeneration: UUID?
     private var directHostRefreshAttempt = 0
     private var directConfigReadAttempt = 0
+    private var capabilitiesPollScheduled = false
     private var pendingFastLinkConnect = false
     private var directJoinInFlight = false
 
@@ -498,6 +499,28 @@ final class ClipboardBridge: NSObject, ObservableObject {
         }
     }
 
+    private func scheduleCapabilitiesRead() {
+        guard !capabilitiesPollScheduled else { return }
+        capabilitiesPollScheduled = true
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + 5) { [weak self, weak peripheral] in
+            guard let self else { return }
+            self.capabilitiesPollScheduled = false
+
+            guard let peripheral,
+                  let characteristic = self.capabilitiesCharacteristic else { return }
+
+            peripheral.readValue(for: characteristic)
+        }
+    }
+
+    private func parseActiveTarget(_ value: Data) -> Bool? {
+        guard value.count >= 9, value[0] == 2 else {
+            return nil
+        }
+        return value[8] == 1
+    }
+
     private func retryDirectConfigRead(_ peripheral: CBPeripheral) {
         guard let characteristic = directLinkCharacteristic else { return }
 
@@ -506,6 +529,7 @@ final class ClipboardBridge: NSObject, ObservableObject {
         DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self, weak peripheral] in
             guard let self,
                   let peripheral,
+                  self.activeTarget,
                   self.p2p?.ready != true else { return }
             peripheral.readValue(for: characteristic)
         }
@@ -721,6 +745,7 @@ extension ClipboardBridge: CBCentralManagerDelegate {
         tx = nil
         rx = nil
         capabilitiesCharacteristic = nil
+        capabilitiesPollScheduled = false
         directLinkCharacteristic = nil
         bleImageLimitBytes = 512 * 1024
         activeTarget = false
@@ -813,9 +838,7 @@ extension ClipboardBridge: CBPeripheralDelegate {
                 }
             } else if characteristic.uuid == capabilitiesUUID {
                 bleImageLimitBytes = 512 * 1024
-                if let directLinkCharacteristic {
-                    peripheral.readValue(for: directLinkCharacteristic)
-                }
+                scheduleCapabilitiesRead()
             } else if characteristic.uuid == directLinkUUID {
                 activeTarget = false
                 directJoinInFlight = false
@@ -828,8 +851,8 @@ extension ClipboardBridge: CBPeripheralDelegate {
                 p2pGeneration = nil
                 p2p?.close()
                 p2p = nil
-                status = "현재 비활성 기기 또는 P2P 준비 전 · 활성화 대기"
-                retryDirectConfigRead(peripheral)
+                status = "활성 대상이 변경되어 상태 확인 대기"
+                scheduleCapabilitiesRead()
             } else {
                 status = "BLE 읽기 실패: \(error.localizedDescription)"
             }
@@ -854,10 +877,42 @@ extension ClipboardBridge: CBPeripheralDelegate {
 
         if characteristic.uuid == capabilitiesUUID {
             bleImageLimitBytes = parseBleImageLimit(value)
-            status = "BLE Clipboard 이미지 한도 · \(bleImageLimitBytes / 1024) KiB"
-            if let directLinkCharacteristic {
+
+            if let reportedActive = parseActiveTarget(value) {
+                let changed = activeTarget != reportedActive
+                activeTarget = reportedActive
+
+                if !reportedActive {
+                    directJoinInFlight = false
+                    if let config = directConfig {
+                        NEHotspotConfigurationManager.shared.removeConfiguration(
+                            forSSID: config.ssid)
+                    }
+                    directConfig = nil
+                    fastLinkAvailable = false
+                    p2pGeneration = nil
+                    p2p?.close()
+                    p2p = nil
+
+                    if changed {
+                        status = "현재 iPhone은 대기 대상 · Clipboard 전송 비활성"
+                    }
+                } else {
+                    if changed {
+                        status = "현재 iPhone이 활성 대상이 됐습니다."
+                    }
+                    flushPendingContent()
+
+                    if let directLinkCharacteristic {
+                        peripheral.readValue(for: directLinkCharacteristic)
+                    }
+                }
+            } else if let directLinkCharacteristic {
+                // Backward compatibility with older v2 servers.
                 peripheral.readValue(for: directLinkCharacteristic)
             }
+
+            scheduleCapabilitiesRead()
             return
         }
 
