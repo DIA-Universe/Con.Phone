@@ -25,6 +25,7 @@ final class ClipboardBridge: NSObject, ObservableObject {
     )
 
     private var peripheral: CBPeripheral?
+    private var rejectedPeripheralUntil: [UUID: Date] = [:]
     private var tx: CBCharacteristic?
     private var rx: CBCharacteristic?
     private var capabilitiesCharacteristic: CBCharacteristic?
@@ -728,10 +729,16 @@ final class ClipboardBridge: NSObject, ObservableObject {
         // The PC may already be connected to iOS as a BLE HID keyboard even
         // when the custom Clipboard service UUID did not fit in advertisement data.
         // Reuse that system-connected peripheral before starting a fresh scan.
+        let now = Date()
+        rejectedPeripheralUntil =
+            rejectedPeripheralUntil.filter { $0.value > now }
+
         let connected = central.retrieveConnectedPeripherals(
             withServices: [serviceUUID, hidServiceUUID])
 
-        if let existing = connected.first {
+        if let existing = connected.first(where: {
+            rejectedPeripheralUntil[$0.identifier] == nil
+        }) {
             peripheral = existing
             existing.delegate = self
             status = "연결된 Con.Phone PC 확인 중"
@@ -1115,6 +1122,14 @@ extension ClipboardBridge: CBCentralManagerDelegate {
         advertisementData: [String: Any],
         rssi RSSI: NSNumber
     ) {
+        let now = Date()
+        rejectedPeripheralUntil =
+            rejectedPeripheralUntil.filter { $0.value > now }
+
+        if rejectedPeripheralUntil[peripheral.identifier] != nil {
+            return
+        }
+
         central.stopScan()
         self.peripheral = peripheral
         peripheral.delegate = self
@@ -1179,7 +1194,18 @@ extension ClipboardBridge: CBPeripheralDelegate {
     func peripheral(_ peripheral: CBPeripheral, didDiscoverServices error: Error?) {
         guard error == nil,
               let service = peripheral.services?.first(where: { $0.uuid == serviceUUID }) else {
-            status = "Clipboard BLE 서비스 없음"
+            rejectedPeripheralUntil[peripheral.identifier] =
+                Date().addingTimeInterval(30)
+
+            if self.peripheral?.identifier == peripheral.identifier {
+                self.peripheral = nil
+            }
+
+            central.cancelPeripheralConnection(peripheral)
+            status = "다른 HID 기기를 건너뛰고 Con.Phone PC를 계속 검색합니다."
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { [weak self] in
+                self?.scan()
+            }
             return
         }
         peripheral.discoverCharacteristics(
