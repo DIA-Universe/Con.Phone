@@ -1668,7 +1668,7 @@ public sealed class MainForm : Form
         ClipboardContent content) =>
         content.Kind == ClipboardContentKind.TextUtf8
             ? TimeSpan.FromSeconds(12)
-            : TimeSpan.FromSeconds(60);
+            : TimeSpan.FromSeconds(120);
 
     private async Task SyncLatestClipboardToPhoneAsync()
     {
