@@ -39,6 +39,8 @@ jobs:
           Expand-Archive -Path $zip -DestinationPath $unpack
           $root = Get-ChildItem -Directory $unpack | Select-Object -First 1
           Move-Item $root.FullName (Join-Path $env:RUNNER_TEMP 'conphone-src')
+      - name: Source sanity
+        run: python "$env:RUNNER_TEMP/conphone-src/scripts/verify-source.py"
       - uses: actions/setup-dotnet@v4
         with:
           dotnet-version: '10.0.x'
