@@ -1763,11 +1763,13 @@ public sealed class MainForm : Form
                 var envelope = await _outbox.TakeAsync(_lifetime.Token);
                 var pointer = envelope.Packet as PointerPacket;
 
-                if (pointer is not null)
-                    await PacePointerAsync(pointer, _lifetime.Token).ConfigureAwait(false);
-
                 foreach (var report in Hid.Encode(envelope.Packet))
                 {
+                    if (pointer is not null)
+                        await PacePointerAsync(
+                            pointer,
+                            _lifetime.Token).ConfigureAwait(false);
+
                     using var timeout = CancellationTokenSource.CreateLinkedTokenSource(_lifetime.Token);
                     timeout.CancelAfter(750);
 
@@ -1779,14 +1781,17 @@ public sealed class MainForm : Form
                         timeout.Token);
 
                     Interlocked.Increment(ref _sent);
-                }
 
-                if (pointer is not null)
-                {
-                    Volatile.Write(ref _lastSentPointerButtons, pointer.Buttons);
-                    Interlocked.Exchange(
-                        ref _lastPointerSentTicks,
-                        System.Diagnostics.Stopwatch.GetTimestamp());
+                    if (pointer is not null)
+                    {
+                        // Update after every emitted mouse report, not once per source packet.
+                        // A large coalesced move can encode into several HID reports; each
+                        // subsequent pure-motion report must respect the negotiated BLE cadence.
+                        Volatile.Write(ref _lastSentPointerButtons, pointer.Buttons);
+                        Interlocked.Exchange(
+                            ref _lastPointerSentTicks,
+                            System.Diagnostics.Stopwatch.GetTimestamp());
+                    }
                 }
             }
             catch (OperationCanceledException) when (_lifetime.IsCancellationRequested)
