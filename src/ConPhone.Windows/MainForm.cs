@@ -970,7 +970,7 @@ public sealed class MainForm : Form
         _lockHotkeyBox.Text = HotkeyCatalog.Display(_settings.LockAndReturnHotkey);
         _quickHotkeyHelp.Text =
             $"다음 기기 {HotkeyCatalog.Display(_settings.NextDeviceHotkey)} · " +
-            $"전환 {HotkeyCatalog.Display(_settings.ToggleHotkey)} · "
+            $"전환 {HotkeyCatalog.Display(_settings.ToggleHotkey)} · " +
             $"복귀 {HotkeyCatalog.Display(_settings.EmergencyHotkey)} · " +
             $"잠금+복귀 {HotkeyCatalog.Display(_settings.LockAndReturnHotkey)}";
     }
