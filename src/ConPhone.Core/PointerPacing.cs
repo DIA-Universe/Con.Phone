@@ -10,6 +10,6 @@ public static class PointerPacing
         if (intervalUnits == 0) return FallbackIntervalMs;
 
         var milliseconds = (int)Math.Ceiling(intervalUnits * 1.25);
-        return Math.Clamp(milliseconds, 8, 40);
+        return Math.Clamp(milliseconds, 8, 4000);
     }
 }
