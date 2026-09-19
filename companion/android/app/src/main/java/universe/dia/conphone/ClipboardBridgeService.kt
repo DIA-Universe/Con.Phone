@@ -389,6 +389,7 @@ class ClipboardBridgeService : Service() {
                 )
                 showStatus("BLE Clipboard 연결됨 · P2P 고속 링크 확인")
                 flushPendingContent()
+                drainPersistedShares()
                 if (checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT) == PackageManager.PERMISSION_GRANTED) {
                     val capabilities = capabilitiesCharacteristic
                     if (capabilities != null)
@@ -645,6 +646,89 @@ class ClipboardBridgeService : Service() {
                     .onFailure {
                         showStatus("P2P 재연결 실패 · BLE 연결 상태를 다시 확인합니다.")
                     }
+            }
+        }
+    }
+
+    private fun completePersistedShare(id: String?) {
+        if (id == null) return
+
+        runCatching { sharedStore.clear(id) }
+        synchronized(pendingLock) {
+            loadedPersistentShareIds.remove(id)
+        }
+
+        main.post { drainPersistedShares() }
+    }
+
+    private fun drainPersistedShares() {
+        val item = runCatching { sharedStore.peek() }
+            .onFailure {
+                showStatus("Android 공유 대기열 읽기 실패: ${it.message}")
+            }
+            .getOrNull()
+            ?: return
+
+        val accepted = synchronized(pendingLock) {
+            if (item.id in loadedPersistentShareIds) {
+                false
+            } else {
+                loadedPersistentShareIds.add(item.id)
+                true
+            }
+        }
+        if (!accepted) return
+
+        executor.execute {
+            runCatching {
+                when (item.kind) {
+                    AndroidSharedPayloadStore.Kind.TEXT -> {
+                        val text = item.data.toString(Charsets.UTF_8)
+                        ClipboardProtocol.text(text)
+                    }
+                    AndroidSharedPayloadStore.Kind.IMAGE -> {
+                        ensureSafeImageDimensions(item.data)
+
+                        val encodedKind =
+                            detectEncodedImageKind(item.data, item.mime)
+                        if (encodedKind != null) {
+                            ClipboardProtocol.image(
+                                encodedKind,
+                                item.data)
+                        } else {
+                            val bitmap = BitmapFactory.decodeByteArray(
+                                item.data,
+                                0,
+                                item.data.size)
+                                ?: error("지원하지 않는 이미지 형식입니다.")
+
+                            try {
+                                val out = ByteArrayOutputStream()
+                                bitmap.compress(
+                                    Bitmap.CompressFormat.PNG,
+                                    100,
+                                    out)
+                                ClipboardProtocol.image(
+                                    ClipboardKind.PNG,
+                                    out.toByteArray())
+                            } finally {
+                                bitmap.recycle()
+                            }
+                        }
+                    }
+                }
+            }.onSuccess { content ->
+                sendContent(
+                    content,
+                    persistedShareId = item.id)
+            }.onFailure {
+                runCatching { sharedStore.clear(item.id) }
+                synchronized(pendingLock) {
+                    loadedPersistentShareIds.remove(item.id)
+                }
+                showStatus(
+                    "저장된 Android 공유 항목을 전송할 수 없어 제거했습니다: ${it.message}")
+                main.post { drainPersistedShares() }
             }
         }
     }
@@ -907,32 +991,43 @@ class ClipboardBridgeService : Service() {
             }
         }
 
-        if (!pending)
+        if (!pending) {
+            if (persistedShareId != null) {
+                synchronized(pendingLock) {
+                    loadedPersistentShareIds.remove(persistedShareId)
+                }
+            }
             showStatus("Clipboard 전송 대기열이 가득 찼습니다.")
+        }
 
         return pending
     }
 
     private fun expirePending(id: Long) {
-        val expired = synchronized(pendingLock) {
+        val expiredPersistentId = synchronized(pendingLock) {
             val iterator = pendingQueue.iterator()
-            var removed = false
+            var persistedId: String? = null
 
             while (iterator.hasNext()) {
                 val item = iterator.next()
                 if (item.id == id) {
                     pendingBytes -= item.content.data.size.toLong()
+                    persistedId = item.persistedShareId
                     iterator.remove()
-                    removed = true
                     break
                 }
             }
 
-            removed
+            persistedId?.let { loadedPersistentShareIds.remove(it) }
+            persistedId
         }
 
-        if (expired)
+        if (expiredPersistentId != null) {
+            showStatus(
+                "Clipboard 전송 대기 항목이 만료됐지만 Android 공유 저장소에는 보존했습니다.")
+        } else {
             showStatus("Clipboard 전송 대기 항목 1개가 만료됐습니다.")
+        }
     }
 
     private fun pruneExpiredPendingLocked() {
@@ -943,6 +1038,9 @@ class ClipboardBridgeService : Service() {
             val item = iterator.next()
             if (item.expiresAt <= now) {
                 pendingBytes -= item.content.data.size.toLong()
+                item.persistedShareId?.let {
+                    loadedPersistentShareIds.remove(it)
+                }
                 iterator.remove()
             }
         }
@@ -952,6 +1050,7 @@ class ClipboardBridgeService : Service() {
         synchronized(pendingLock) {
             pendingQueue.clear()
             pendingBytes = 0
+            loadedPersistentShareIds.clear()
         }
     }
 
