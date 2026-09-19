@@ -2098,6 +2098,19 @@ public sealed class MainForm : Form
         var candidate = LocalUpdateService.Inspect(dialog.FileName);
         var current = LocalUpdateService.CurrentVersion;
 
+        if (!candidate.SignatureVerified)
+        {
+            if (MessageBox.Show(
+                    this,
+                    "현재 Con.Phone 또는 선택한 업데이트가 아직 Authenticode 코드서명되지 않아 " +
+                    "동일 서명자 검증을 완료할 수 없습니다.\r\n" +
+                    "SHA-256 파일 일치만 확인된 상태입니다. 신뢰하는 배포 파일일 때만 계속하세요.",
+                    "업데이트 서명 확인",
+                    MessageBoxButtons.YesNo,
+                    MessageBoxIcon.Warning) != DialogResult.Yes)
+                return Task.CompletedTask;
+        }
+
         if (candidate.Version <= current)
         {
             if (MessageBox.Show(
