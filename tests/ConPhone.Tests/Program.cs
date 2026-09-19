@@ -167,6 +167,18 @@ Check(
         out var rebuiltAckId) &&
     rebuiltAckId == ackId);
 
+var targetOrder = new[] { "A", "B", "C", "D" };
+var allReadyTargets = new HashSet<string>(targetOrder, StringComparer.Ordinal);
+Check("target cycle A -> B", TargetCycle.Next(targetOrder, allReadyTargets, "A") == "B");
+Check("target cycle B -> C", TargetCycle.Next(targetOrder, allReadyTargets, "B") == "C");
+Check("target cycle C -> D", TargetCycle.Next(targetOrder, allReadyTargets, "C") == "D");
+Check("target cycle D -> A", TargetCycle.Next(targetOrder, allReadyTargets, "D") == "A");
+var partialReadyTargets = new HashSet<string>(new[] { "A", "C" }, StringComparer.Ordinal);
+Check("target cycle skips offline B", TargetCycle.Next(targetOrder, partialReadyTargets, "A") == "C");
+Check("target cycle wraps partial set", TargetCycle.Next(targetOrder, partialReadyTargets, "C") == "A");
+Check("target cycle chooses first ready when current offline", TargetCycle.Next(targetOrder, partialReadyTargets, "B") == "A");
+Check("target cycle none when no target ready", TargetCycle.Next(targetOrder, new HashSet<string>(), "A") is null);
+
 // Clipboard text/image sync protocol.
 var clipText = ClipboardContent.FromText(string.Concat(Enumerable.Repeat("한글🙂abc", 120)));
 Check("clipboard text utf8 roundtrip", clipText.GetText() == string.Concat(Enumerable.Repeat("한글🙂abc", 120)));
