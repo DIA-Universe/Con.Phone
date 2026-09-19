@@ -207,13 +207,20 @@ public sealed class DirectClipboardLink : IDisposable
         _config = null;
 
         if (publisher is null) return;
+
         try
         {
-            if (publisher.Status == WiFiDirectAdvertisementPublisherStatus.Started)
+            if (publisher.Status is
+                WiFiDirectAdvertisementPublisherStatus.Started or
+                WiFiDirectAdvertisementPublisherStatus.StartedWithoutAllAdvertisementData)
+            {
                 publisher.Stop();
+            }
         }
-        catch
+        catch (Exception ex)
         {
+            Status?.Invoke(
+                $"Clipboard P2P 링크 중지 확인 실패: {ex.Message}");
         }
     }
 
