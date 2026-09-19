@@ -21,6 +21,7 @@ import android.net.NetworkRequest
 import android.net.wifi.WifiNetworkSpecifier
 import android.os.*
 import android.widget.Toast
+import android.util.Base64
 import java.io.*
 import java.net.InetSocketAddress
 import java.net.Socket
@@ -29,8 +30,11 @@ import java.nio.ByteOrder
 import java.security.MessageDigest
 import java.security.SecureRandom
 import java.util.UUID
+import java.util.concurrent.CompletableFuture
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.ConcurrentLinkedQueue
 import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
 import javax.crypto.Cipher
 import javax.crypto.Mac
 import javax.crypto.spec.GCMParameterSpec
@@ -672,13 +676,15 @@ class ClipboardBridgeService : Service() {
         }
     }
 
-    private fun onP2PFrame(frame: ByteArray) {
-        runCatching {
-            val content = p2pWireReassembler.add(ClipboardProtocol.decode(frame)) ?: return
+    private fun onP2PFrame(frame: ByteArray): ByteArray? {
+        return runCatching {
+            val chunk = ClipboardProtocol.decode(frame)
+            val content = p2pWireReassembler.add(chunk) ?: return@runCatching null
             applyRemoteClipboard(content)
+            ClipboardProtocol.encodeAck(chunk.transferId)
         }.onFailure {
             showStatus("P2P Clipboard 수신 거부: ${it.message}")
-        }
+        }.getOrNull()
     }
 
     private fun onP2PClosed() {
@@ -957,7 +963,7 @@ class ClipboardBridgeService : Service() {
         if (fast?.ready == true) {
             executor.execute {
                 runCatching {
-                    ClipboardProtocol.encodeSequence(content).forEach(fast::sendFrame)
+                    fast.sendContent(content)
                 }.onSuccess {
                     showStatus("Clipboard 전송 완료 · P2P")
                     completePersistedShare(persistedShareId)
@@ -1369,12 +1375,13 @@ class ClipboardBridgeService : Service() {
     private class P2PChannel(
         private val socket: Socket,
         private val credential: Credential,
-        private val onFrame: (ByteArray) -> Unit,
+        private val onFrame: (ByteArray) -> ByteArray?,
         private val onClosed: () -> Unit
     ) {
         private val input = DataInputStream(BufferedInputStream(socket.getInputStream()))
         private val output = BufferedOutputStream(socket.getOutputStream())
         private val sendLock = Any()
+        private val ackWaiters = ConcurrentHashMap<String, CompletableFuture<Unit>>()
         private var sendSequence = 0L
         private var receiveSequence = 0L
         @Volatile private var closed = false
@@ -1408,6 +1415,30 @@ class ClipboardBridgeService : Service() {
                     clientNonce +
                     serverNonce
             )
+        }
+
+        fun sendContent(content: ClipboardContent) {
+            val frames = ClipboardProtocol.encodeSequence(content).iterator()
+            require(frames.hasNext()) { "Clipboard transfer has no frames." }
+
+            val first = frames.next()
+            val transferId = ClipboardProtocol.decode(first).transferId
+            val key = transferKey(transferId)
+            val ack = CompletableFuture<Unit>()
+
+            check(ackWaiters.putIfAbsent(key, ack) == null) {
+                "Clipboard ACK transfer id collision."
+            }
+
+            try {
+                sendFrame(first)
+                while (frames.hasNext())
+                    sendFrame(frames.next())
+
+                ack.get(45, TimeUnit.SECONDS)
+            } finally {
+                ackWaiters.remove(key, ack)
+            }
         }
 
         fun sendFrame(plaintext: ByteArray) {
@@ -1469,8 +1500,18 @@ class ClipboardBridgeService : Service() {
                         GCMParameterSpec(128, nonce)
                     )
                     cipher.updateAAD(aad + sequenceBytes)
-                    onFrame(cipher.doFinal(encrypted))
+                    val plaintext = cipher.doFinal(encrypted)
                     receiveSequence = sequence
+
+                    val ackId = ClipboardProtocol.decodeAck(plaintext)
+                    if (ackId != null) {
+                        ackWaiters.remove(transferKey(ackId))?.complete(Unit)
+                        continue
+                    }
+
+                    val response = onFrame(plaintext)
+                    if (response != null)
+                        sendFrame(response)
                 }
             } catch (_: Exception) {
             } finally {
@@ -1484,8 +1525,18 @@ class ClipboardBridgeService : Service() {
             closed = true
             sessionKey?.fill(0)
             sessionKey = null
+
+            val error = IOException("P2P clipboard channel closed.")
+            ackWaiters.values.forEach { it.completeExceptionally(error) }
+            ackWaiters.clear()
+
             runCatching { socket.close() }
         }
+
+        private fun transferKey(transferId: ByteArray): String =
+            Base64.encodeToString(
+                transferId,
+                Base64.NO_WRAP or Base64.NO_PADDING)
 
         private fun hmac(key: ByteArray, data: ByteArray): ByteArray {
             val mac = Mac.getInstance("HmacSHA256")
