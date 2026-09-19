@@ -58,6 +58,7 @@ final class ClipboardBridge: NSObject, ObservableObject {
     private var bleActiveSharedPayloadId: UUID?
     private var bleActiveTransferId: Data?
     private var bleAwaitingContentAck = false
+    private var bleContentAckReceived = false
     private var bleAckGeneration = 0
     private var pendingContent: ClipboardContent?
     private var pendingSharedPayloadId: UUID?
@@ -415,6 +416,7 @@ final class ClipboardBridge: NSObject, ObservableObject {
 
             bleActiveTransferId = cursor.transferId
             bleAwaitingContentAck = false
+            bleContentAckReceived = false
             bleAckGeneration += 1
 
             while let frame = cursor.next() {
@@ -435,6 +437,7 @@ final class ClipboardBridge: NSObject, ObservableObject {
             bleActiveSharedPayloadId = nil
             bleActiveTransferId = nil
             bleAwaitingContentAck = false
+            bleContentAckReceived = false
             bleAckGeneration += 1
             throw error
         }
@@ -745,6 +748,11 @@ final class ClipboardBridge: NSObject, ObservableObject {
             writeInFlightIsAck = false
             next = writeQueue.removeFirst()
         } else {
+            if bleContentAckReceived {
+                finishActiveBleTransferAfterAck()
+                return
+            }
+
             if bleActiveContent != nil,
                bleActiveTransferId != nil,
                !bleAwaitingContentAck {
@@ -757,6 +765,7 @@ final class ClipboardBridge: NSObject, ObservableObject {
                 DispatchQueue.main.asyncAfter(deadline: .now() + 45) { [weak self] in
                     guard let self,
                           self.bleAwaitingContentAck,
+                          !self.bleContentAckReceived,
                           self.bleAckGeneration == generation,
                           self.bleActiveContent != nil else {
                         return
@@ -820,12 +829,34 @@ final class ClipboardBridge: NSObject, ObservableObject {
             return
         }
 
+        bleContentAckReceived = true
+
+        guard !writeInFlight,
+              writeQueue.isEmpty else {
+            status =
+                "Windows 적용 ACK 확인 · 마지막 BLE write 완료 대기"
+            return
+        }
+
+        finishActiveBleTransferAfterAck()
+    }
+
+    private func finishActiveBleTransferAfterAck() {
+        guard bleActiveContent != nil,
+              bleActiveTransferId != nil,
+              bleContentAckReceived,
+              !writeInFlight,
+              writeQueue.isEmpty else {
+            return
+        }
+
         let completion = bleTransferCompletion
         bleTransferCompletion = nil
         bleActiveContent = nil
         bleActiveSharedPayloadId = nil
         bleActiveTransferId = nil
         bleAwaitingContentAck = false
+        bleContentAckReceived = false
         bleAckGeneration += 1
 
         status =
