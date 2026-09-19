@@ -496,9 +496,7 @@ final class ClipboardBridge: NSObject, ObservableObject {
             deviceHash: deviceHash,
             secret: secret,
             onFrame: { [weak self] frame in
-                DispatchQueue.main.async {
-                    self?.receiveP2P(frame)
-                }
+                self?.receiveP2P(frame)
             },
             onStatus: { [weak self] text in
                 DispatchQueue.main.async {
@@ -533,13 +531,24 @@ final class ClipboardBridge: NSObject, ObservableObject {
         channel.start()
     }
 
-    private func receiveP2P(_ frame: Data) {
+    private func receiveP2P(_ frame: Data) -> Data? {
         do {
             let chunk = try ClipboardProtocol.decode(frame)
-            guard let content = try p2pWireReassembler.add(chunk) else { return }
-            apply(content)
+            guard let content = try p2pWireReassembler.add(chunk) else {
+                return nil
+            }
+
+            DispatchQueue.main.async { [weak self] in
+                self?.apply(content)
+            }
+
+            return ClipboardProtocol.encodeAck(chunk.transferId)
         } catch {
-            status = "P2P Clipboard 수신 거부: \(error.localizedDescription)"
+            DispatchQueue.main.async { [weak self] in
+                self?.status =
+                    "P2P Clipboard 수신 거부: \(error.localizedDescription)"
+            }
+            return nil
         }
     }
 
