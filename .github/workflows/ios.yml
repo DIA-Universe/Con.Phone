@@ -1,10 +1,16 @@
 name: iOS companion build
 on:
   push:
+    branches:
+      - main
     paths:
       - 'companion/ios/**'
       - '.github/workflows/ios.yml'
   pull_request:
+    types:
+      - opened
+      - reopened
+      - ready_for_review
     paths:
       - 'companion/ios/**'
       - '.github/workflows/ios.yml'
