@@ -197,6 +197,19 @@ final class ClipboardBridge: NSObject, ObservableObject {
         }
     }
 
+    private func completeTransferAndDrainShare(
+        _ sharedPayloadId: UUID?
+    ) {
+        if let sharedPayloadId {
+            SharedPayloadStore.clear(sharedPayloadId)
+        }
+
+        // A manual clipboard item may have occupied the active transport while
+        // one or more durable Share-extension items were waiting. Always check
+        // the persistent FIFO after any successful transfer.
+        sendPendingShareIfPresent()
+    }
+
     private func sendOrQueue(
         _ content: ClipboardContent,
         sharedPayloadId: UUID? = nil
@@ -208,10 +221,8 @@ final class ClipboardBridge: NSObject, ObservableObject {
                 completion: { [weak self] in
                     DispatchQueue.main.async {
                         guard let self else { return }
-                        if let sharedPayloadId {
-                            SharedPayloadStore.clear(sharedPayloadId)
-                            self.sendPendingShareIfPresent()
-                        }
+                        self.completeTransferAndDrainShare(
+                            sharedPayloadId)
                     }
                 },
                 failure: { [weak self] error in
@@ -238,10 +249,8 @@ final class ClipboardBridge: NSObject, ObservableObject {
                 sharedPayloadId: sharedPayloadId,
                 completion: { [weak self] in
                     guard let self else { return }
-                    if let sharedPayloadId {
-                        SharedPayloadStore.clear(sharedPayloadId)
-                        self.sendPendingShareIfPresent()
-                    }
+                    self.completeTransferAndDrainShare(
+                        sharedPayloadId)
                 })
             return
         }
@@ -284,10 +293,8 @@ final class ClipboardBridge: NSObject, ObservableObject {
                     completion: { [weak self] in
                         DispatchQueue.main.async {
                             guard let self else { return }
-                            if let sharedId {
-                                SharedPayloadStore.clear(sharedId)
-                                self.sendPendingShareIfPresent()
-                            }
+                            self.completeTransferAndDrainShare(
+                                sharedId)
                         }
                     },
                     failure: { [weak self] error in
@@ -319,10 +326,8 @@ final class ClipboardBridge: NSObject, ObservableObject {
                     sharedPayloadId: sharedId,
                     completion: { [weak self] in
                         guard let self else { return }
-                        if let sharedId {
-                            SharedPayloadStore.clear(sharedId)
-                            self.sendPendingShareIfPresent()
-                        }
+                        self.completeTransferAndDrainShare(
+                            sharedId)
                     })
             }
         } catch {
@@ -384,8 +389,10 @@ final class ClipboardBridge: NSObject, ObservableObject {
         pendingSharedPayloadId = nil
         pendingGeneration += 1
 
-        if clearSharedStore, let sharedId {
-            SharedPayloadStore.clear(sharedId)
+        if clearSharedStore {
+            if let sharedId {
+                SharedPayloadStore.clear(sharedId)
+            }
             DispatchQueue.main.async { [weak self] in
                 self?.sendPendingShareIfPresent()
             }
