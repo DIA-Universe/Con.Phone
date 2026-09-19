@@ -939,18 +939,38 @@ final class ClipboardBridge: NSObject, ObservableObject {
                 status =
                     "PC 텍스트를 iPhone 클립보드에 받았습니다."
 
-            case .png, .jpeg, .webp:
+            case .png:
                 try ensureSafeImageDimensions(
                     content.data)
-
-                guard let image =
-                        UIImage(data: content.data) else {
-                    throw ClipboardProtocol.ProtocolError.invalidContent
-                }
-
-                UIPasteboard.general.image = image
+                UIPasteboard.general.setData(
+                    content.data,
+                    forPasteboardType:
+                        UTType.png.identifier)
                 status =
-                    "PC 이미지를 iPhone 클립보드에 받았습니다."
+                    "PC PNG 이미지를 iPhone 클립보드에 받았습니다."
+
+            case .jpeg:
+                try ensureSafeImageDimensions(
+                    content.data)
+                UIPasteboard.general.setData(
+                    content.data,
+                    forPasteboardType:
+                        UTType.jpeg.identifier)
+                status =
+                    "PC JPEG 이미지를 iPhone 클립보드에 받았습니다."
+
+            case .webp:
+                try ensureSafeImageDimensions(
+                    content.data)
+                let png =
+                    try normalizedPNGForWindows(
+                        content.data)
+                UIPasteboard.general.setData(
+                    png,
+                    forPasteboardType:
+                        UTType.png.identifier)
+                status =
+                    "PC 이미지를 PNG로 정규화해 iPhone 클립보드에 받았습니다."
             }
 
             lastAppliedHash = content.hash
