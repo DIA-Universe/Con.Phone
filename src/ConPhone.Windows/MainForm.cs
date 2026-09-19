@@ -1103,6 +1103,16 @@ public sealed class MainForm : Form
                 Log(content.Kind == ClipboardContentKind.TextUtf8
                     ? "텍스트 복사 감지 · 휴대폰 전환 시 동기화 대기"
                     : $"이미지 복사 감지 · {content.Data.Length / 1024.0:N1} KiB · 휴대폰 전환 시 동기화 대기");
+
+                // Image PNG encoding/history storage runs off the STA thread.
+                // If input already switched to the phone while that work was running,
+                // send the completed newest clipboard generation now.
+                if (_input.IsRemote)
+                {
+                    _ = SyncLatestClipboardToPhoneSafeAsync(
+                        Volatile.Read(ref _epoch),
+                        _ble.ApprovedId);
+                }
             });
 
             if (_clipboard.TryGetLatestContent(out var latest))
