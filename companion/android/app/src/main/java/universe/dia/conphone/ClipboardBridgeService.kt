@@ -780,14 +780,27 @@ class ClipboardBridgeService : Service() {
                 sendContent(
                     content,
                     persistedShareId = item.id)
-            }.onFailure {
-                runCatching { sharedStore.clear(item.id) }
-                synchronized(pendingLock) {
-                    loadedPersistentShareIds.remove(item.id)
+            }.onFailure { error ->
+                val cleared = runCatching {
+                    sharedStore.clear(item.id)
+                }.onFailure {
+                    showStatus(
+                        "손상된 Android 공유 항목 삭제 실패: ${it.message}")
+                }.isSuccess
+
+                if (cleared) {
+                    synchronized(pendingLock) {
+                        loadedPersistentShareIds.remove(item.id)
+                    }
+                    showStatus(
+                        "저장된 Android 공유 항목을 전송할 수 없어 제거했습니다: ${error.message}")
+                    main.post { drainPersistedShares() }
+                } else {
+                    // Keep it marked as loaded so a corrupt persistent item
+                    // cannot spin in a read/fail/re-read loop.
+                    showStatus(
+                        "저장된 Android 공유 항목 오류를 보존했습니다. 앱 재시작 후 다시 정리합니다.")
                 }
-                showStatus(
-                    "저장된 Android 공유 항목을 전송할 수 없어 제거했습니다: ${it.message}")
-                main.post { drainPersistedShares() }
             }
         }
     }
