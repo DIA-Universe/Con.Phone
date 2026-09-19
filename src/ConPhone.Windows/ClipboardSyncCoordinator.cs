@@ -12,10 +12,10 @@ public sealed class ClipboardSyncCoordinator : IAsyncDisposable
     private readonly BleClipboardService _ble;
     private readonly P2PClipboardServer _p2p;
     private readonly SemaphoreSlim _send = new(1, 1);
+    private Func<ClipboardContent, Task<bool>>? _receiver;
     private long _targetGeneration;
     private bool _started;
 
-    public event Action<ClipboardContent>? Received;
     public event Action<string>? Status;
 
     public ClipboardSyncCoordinator(
@@ -43,8 +43,15 @@ public sealed class ClipboardSyncCoordinator : IAsyncDisposable
         _direct.Status += text => Status?.Invoke(text);
         _ble.Status += text => Status?.Invoke(text);
         _p2p.Status += text => Status?.Invoke(text);
-        _ble.Received += OnReceived;
-        _p2p.Received += OnReceived;
+        _ble.ReceiveContentAsync = OnReceivedAsync;
+        _p2p.ReceiveContentAsync = OnReceivedAsync;
+    }
+
+    public void SetReceiver(
+        Func<ClipboardContent, Task<bool>> receiver)
+    {
+        ArgumentNullException.ThrowIfNull(receiver);
+        _receiver = receiver;
     }
 
     public int BleSubscribers => _ble.Subscribers;
@@ -263,14 +270,30 @@ public sealed class ClipboardSyncCoordinator : IAsyncDisposable
         }
     }
 
-    private void OnReceived(string deviceId, ClipboardContent content)
+    private async Task<bool> OnReceivedAsync(
+        string deviceId,
+        ClipboardContent content)
     {
         if (!_enabled() ||
-            !string.Equals(_approvedDeviceId(), deviceId, StringComparison.Ordinal))
-            return;
+            !string.Equals(
+                _approvedDeviceId(),
+                deviceId,
+                StringComparison.Ordinal))
+            return false;
 
-        Status?.Invoke($"Clipboard 수신 · {Describe(content)}");
-        Received?.Invoke(content);
+        var receiver = _receiver;
+        if (receiver is null)
+        {
+            Status?.Invoke(
+                "Windows Clipboard 수신기가 아직 준비되지 않았습니다.");
+            return false;
+        }
+
+        Status?.Invoke(
+            $"Clipboard 수신 · {Describe(content)}");
+
+        return await receiver(content)
+            .ConfigureAwait(false);
     }
 
     private static string Describe(ClipboardContent content) =>
