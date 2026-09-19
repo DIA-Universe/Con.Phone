@@ -81,6 +81,34 @@ public sealed record ClipboardContent(ClipboardContentKind Kind, byte[] Data, st
     }
 }
 
+public static class ClipboardAckCodec
+{
+    private static readonly byte[] Magic = "CPACK1"u8.ToArray();
+    public const int FrameLength = 22;
+
+    public static byte[] Encode(Guid transferId)
+    {
+        var frame = new byte[FrameLength];
+        Magic.CopyTo(frame, 0);
+        transferId.TryWriteBytes(frame.AsSpan(6, 16));
+        return frame;
+    }
+
+    public static bool TryDecode(
+        ReadOnlySpan<byte> frame,
+        out Guid transferId)
+    {
+        transferId = default;
+
+        if (frame.Length != FrameLength ||
+            !frame[..6].SequenceEqual(Magic))
+            return false;
+
+        transferId = new Guid(frame.Slice(6, 16));
+        return true;
+    }
+}
+
 public sealed record ClipboardChunk(
     Guid TransferId,
     ClipboardContentKind Kind,
