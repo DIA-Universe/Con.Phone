@@ -71,8 +71,10 @@ public static class Hid
         var p = (PointerPacket)packet;
         int x = p.X, y = p.Y, w = p.Wheel, pan = p.Pan;
 
-        if (new[] { x, y, w, pan }
-            .Any(v => Math.Abs((long)v) > 32767))
+        if (x is < -32767 or > 32767 ||
+            y is < -32767 or > 32767 ||
+            w is < -32767 or > 32767 ||
+            pan is < -32767 or > 32767)
             throw new ArgumentOutOfRangeException(
                 nameof(packet),
                 "Pointer backlog exceeds safety limit.");
