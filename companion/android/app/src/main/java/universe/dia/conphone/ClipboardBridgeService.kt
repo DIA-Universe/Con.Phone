@@ -55,6 +55,7 @@ class ClipboardBridgeService : Service() {
         private val TX_UUID = UUID.fromString("67A7F002-7E5B-4A2E-9B8B-1C9A5B6D1001")
         private val RX_UUID = UUID.fromString("67A7F003-7E5B-4A2E-9B8B-1C9A5B6D1001")
         private val SECRET_UUID = UUID.fromString("67A7F004-7E5B-4A2E-9B8B-1C9A5B6D1001")
+        private val CAPABILITIES_UUID = UUID.fromString("67A7F005-7E5B-4A2E-9B8B-1C9A5B6D1001")
         private val DIRECT_LINK_UUID = UUID.fromString("67A7F006-7E5B-4A2E-9B8B-1C9A5B6D1001")
         private val CCCD_UUID = UUID.fromString("00002902-0000-1000-8000-00805f9b34fb")
     }
@@ -71,8 +72,10 @@ class ClipboardBridgeService : Service() {
     @Volatile private var tx: BluetoothGattCharacteristic? = null
     @Volatile private var rx: BluetoothGattCharacteristic? = null
     @Volatile private var secretCharacteristic: BluetoothGattCharacteristic? = null
+    @Volatile private var capabilitiesCharacteristic: BluetoothGattCharacteristic? = null
     @Volatile private var directLinkCharacteristic: BluetoothGattCharacteristic? = null
     @Volatile private var mtu = 23
+    @Volatile private var bleImageLimitBytes = 512 * 1024
     @Volatile private var bleWriting = false
     @Volatile private var credential: Credential? = null
     @Volatile private var directConfig: DirectConfig? = null
@@ -187,8 +190,10 @@ class ClipboardBridgeService : Service() {
                 tx = null
                 rx = null
                 secretCharacteristic = null
+                capabilitiesCharacteristic = null
                 activeTarget = false
                 directLinkCharacteristic = null
+                bleImageLimitBytes = 512 * 1024
                 val dataPlaneAlive = p2p?.ready == true
                 if (!dataPlaneAlive) {
                     credential = null
@@ -223,6 +228,7 @@ class ClipboardBridgeService : Service() {
             tx = service.getCharacteristic(TX_UUID)
             rx = service.getCharacteristic(RX_UUID)
             secretCharacteristic = service.getCharacteristic(SECRET_UUID)
+            capabilitiesCharacteristic = service.getCharacteristic(CAPABILITIES_UUID)
             directLinkCharacteristic = service.getCharacteristic(DIRECT_LINK_UUID)
 
             val txLocal = tx ?: return
@@ -270,6 +276,10 @@ class ClipboardBridgeService : Service() {
                 handleCharacteristicRead(characteristic, characteristic.value ?: byteArrayOf())
             else if (characteristic.uuid == SECRET_UUID)
                 retrySecretRead(g)
+            else if (characteristic.uuid == CAPABILITIES_UUID) {
+                bleImageLimitBytes = 512 * 1024
+                directLinkCharacteristic?.let { g.readCharacteristic(it) }
+            }
             else if (characteristic.uuid == DIRECT_LINK_UUID) {
                 activeTarget = false
                 directConfig = null
@@ -292,6 +302,10 @@ class ClipboardBridgeService : Service() {
                 handleCharacteristicRead(characteristic, value)
             else if (characteristic.uuid == SECRET_UUID)
                 retrySecretRead(g)
+            else if (characteristic.uuid == CAPABILITIES_UUID) {
+                bleImageLimitBytes = 512 * 1024
+                directLinkCharacteristic?.let { g.readCharacteristic(it) }
+            }
             else if (characteristic.uuid == DIRECT_LINK_UUID) {
                 activeTarget = false
                 directConfig = null
@@ -350,6 +364,18 @@ class ClipboardBridgeService : Service() {
                 )
                 showStatus("BLE Clipboard 연결됨 · P2P 고속 링크 확인")
                 flushPendingContent()
+                if (checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT) == PackageManager.PERMISSION_GRANTED) {
+                    val capabilities = capabilitiesCharacteristic
+                    if (capabilities != null)
+                        gatt?.readCharacteristic(capabilities)
+                    else
+                        directLinkCharacteristic?.let { gatt?.readCharacteristic(it) }
+                }
+            }
+            CAPABILITIES_UUID -> {
+                bleImageLimitBytes = parseBleImageLimit(value)
+                showStatus(
+                    "BLE Clipboard 이미지 한도 · ${bleImageLimitBytes / 1024} KiB")
                 if (checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT) == PackageManager.PERMISSION_GRANTED)
                     directLinkCharacteristic?.let { gatt?.readCharacteristic(it) }
             }
@@ -389,6 +415,17 @@ class ClipboardBridgeService : Service() {
                 directLinkCharacteristic?.let { gatt?.readCharacteristic(it) }
             }
         }, delay)
+    }
+
+    private fun parseBleImageLimit(value: ByteArray): Int {
+        if (value.size < 8 || value[0].toInt() != 2)
+            return 512 * 1024
+
+        val limit = ByteBuffer.wrap(value, 4, 4)
+            .order(ByteOrder.LITTLE_ENDIAN)
+            .int
+
+        return limit.coerceIn(64 * 1024, 4 * 1024 * 1024)
     }
 
     private fun parseDirectConfig(value: ByteArray): DirectConfig? {
@@ -720,7 +757,7 @@ class ClipboardBridgeService : Service() {
     private fun sendViaBleOrQueue(content: ClipboardContent) {
         val bleAllowed =
             content.kind == ClipboardKind.TEXT ||
-            content.data.size <= 512 * 1024
+            content.data.size <= bleImageLimitBytes
 
         if (bleAllowed &&
             activeTarget &&
@@ -752,7 +789,7 @@ class ClipboardBridgeService : Service() {
         val canP2P = p2p?.ready == true
         val canBle =
             activeTarget &&
-            (content.kind == ClipboardKind.TEXT || content.data.size <= 512 * 1024) &&
+            (content.kind == ClipboardKind.TEXT || content.data.size <= bleImageLimitBytes) &&
             gatt != null && rx != null && credential != null
 
         if (!canP2P && !canBle) return
@@ -790,8 +827,8 @@ class ClipboardBridgeService : Service() {
             return
         }
 
-        if (content.kind != ClipboardKind.TEXT && content.data.size > 512 * 1024) {
-            toast("512 KiB 초과 이미지는 P2P 고속 연결 후 전송해 주세요.")
+        if (content.kind != ClipboardKind.TEXT && content.data.size > bleImageLimitBytes) {
+            toast("BLE 설정 한도를 초과한 이미지는 P2P 고속 연결 후 전송해 주세요.")
             return
         }
 
