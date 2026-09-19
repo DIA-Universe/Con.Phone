@@ -11,6 +11,7 @@ final class ClipboardBridge: NSObject, ObservableObject {
     @Published var fastLinkAvailable = false
 
     private let serviceUUID = CBUUID(string: "67A7F001-7E5B-4A2E-9B8B-1C9A5B6D1001")
+    private let hidServiceUUID = CBUUID(string: "1812")
     private let txUUID = CBUUID(string: "67A7F002-7E5B-4A2E-9B8B-1C9A5B6D1001")
     private let rxUUID = CBUUID(string: "67A7F003-7E5B-4A2E-9B8B-1C9A5B6D1001")
     private let secretUUID = CBUUID(string: "67A7F004-7E5B-4A2E-9B8B-1C9A5B6D1001")
@@ -724,7 +725,7 @@ final class ClipboardBridge: NSObject, ObservableObject {
         status = "Con.Phone PC 검색 중"
         central.stopScan()
         central.scanForPeripherals(
-            withServices: [serviceUUID],
+            withServices: [serviceUUID, hidServiceUUID],
             options: [CBCentralManagerScanOptionAllowDuplicatesKey: false]
         )
     }
