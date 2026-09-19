@@ -88,6 +88,13 @@ require("_started" not in coordinator and "StartCoreAsync" in coordinator,
         "Clipboard coordinator must restart P2P after disable/re-enable")
 require("_lifecycle" in coordinator,
         "Clipboard transport start/stop must be lifecycle-serialized")
+require("_shutdown.Token" in coordinator and "sendToken" in coordinator,
+        "Clipboard sends must link to coordinator shutdown cancellation")
+require("content,\n                        sendToken," in coordinator,
+        "BLE fallback must use coordinator shutdown cancellation")
+require("_send.Dispose()" not in coordinator and "_lifecycle.Dispose()" not in coordinator and
+        "_shutdown.Dispose()" not in coordinator,
+        "Clipboard coordinator async primitives must not be disposed while callers unwind")
 
 # P2P protocol v2 must match on all platforms.
 for path, text in [
