@@ -120,3 +120,14 @@
 5. 전송 실패 시 영구 항목이 삭제되지 않는지 확인
 6. 8개 초과 공유와 40 MiB 총량 초과가 명확한 오류로 거부되는지 확인
 7. 24시간 만료 항목이 metadata와 payload 파일 모두 정리되는지 확인
+
+
+## ACK / 중간 단절 복구
+
+1. PC -> Galaxy P2P 이미지 전송 중 마지막 10% 구간에서 Wi-Fi Direct 연결을 끊고 Share/clipboard가 성공 처리되지 않는지 확인
+2. PC -> Galaxy BLE 텍스트 전송 중 Bluetooth를 끊고 Windows가 성공으로 기록하지 않는지 확인
+3. PC -> iPhone P2P/BLE도 동일 시험
+4. Galaxy/iPhone -> Windows 전송 중 Windows Clipboard를 다른 프로그램이 잠근 상태에서 모바일 영구 공유 항목이 삭제되지 않는지 확인
+5. ACK만 유실시키는 조건에서 fallback 재전송 후 동일 내용이 모바일 클립보드에 중복 적용되지 않는지 확인
+6. P2P ACK는 암호화 sequence stream 안에서 처리되고, 이전 세션 ACK가 새 세션 전송을 완료시키지 못하는지 확인
+7. MTU 23/작은 MTU 환경에서 BLE ACK 22 bytes가 secondary fragment로 정상 왕복하는지 확인
