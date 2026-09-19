@@ -21,10 +21,27 @@ public sealed class Outbox
             if (_items.Last is { } last && last.Value.Epoch == item.Epoch &&
                 last.Value.Packet is PointerPacket a && item.Packet is PointerPacket b && a.Buttons == b.Buttons)
             {
-                long x = (long)a.X + b.X, y = (long)a.Y + b.Y;
-                long w = (long)a.Wheel + b.Wheel, h = (long)a.Pan + b.Pan;
-                if (new[] { x, y, w, h }.Any(v => Math.Abs(v) > 32767)) return false;
-                last.Value = new(item.Epoch, new PointerPacket(a.Buttons, (int)x, (int)y, (int)w, (int)h));
+                long x = (long)a.X + b.X;
+                long y = (long)a.Y + b.Y;
+                long wheel = (long)a.Wheel + b.Wheel;
+                long pan = (long)a.Pan + b.Pan;
+
+                // This path runs for every raw mouse packet. Keep it allocation-free
+                // so pointer coalescing itself cannot introduce GC jitter.
+                if (x is < short.MinValue or > short.MaxValue ||
+                    y is < short.MinValue or > short.MaxValue ||
+                    wheel is < short.MinValue or > short.MaxValue ||
+                    pan is < short.MinValue or > short.MaxValue)
+                    return false;
+
+                last.Value = new(
+                    item.Epoch,
+                    new PointerPacket(
+                        a.Buttons,
+                        (int)x,
+                        (int)y,
+                        (int)wheel,
+                        (int)pan));
                 return true;
             }
             if (_items.Count >= _capacity) return false;
