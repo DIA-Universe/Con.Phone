@@ -380,6 +380,12 @@ public sealed class BleClipboardService : IDisposable
                                 if (!applied)
                                     throw new InvalidDataException(
                                         "Windows clipboard apply failed.");
+
+                                await SendAckAsync(
+                                        id,
+                                        chunk.TransferId,
+                                        CancellationToken.None)
+                                    .ConfigureAwait(false);
                             }
                         }
                     }
@@ -408,6 +414,47 @@ public sealed class BleClipboardService : IDisposable
         finally
         {
             deferral.Complete();
+        }
+    }
+
+    private async Task SendAckAsync(
+        string deviceId,
+        Guid transferId,
+        CancellationToken token)
+    {
+        if (_tx is null || !IsActive(deviceId))
+            throw new InvalidOperationException(
+                "Clipboard ACK를 보낼 활성 BLE 대상이 없습니다.");
+
+        var client = LiveClients(_tx)
+            .FirstOrDefault(x => SessionId(x) == deviceId)
+            ?? throw new InvalidOperationException(
+                "Clipboard ACK 대상이 BLE 알림을 구독하지 않았습니다.");
+
+        var maxGattValue = client.MaxNotificationSize;
+        if (maxGattValue <= BleFragmentCodec.HeaderSize)
+            throw new InvalidOperationException(
+                $"BLE ACK 알림 크기가 너무 작습니다: {maxGattValue}");
+
+        var ack = ClipboardAckCodec.Encode(transferId);
+        var transportTransferId =
+            BitConverter.ToUInt32(
+                RandomNumberGenerator.GetBytes(4));
+
+        foreach (var fragment in BleFragmentCodec.Split(
+                     ack,
+                     maxGattValue,
+                     transportTransferId))
+        {
+            var result = await _tx.NotifyValueAsync(
+                    fragment.AsBuffer(),
+                    client)
+                .AsTask(token)
+                .ConfigureAwait(false);
+
+            if (result.Status != GattCommunicationStatus.Success)
+                throw new InvalidOperationException(
+                    $"Clipboard BLE ACK 전송 실패: {result.Status}");
         }
     }
 
