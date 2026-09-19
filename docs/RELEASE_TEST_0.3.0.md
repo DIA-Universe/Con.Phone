@@ -86,3 +86,12 @@
 - ClipboardP2PHostReady
 
 클립보드 본문, 입력 문자, raw Bluetooth device id, P2P 비밀번호는 진단 파일에 넣지 않는다.
+
+
+## BLE 이미지 한도 동기화
+
+1. Windows BLE 이미지 한도를 256 KiB로 변경
+2. Android/iPhone Companion 재연결 후 256 KiB 수신 상태 확인
+3. 256 KiB 이하 이미지는 BLE fallback 가능 확인
+4. 256 KiB 초과 이미지는 P2P 경로를 요구하는지 확인
+5. Windows 한도를 1024 KiB로 변경 후 Companion 재연결하여 양방향 동일 적용 확인
