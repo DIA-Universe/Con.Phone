@@ -191,8 +191,9 @@ public sealed class MainForm : Form
     private ClipboardHistoryService? _clipboard;
     private ClipboardSyncCoordinator? _clipboardSync;
     private ClipboardContent? _latestLocalClipboard;
-    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, string>
-        _lastSentClipboardHashByDevice = new(StringComparer.Ordinal);
+    private long _latestClipboardGeneration;
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, long>
+        _lastSentClipboardGenerationByDevice = new(StringComparer.Ordinal);
 
     private readonly NotifyIcon _tray = new()
     {
@@ -995,10 +996,12 @@ public sealed class MainForm : Form
                 if (applied)
                 {
                     _latestLocalClipboard = content;
+                    var generation =
+                        Interlocked.Increment(ref _latestClipboardGeneration);
 
                     if (_ble.ApprovedId is { } sourceDeviceId)
-                        _lastSentClipboardHashByDevice[sourceDeviceId] =
-                            content.Hash;
+                        _lastSentClipboardGenerationByDevice[sourceDeviceId] =
+                            generation;
 
                     Log(
                         "휴대폰 클립보드를 Windows에 적용했습니다.");
@@ -1055,13 +1058,21 @@ public sealed class MainForm : Form
             _clipboard.ContentCaptured += content => Post(() =>
             {
                 _latestLocalClipboard = content;
+                Interlocked.Increment(ref _latestClipboardGeneration);
+
                 Log(content.Kind == ClipboardContentKind.TextUtf8
                     ? "텍스트 복사 감지 · 휴대폰 전환 시 동기화 대기"
                     : $"이미지 복사 감지 · {content.Data.Length / 1024.0:N1} KiB · 휴대폰 전환 시 동기화 대기");
             });
 
             if (_clipboard.TryGetLatestContent(out var latest))
+            {
                 _latestLocalClipboard = latest;
+                Interlocked.CompareExchange(
+                    ref _latestClipboardGeneration,
+                    1,
+                    0);
+            }
 
             _clipboard.CaptureNow();
             RefreshClipboardList();
@@ -1621,8 +1632,16 @@ public sealed class MainForm : Form
             return;
 
         var content = _latestLocalClipboard;
-        if (_lastSentClipboardHashByDevice.TryGetValue(targetId, out var lastHash) &&
-            string.Equals(content.Hash, lastHash, StringComparison.Ordinal))
+        var generation =
+            Interlocked.Read(ref _latestClipboardGeneration);
+
+        if (generation <= 0)
+            generation = 1;
+
+        if (_lastSentClipboardGenerationByDevice.TryGetValue(
+                targetId,
+                out var lastGeneration) &&
+            lastGeneration >= generation)
             return;
 
         if (content.Kind == ClipboardContentKind.TextUtf8 && !_settings.ClipboardAutoSendText)
@@ -1638,7 +1657,7 @@ public sealed class MainForm : Form
                 _settings.ClipboardBleImageLimitKb * 1024,
                 timeout.Token) &&
             string.Equals(targetId, _ble.ApprovedId, StringComparison.Ordinal))
-            _lastSentClipboardHashByDevice[targetId] = content.Hash;
+            _lastSentClipboardGenerationByDevice[targetId] = generation;
     }
 
     private async Task SendSelectedClipboardToPhoneAsync()
@@ -1664,8 +1683,14 @@ public sealed class MainForm : Form
                 timeout.Token))
             throw new InvalidOperationException("현재 사용 가능한 Clipboard 전송 경로가 없습니다.");
 
-        if (string.Equals(targetId, _ble.ApprovedId, StringComparison.Ordinal))
-            _lastSentClipboardHashByDevice[targetId] = content.Hash;
+        if (string.Equals(targetId, _ble.ApprovedId, StringComparison.Ordinal) &&
+            _latestLocalClipboard is { } latestContent &&
+            string.Equals(latestContent.Hash, content.Hash, StringComparison.Ordinal))
+        {
+            var generation =
+                Math.Max(1, Interlocked.Read(ref _latestClipboardGeneration));
+            _lastSentClipboardGenerationByDevice[targetId] = generation;
+        }
     }
 
     private async Task SendConsumerActionSafeAsync(ConsumerAction action)
@@ -1845,7 +1870,7 @@ public sealed class MainForm : Form
         {
             ClipboardPairingSecretStore.Forget(revokedId);
             DeviceProfileStore.Remove(revokedId);
-            _lastSentClipboardHashByDevice.TryRemove(revokedId, out _);
+            _lastSentClipboardGenerationByDevice.TryRemove(revokedId, out _);
         }
 
         _clipboardSync?.TargetChanged();
