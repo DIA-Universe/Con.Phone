@@ -729,12 +729,15 @@ extension ClipboardBridge: CBPeripheralDelegate {
         }
 
         if characteristic.uuid == directLinkUUID {
-            if let config = parseDirectConfig(value) {
-                activeTarget = true
-                directConfigReadAttempt = 0
-                directConfig = config
-                fastLinkAvailable = true
-                flushPendingContent()
+            // A successful read is only possible for the active trusted target.
+            // Keep BLE fallback usable even when the PC cannot publish P2P.
+            activeTarget = true
+            directConfigReadAttempt = 0
+            directConfig = parseDirectConfig(value)
+            fastLinkAvailable = directConfig != nil
+            flushPendingContent()
+
+            if let config = directConfig {
                 if config.hostAddress != nil && directHostRefreshAttempt > 0 {
                     startP2PFastPath()
                 } else if pendingFastLinkConnect {
@@ -743,8 +746,6 @@ extension ClipboardBridge: CBPeripheralDelegate {
                 } else {
                     status = "P2P 고속 연결 사용 가능 · 필요하면 버튼으로 연결"
                 }
-            } else {
-                retryDirectConfigRead(peripheral)
             }
             return
         }
