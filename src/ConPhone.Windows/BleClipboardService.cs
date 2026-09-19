@@ -340,15 +340,32 @@ public sealed class BleClipboardService : IDisposable
                 else
                 {
                     var fragment = BleFragmentCodec.Decode(bytes);
-                    var ble = _bleReassemblers.GetOrAdd(id, _ => new BleFragmentReassembler());
+                    var ble = _bleReassemblers.GetOrAdd(
+                        id,
+                        _ => new BleFragmentReassembler());
                     var frame = ble.Add(fragment);
+
                     if (frame is not null)
                     {
-                        var chunk = ClipboardWireCodec.Decode(frame);
-                        var clipboard = _clipboardReassemblers.GetOrAdd(id, _ => new ClipboardReassembler());
-                        var content = clipboard.Add(chunk);
-                        if (content is not null)
-                            Received?.Invoke(id, content);
+                        if (ClipboardAckCodec.TryDecode(
+                                frame,
+                                out var fragmentedAckTransferId))
+                        {
+                            CompleteAck(
+                                id,
+                                fragmentedAckTransferId);
+                        }
+                        else
+                        {
+                            var chunk = ClipboardWireCodec.Decode(frame);
+                            var clipboard = _clipboardReassemblers.GetOrAdd(
+                                id,
+                                _ => new ClipboardReassembler());
+                            var content = clipboard.Add(chunk);
+
+                            if (content is not null)
+                                Received?.Invoke(id, content);
+                        }
                     }
 
                     valid = true;
