@@ -635,7 +635,8 @@ public sealed class P2PClipboardServer : IAsyncDisposable
         await StopListeningAsync()
             .ConfigureAwait(false);
 
-        _connectionSlots.Dispose();
+        // Connection handlers may still be unwinding and releasing their slot.
+        // Let SemaphoreSlim be collected with this server rather than racing Dispose().
         _lifetime.Dispose();
     }
 }
