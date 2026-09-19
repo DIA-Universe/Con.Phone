@@ -687,6 +687,11 @@ class ClipboardBridgeService : Service() {
     }
 
     private fun retryP2PNow() {
+        // Durable Share items may have expired from the in-memory queue while
+        // P2P permission was missing. Re-check storage whenever the user asks
+        // to enable the fast path.
+        drainPersistedShares()
+
         if (!activeTarget) {
             showStatus("현재 활성 휴대폰 대상이 아니라 P2P 연결을 기다립니다.")
             scheduleCapabilitiesRead()
@@ -696,6 +701,7 @@ class ClipboardBridgeService : Service() {
         if (p2p?.ready == true) {
             showStatus("P2P 고속 채널이 이미 연결되어 있습니다.")
             flushPendingContent()
+            drainPersistedShares()
             return
         }
 
