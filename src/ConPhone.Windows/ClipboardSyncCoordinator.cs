@@ -80,6 +80,22 @@ public sealed class ClipboardSyncCoordinator : IAsyncDisposable
 
     }
 
+    public async Task EnsureHealthyAsync()
+    {
+        if (!_enabled())
+            return;
+
+        try
+        {
+            await _p2p.StartAsync().ConfigureAwait(false);
+            await _ble.StartAsync().ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            Status?.Invoke($"Clipboard transport 자동 복구 대기: {ex.Message}");
+        }
+    }
+
     public void TargetChanged()
     {
         Interlocked.Increment(ref _targetGeneration);
