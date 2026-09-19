@@ -1580,31 +1580,33 @@ class ClipboardBridgeService : Service() {
                 else -> {
                     ensureSafeImageDimensions(content.data)
 
-                    val bitmap =
-                        BitmapFactory.decodeByteArray(
-                            content.data,
-                            0,
-                            content.data.size)
-                            ?: error(
-                                "수신 이미지를 해석할 수 없습니다.")
+                    val target =
+                        File(
+                            cacheDir,
+                            ClipboardImageProvider.FILE_NAME)
 
-                    try {
-                        FileOutputStream(
-                            File(
-                                cacheDir,
-                                ClipboardImageProvider.FILE_NAME)
-                        ).use { out ->
-                            check(
-                                bitmap.compress(
-                                    Bitmap.CompressFormat.PNG,
-                                    100,
-                                    out)
-                            ) {
-                                "수신 이미지를 PNG로 저장하지 못했습니다."
+                    if (content.kind == ClipboardKind.PNG) {
+                        // Windows clipboard images are already normalized to PNG.
+                        // Preserve encoded bytes and avoid a full bitmap allocation.
+                        target.writeBytes(content.data)
+                    } else {
+                        val bitmap =
+                            decodeImageForPngNormalization(
+                                content.data)
+                        try {
+                            FileOutputStream(target).use { out ->
+                                check(
+                                    bitmap.compress(
+                                        Bitmap.CompressFormat.PNG,
+                                        100,
+                                        out)
+                                ) {
+                                    "수신 이미지를 PNG로 저장하지 못했습니다."
+                                }
                             }
+                        } finally {
+                            bitmap.recycle()
                         }
-                    } finally {
-                        bitmap.recycle()
                     }
 
                     val clip =
