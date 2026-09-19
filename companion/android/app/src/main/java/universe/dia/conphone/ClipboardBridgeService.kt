@@ -930,17 +930,40 @@ class ClipboardBridgeService : Service() {
                 val bytes = file.readBytes()
                 ensureSafeImageDimensions(bytes)
 
-                val encodedKind = detectEncodedImageKind(bytes, mime)
-                if (encodedKind != null) {
-                    ClipboardProtocol.image(encodedKind, bytes)
+                val encodedKind =
+                    detectEncodedImageKind(bytes, mime)
+
+                if (encodedKind == ClipboardKind.PNG ||
+                    encodedKind == ClipboardKind.JPEG) {
+                    ClipboardProtocol.image(
+                        encodedKind,
+                        bytes)
                 } else {
-                    val bitmap = BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
-                        ?: error("지원하지 않는 이미지 형식입니다.")
+                    // Windows System.Drawing does not reliably decode WebP.
+                    // Normalize WebP and other decodable shared images to PNG
+                    // before sending them to the PC.
+                    val bitmap =
+                        BitmapFactory.decodeByteArray(
+                            bytes,
+                            0,
+                            bytes.size)
+                            ?: error(
+                                "지원하지 않는 이미지 형식입니다.")
 
                     try {
                         val out = ByteArrayOutputStream()
-                        bitmap.compress(Bitmap.CompressFormat.PNG, 100, out)
-                        ClipboardProtocol.image(ClipboardKind.PNG, out.toByteArray())
+                        check(
+                            bitmap.compress(
+                                Bitmap.CompressFormat.PNG,
+                                100,
+                                out)
+                        ) {
+                            "공유 이미지를 PNG로 변환하지 못했습니다."
+                        }
+
+                        ClipboardProtocol.image(
+                            ClipboardKind.PNG,
+                            out.toByteArray())
                     } finally {
                         bitmap.recycle()
                     }
