@@ -153,7 +153,10 @@ public sealed class InputCapture : IDisposable
             if (!_started.Task.IsCompletedSuccessfully)
                 throw new InvalidOperationException("입력 수집이 준비되지 않았습니다.");
 
-            var allowed = HotkeyPhysicalKeys(_toggleHotkey);
+            var allowed = new HashSet<int>(
+                HotkeyPhysicalKeys(_toggleHotkey));
+            allowed.UnionWith(
+                HotkeyPhysicalKeys(_nextDeviceHotkey));
             _localPassthroughUntilUp.Clear();
 
             for (int vk = 1; vk < 255; vk++)
@@ -164,7 +167,9 @@ public sealed class InputCapture : IDisposable
 
                 // Modifier down events were delivered to Windows while input was local. Once remote
                 // mode starts their key-up events must still reach Windows or Ctrl/Alt can appear stuck.
-                if (vk != _toggleHotkey.Key && IsPhysicalModifier(vk))
+                if (vk != _toggleHotkey.Key &&
+                    vk != _nextDeviceHotkey.Key &&
+                    IsPhysicalModifier(vk))
                     _localPassthroughUntilUp.Add(vk);
             }
 
