@@ -166,26 +166,36 @@ public sealed class ClipboardHistoryService : IDisposable
         if (preview.Length > 100) preview = preview[..100] + "…";
         if (preview.Length == 0) preview = "(공백 텍스트)";
 
+        var historyChanged = false;
+
         lock (_gate)
         {
-            if (_entries.FirstOrDefault()?.Hash == hash) return;
-
-            _entries.RemoveAll(x => x.Hash == hash);
-            _entries.Insert(0, new ClipboardEntry
+            if (_entries.FirstOrDefault()?.Hash != hash)
             {
-                Kind = ClipboardEntryKind.Text,
-                Text = text,
-                Preview = preview,
-                Hash = hash,
-                CapturedAt = DateTime.Now
-            });
+                _entries.RemoveAll(x => x.Hash == hash);
+                _entries.Insert(0, new ClipboardEntry
+                {
+                    Kind = ClipboardEntryKind.Text,
+                    Text = text,
+                    Preview = preview,
+                    Hash = hash,
+                    CapturedAt = DateTime.Now
+                });
 
-            TrimLocked();
-            SaveLocked();
+                TrimLocked();
+                SaveLocked();
+                historyChanged = true;
+            }
         }
 
-        Status?.Invoke("텍스트 클립보드를 기록했습니다.");
-        Changed?.Invoke();
+        if (historyChanged)
+        {
+            Status?.Invoke("텍스트 클립보드를 기록했습니다.");
+            Changed?.Invoke();
+        }
+
+        // A repeated Ctrl+C of identical text is still a new sync intent even
+        // though the local history should not store a duplicate row.
         if (publish)
             ContentCaptured?.Invoke(ClipboardContent.FromText(text));
     }
@@ -197,35 +207,44 @@ public sealed class ClipboardHistoryService : IDisposable
         var bytes = ms.ToArray();
         var hash = Convert.ToHexString(SHA256.HashData(bytes));
 
+        var historyChanged = false;
+
         lock (_gate)
         {
-            if (_entries.FirstOrDefault()?.Hash == hash) return;
-
-            foreach (var duplicate in _entries.Where(x => x.Hash == hash).ToArray())
-                DeleteImageLocked(duplicate);
-
-            _entries.RemoveAll(x => x.Hash == hash);
-
-            var id = Guid.NewGuid().ToString("N");
-            var fileName = id + ".png";
-            File.WriteAllBytes(Path.Combine(ImageRoot, fileName), bytes);
-
-            _entries.Insert(0, new ClipboardEntry
+            if (_entries.FirstOrDefault()?.Hash != hash)
             {
-                Id = id,
-                Kind = ClipboardEntryKind.Image,
-                ImageFileName = fileName,
-                Preview = $"{image.Width} × {image.Height} 이미지",
-                Hash = hash,
-                CapturedAt = DateTime.Now
-            });
+                foreach (var duplicate in _entries.Where(x => x.Hash == hash).ToArray())
+                    DeleteImageLocked(duplicate);
 
-            TrimLocked();
-            SaveLocked();
+                _entries.RemoveAll(x => x.Hash == hash);
+
+                var id = Guid.NewGuid().ToString("N");
+                var fileName = id + ".png";
+                File.WriteAllBytes(Path.Combine(ImageRoot, fileName), bytes);
+
+                _entries.Insert(0, new ClipboardEntry
+                {
+                    Id = id,
+                    Kind = ClipboardEntryKind.Image,
+                    ImageFileName = fileName,
+                    Preview = $"{image.Width} × {image.Height} 이미지",
+                    Hash = hash,
+                    CapturedAt = DateTime.Now
+                });
+
+                TrimLocked();
+                SaveLocked();
+                historyChanged = true;
+            }
         }
 
-        Status?.Invoke("이미지/캡처 클립보드를 기록했습니다.");
-        Changed?.Invoke();
+        if (historyChanged)
+        {
+            Status?.Invoke("이미지/캡처 클립보드를 기록했습니다.");
+            Changed?.Invoke();
+        }
+
+        // Re-copying the same image is also a new sync generation.
         if (publish)
             ContentCaptured?.Invoke(ClipboardContent.FromImage(ClipboardContentKind.Png, bytes));
     }
