@@ -529,6 +529,11 @@ public sealed class BleClipboardService : IDisposable
             throw new InvalidOperationException($"BLE 알림 크기가 너무 작습니다: {maxGattValue}");
 
         var isImage = content.Kind != ClipboardContentKind.TextUtf8;
+        var bulkTransfer =
+            isImage ||
+            (content.Kind == ClipboardContentKind.TextUtf8 &&
+             content.Data.Length > 64 * 1024);
+
         if (isImage && maxGattValue < 100)
             throw new InvalidOperationException(
                 $"BLE 이미지 전송 MTU가 너무 작습니다({maxGattValue}). P2P 고속 링크를 사용하세요.");
@@ -577,7 +582,7 @@ public sealed class BleClipboardService : IDisposable
                             throw new InvalidOperationException(
                                 "활성 휴대폰이 변경되어 이전 기기의 Clipboard BLE 전송을 중단했습니다.");
 
-                        if (isImage && pauseBulk is not null)
+                        if (bulkTransfer && pauseBulk is not null)
                         {
                             while (pauseBulk())
                                 await Task.Delay(
@@ -595,7 +600,7 @@ public sealed class BleClipboardService : IDisposable
                                 $"Clipboard BLE 전송 실패: {result.Status}");
 
                         fragmentIndex++;
-                        if (isImage && fragmentIndex % 4 == 0)
+                        if (bulkTransfer && fragmentIndex % 4 == 0)
                             await Task.Delay(
                                 2,
                                 token).ConfigureAwait(false);
