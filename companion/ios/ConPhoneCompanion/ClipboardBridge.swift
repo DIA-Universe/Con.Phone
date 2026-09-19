@@ -119,9 +119,15 @@ final class ClipboardBridge: NSObject, ObservableObject {
 
                 try ensureSafeImageDimensions(imageData)
 
-                if let kind = detectEncodedImageKind(imageData) {
-                    content = try ClipboardProtocol.image(kind, imageData)
+                if let kind = detectEncodedImageKind(imageData),
+                   kind == .png || kind == .jpeg {
+                    content =
+                        try ClipboardProtocol.image(
+                            kind,
+                            imageData)
                 } else {
+                    // Windows System.Drawing does not reliably decode WebP.
+                    // Normalize WebP and other UIImage-decodable shares to PNG.
                     guard let image = UIImage(data: imageData),
                           let png = image.pngData() else {
                         throw ClipboardProtocol.ProtocolError.invalidContent
@@ -130,7 +136,10 @@ final class ClipboardBridge: NSObject, ObservableObject {
                     try ensureSafeImageDimensions(
                         width: Int(image.size.width * image.scale),
                         height: Int(image.size.height * image.scale))
-                    content = try ClipboardProtocol.image(.png, png)
+                    content =
+                        try ClipboardProtocol.image(
+                            .png,
+                            png)
                 }
             }
 
