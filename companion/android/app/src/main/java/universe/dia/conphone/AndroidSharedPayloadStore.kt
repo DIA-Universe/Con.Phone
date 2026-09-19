@@ -18,6 +18,10 @@ class AndroidSharedPayloadStore(private val context: Context) {
         private const val MAX_IMAGE_BYTES = 32 * 1024 * 1024
         private const val MAX_TOTAL_BYTES = 40L * 1024 * 1024
         private const val MAX_AGE_MS = 24L * 60 * 60 * 1000
+
+        // ShareActivity and ClipboardBridgeService create separate store instances.
+        // Their read-modify-write cycles must still be serialized process-wide.
+        private val GLOBAL_GATE = Any()
     }
 
     enum class Kind { TEXT, IMAGE }
@@ -38,7 +42,6 @@ class AndroidSharedPayloadStore(private val context: Context) {
         val size: Long
     )
 
-    private val gate = Any()
     private val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
     private val directory = File(context.filesDir, DIRECTORY).apply { mkdirs() }
 
@@ -75,7 +78,7 @@ class AndroidSharedPayloadStore(private val context: Context) {
 
             require(total > 0) { "공유 이미지가 비어 있습니다." }
 
-            synchronized(gate) {
+            synchronized(GLOBAL_GATE) {
                 val queue = loadAndPruneLocked()
                 ensureCapacityLocked(queue, total)
                 queue.add(
@@ -97,7 +100,7 @@ class AndroidSharedPayloadStore(private val context: Context) {
         }
     }
 
-    fun peek(): Item? = synchronized(gate) {
+    fun peek(): Item? = synchronized(GLOBAL_GATE) {
         while (true) {
             val queue = loadAndPruneLocked()
             val meta = queue.firstOrNull() ?: return@synchronized null
@@ -132,7 +135,7 @@ class AndroidSharedPayloadStore(private val context: Context) {
         null
     }
 
-    fun clear(id: String) = synchronized(gate) {
+    fun clear(id: String) = synchronized(GLOBAL_GATE) {
         val queue = loadAndPruneLocked()
         val index = queue.indexOfFirst { it.id == id }
         if (index < 0) return@synchronized
@@ -142,7 +145,7 @@ class AndroidSharedPayloadStore(private val context: Context) {
         runCatching { safeFile(meta.fileName).delete() }
     }
 
-    fun count(): Int = synchronized(gate) {
+    fun count(): Int = synchronized(GLOBAL_GATE) {
         loadAndPruneLocked().size
     }
 
@@ -153,7 +156,7 @@ class AndroidSharedPayloadStore(private val context: Context) {
 
         try {
             target.writeBytes(bytes)
-            synchronized(gate) {
+            synchronized(GLOBAL_GATE) {
                 val queue = loadAndPruneLocked()
                 ensureCapacityLocked(queue, bytes.size.toLong())
                 queue.add(
