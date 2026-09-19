@@ -178,3 +178,10 @@ Direct Wi-Fi/P2P 링크 자체의 WPA2 비밀번호만 신뢰하지 않는다.
 ## Windows 방화벽 진단
 
 P2P 데이터 채널은 TCP 47911을 사용한다. Con.Phone은 시작 시 전용 방화벽 규칙 상태를 비권한 조회로 확인하며, 규칙이 없거나 확인되지 않아도 BLE fallback을 막지 않는다. 사용자가 P2P 허용 버튼을 누른 경우에만 UAC를 요청해 inbound rule을 생성하고 다시 검증한다.
+
+
+## BLE fallback 크기 정책
+
+Windows의 "BLE 이미지 한도"가 기준값이다. Clipboard GATT Capabilities v2가 이 값을 64 KiB~4 MiB 범위의 little-endian byte count로 Android/iOS Companion에 전달한다. Companion은 이 값을 폰→PC BLE 전송에도 동일하게 사용한다. Capabilities v2 읽기에 실패하거나 구버전 PC에 연결한 경우 Companion은 안전 기본값 512 KiB를 사용한다.
+
+큰 이미지는 이 한도를 넘기면 BLE로 억지 전송하지 않고 Direct Wi-Fi/P2P 경로를 사용한다.
