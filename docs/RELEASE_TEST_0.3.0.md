@@ -131,3 +131,19 @@
 5. ACK만 유실시키는 조건에서 fallback 재전송 후 동일 내용이 모바일 클립보드에 중복 적용되지 않는지 확인
 6. P2P ACK는 암호화 sequence stream 안에서 처리되고, 이전 세션 ACK가 새 세션 전송을 완료시키지 못하는지 확인
 7. MTU 23/작은 MTU 환경에서 BLE ACK 22 bytes가 secondary fragment로 정상 왕복하는지 확인
+
+
+## 종료 / 재활성화 race
+
+- 이미지/대용량 텍스트 전송 중 클립보드 동기화 OFF → 전송 취소, TCP 47911 listener 종료, HID 입력 유지
+- 즉시 다시 ON → P2P listener 재생성 및 BLE Clipboard 검색 신호 재시작
+- 전송 중 앱 종료 → ObjectDisposedException/세마포어 Release 예외 없이 종료
+- 활성 기기 변경과 P2P AP 시작이 겹쳐도 credential rotation/start가 직렬화되는지 확인
+- 종료 직전 BLE ACK 대기 중이어도 앱이 멈추지 않는지 확인
+
+## Windows 로컬 Clipboard 안전 한도
+
+- 1 MiB 초과 UTF-8 텍스트는 기록/동기화하지 않고 상태 로그 출력
+- 40MP 초과 이미지는 기록/동기화 거부
+- PNG 인코딩 결과 32 MiB 초과 이미지는 기록/동기화 거부
+- 과거 히스토리 이미지 파일이 32 MiB를 넘거나 40MP를 넘으면 복원 거부
