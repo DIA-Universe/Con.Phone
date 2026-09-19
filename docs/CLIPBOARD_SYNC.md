@@ -185,3 +185,14 @@ P2P 데이터 채널은 TCP 47911을 사용한다. Con.Phone은 시작 시 전�
 Windows의 "BLE 이미지 한도"가 기준값이다. Clipboard GATT Capabilities v2가 이 값을 64 KiB~4 MiB 범위의 little-endian byte count로 Android/iOS Companion에 전달한다. Companion은 이 값을 폰→PC BLE 전송에도 동일하게 사용한다. Capabilities v2 읽기에 실패하거나 구버전 PC에 연결한 경우 Companion은 안전 기본값 512 KiB를 사용한다.
 
 큰 이미지는 이 한도를 넘기면 BLE로 억지 전송하지 않고 Direct Wi-Fi/P2P 경로를 사용한다.
+
+
+## 전송 실패 복구
+
+- HID 검색 신호는 동일 GATT provider를 유지한 채 5초 watchdog으로 자동 복구한다. 사용자가 직접 서비스를 중지한 경우 watchdog은 재시작하지 않는다.
+- Windows의 단순 GATT readiness 흔들림은 1.5초 grace 후에만 로컬 입력으로 복귀한다. 실제 HID 전송 실패는 즉시 로컬로 복귀한다.
+- Android BLE 송신은 진행 중 Clipboard를 추적하며 write 실패/연결 끊김 시 새 transfer로 대기열에 되돌린다.
+- iOS BLE 송신도 진행 중 Clipboard를 대기 상태로 복원하고, Share Extension 항목은 실제 전송 완료 전까지 App Group 저장소에서 삭제하지 않는다.
+- iOS P2P는 wire frame 전체 배열을 만들지 않고 FrameCursor로 순차 전송한다.
+- Android/iOS 공유 대기열은 최대 8개이며 크기/TTL 제한을 둔다.
+- Android의 Nearby Wi-Fi 권한은 P2P 전용이다. 권한을 거부해도 BLE 텍스트/작은 이미지 fallback은 계속 동작한다.
