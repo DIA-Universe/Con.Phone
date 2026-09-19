@@ -74,6 +74,7 @@ public sealed class BleClipboardService : IDisposable
     private readonly Func<string?> _approvedDeviceId;
     private readonly Func<string, bool> _trustedDevice;
     private readonly Func<bool> _enabled;
+    private readonly Func<int> _bleImageLimitBytes;
     private readonly Func<DirectLinkConfig?> _directLinkConfig;
     private readonly SemaphoreSlim _sendGate = new(1, 1);
     private readonly ConcurrentDictionary<string, BleFragmentReassembler> _bleReassemblers = new();
@@ -94,11 +95,13 @@ public sealed class BleClipboardService : IDisposable
         Func<string?> approvedDeviceId,
         Func<string, bool> trustedDevice,
         Func<bool> enabled,
+        Func<int> bleImageLimitBytes,
         Func<DirectLinkConfig?> directLinkConfig)
     {
         _approvedDeviceId = approvedDeviceId;
         _trustedDevice = trustedDevice;
         _enabled = enabled;
+        _bleImageLimitBytes = bleImageLimitBytes;
         _directLinkConfig = directLinkConfig;
     }
 
@@ -248,8 +251,19 @@ public sealed class BleClipboardService : IDisposable
                 return;
             }
 
-            // protocol v1: text, image, direct P2P upgrade supported.
-            request.RespondWithValue(new byte[] { 1, 1, 1, 1 }.AsBuffer());
+            // protocol v2:
+            // [0]=version, [1]=text, [2]=image, [3]=direct P2P,
+            // [4..7]=BLE image fallback limit in bytes, little-endian.
+            var limit = Math.Clamp(
+                _bleImageLimitBytes(),
+                64 * 1024,
+                4 * 1024 * 1024);
+
+            var response = new byte[8] { 2, 1, 1, 1, 0, 0, 0, 0 };
+            System.Buffers.Binary.BinaryPrimitives.WriteInt32LittleEndian(
+                response.AsSpan(4, 4),
+                limit);
+            request.RespondWithValue(response.AsBuffer());
         }
         finally
         {
