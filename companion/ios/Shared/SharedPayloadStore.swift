@@ -15,10 +15,12 @@ struct SharedPayloadEnvelope: Codable {
 
 enum SharedPayloadStore {
     static let appGroup = "group.universe.dia.conphone"
-    private static let defaultsKey = "pending-share-v1"
+    private static let defaultsKey = "pending-share-v2"
     private static let directoryName = "SharedPayloads"
     private static let maxTextBytes = 1024 * 1024
     private static let maxImageBytes = 32 * 1024 * 1024
+    private static let maxQueuedItems = 8
+    private static let maxQueuedImageBytes = 40 * 1024 * 1024
 
     static func saveText(_ text: String) throws {
         let bytes = Data(text.utf8)
@@ -89,37 +91,25 @@ enum SharedPayloadStore {
     }
 
     static func peek() -> (SharedPayloadEnvelope, Data?)? {
-        guard let defaults = UserDefaults(suiteName: appGroup),
-              let data = defaults.data(forKey: defaultsKey),
-              let envelope = try? JSONDecoder().decode(
-                SharedPayloadEnvelope.self,
-                from: data) else {
-            return nil
-        }
+        var queue = loadQueue()
+        pruneExpired(&queue)
+        saveQueue(queue)
 
-        if Date().timeIntervalSince(envelope.createdAt) > 24 * 60 * 60 {
-            clear(envelope.id)
-            return nil
-        }
+        guard let envelope = queue.first else { return nil }
 
         switch envelope.kind {
         case .text:
             return (envelope, nil)
+
         case .image:
             guard let name = envelope.fileName,
-                  let directory = try? sharedDirectory() else {
-                return nil
-            }
-
-            guard let file = safeFileURL(name, in: directory) else {
-                clear(envelope.id)
-                return nil
-            }
-            guard let imageData = try? Data(contentsOf: file),
+                  let directory = try? sharedDirectory(),
+                  let file = safeFileURL(name, in: directory),
+                  let imageData = try? Data(contentsOf: file),
                   !imageData.isEmpty,
                   imageData.count <= maxImageBytes else {
                 clear(envelope.id)
-                return nil
+                return peek()
             }
 
             return (envelope, imageData)
@@ -127,42 +117,100 @@ enum SharedPayloadStore {
     }
 
     static func clear(_ id: UUID) {
-        guard let defaults = UserDefaults(suiteName: appGroup),
-              let data = defaults.data(forKey: defaultsKey),
-              let envelope = try? JSONDecoder().decode(
-                SharedPayloadEnvelope.self,
-                from: data),
-              envelope.id == id else {
+        var queue = loadQueue()
+        guard let index = queue.firstIndex(where: { $0.id == id }) else {
             return
         }
 
-        defaults.removeObject(forKey: defaultsKey)
+        let envelope = queue.remove(at: index)
+        saveQueue(queue)
 
         if let name = envelope.fileName,
-           let directory = try? sharedDirectory() {
-            if let file = safeFileURL(name, in: directory) {
+           let directory = try? sharedDirectory(),
+           let file = safeFileURL(name, in: directory) {
+            try? FileManager.default.removeItem(at: file)
+        }
+    }
+
+    private static func saveEnvelope(_ envelope: SharedPayloadEnvelope) throws {
+        guard UserDefaults(suiteName: appGroup) != nil else {
+            throw StoreError.appGroupUnavailable
+        }
+
+        var queue = loadQueue()
+        pruneExpired(&queue)
+
+        guard queue.count < maxQueuedItems else {
+            throw StoreError.queueFull
+        }
+
+        if envelope.kind == .image {
+            let currentBytes = queuedImageBytes(queue)
+            let newBytes = imageSize(envelope)
+            guard newBytes > 0,
+                  currentBytes + newBytes <= maxQueuedImageBytes else {
+                throw StoreError.queueFull
+            }
+        }
+
+        queue.append(envelope)
+        saveQueue(queue)
+    }
+
+    private static func loadQueue() -> [SharedPayloadEnvelope] {
+        guard let defaults = UserDefaults(suiteName: appGroup),
+              let data = defaults.data(forKey: defaultsKey),
+              let queue = try? JSONDecoder().decode(
+                [SharedPayloadEnvelope].self,
+                from: data) else {
+            return []
+        }
+        return queue
+    }
+
+    private static func saveQueue(_ queue: [SharedPayloadEnvelope]) {
+        guard let defaults = UserDefaults(suiteName: appGroup) else { return }
+
+        if queue.isEmpty {
+            defaults.removeObject(forKey: defaultsKey)
+            return
+        }
+
+        if let data = try? JSONEncoder().encode(queue) {
+            defaults.set(data, forKey: defaultsKey)
+        }
+    }
+
+    private static func pruneExpired(_ queue: inout [SharedPayloadEnvelope]) {
+        let cutoff = Date().addingTimeInterval(-24 * 60 * 60)
+        let expired = queue.filter { $0.createdAt < cutoff }
+        queue.removeAll { $0.createdAt < cutoff }
+
+        guard let directory = try? sharedDirectory() else { return }
+        for envelope in expired {
+            if let name = envelope.fileName,
+               let file = safeFileURL(name, in: directory) {
                 try? FileManager.default.removeItem(at: file)
             }
         }
     }
 
-    private static func saveEnvelope(_ envelope: SharedPayloadEnvelope) throws {
-        guard let defaults = UserDefaults(suiteName: appGroup) else {
-            throw StoreError.appGroupUnavailable
+    private static func queuedImageBytes(_ queue: [SharedPayloadEnvelope]) -> Int {
+        queue.reduce(0) { partial, envelope in
+            partial + imageSize(envelope)
+        }
+    }
+
+    private static func imageSize(_ envelope: SharedPayloadEnvelope) -> Int {
+        guard envelope.kind == .image,
+              let name = envelope.fileName,
+              let directory = try? sharedDirectory(),
+              let file = safeFileURL(name, in: directory),
+              let values = try? file.resourceValues(forKeys: [.fileSizeKey]) else {
+            return 0
         }
 
-        if let previousData = defaults.data(forKey: defaultsKey),
-           let previous = try? JSONDecoder().decode(
-                SharedPayloadEnvelope.self,
-                from: previousData),
-           let name = previous.fileName,
-           let directory = try? sharedDirectory(),
-           let file = safeFileURL(name, in: directory) {
-            try? FileManager.default.removeItem(at: file)
-        }
-
-        let data = try JSONEncoder().encode(envelope)
-        defaults.set(data, forKey: defaultsKey)
+        return values.fileSize ?? 0
     }
 
     private static func sharedDirectory() throws -> URL {
@@ -210,6 +258,7 @@ enum SharedPayloadStore {
     enum StoreError: LocalizedError {
         case tooLarge
         case appGroupUnavailable
+        case queueFull
 
         var errorDescription: String? {
             switch self {
@@ -217,6 +266,8 @@ enum SharedPayloadStore {
                 return "공유 내용이 안전 크기 제한을 초과합니다."
             case .appGroupUnavailable:
                 return "Con.Phone 공유 저장소를 사용할 수 없습니다."
+            case .queueFull:
+                return "PC 전송 대기열이 가득 찼습니다. Con.Phone 앱을 열어 먼저 전송해 주세요."
             }
         }
     }
