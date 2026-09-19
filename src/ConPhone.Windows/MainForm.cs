@@ -1645,7 +1645,7 @@ public sealed class MainForm : Form
         {
             _pointerScaler.Reset();
             _ble.SetInteractiveMode(true);
-            _input.Activate();
+            _input.Activate(preserveLocalModifierUps: false);
 
             _ = SyncLatestClipboardToPhoneSafeAsync(
                 Volatile.Read(ref _epoch),
