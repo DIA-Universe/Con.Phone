@@ -134,6 +134,9 @@ public sealed class ClipboardSyncCoordinator : IAsyncDisposable
 
     public void TargetChanged()
     {
+        if (_disposed)
+            return;
+
         Interlocked.Increment(ref _targetGeneration);
         _ble.CancelPendingSends(
             "활성 휴대폰이 변경되어 이전 BLE Clipboard ACK 대기를 취소했습니다.");
@@ -160,6 +163,10 @@ public sealed class ClipboardSyncCoordinator : IAsyncDisposable
                     .ConfigureAwait(false);
                 return;
             }
+
+            // Invalidate every in-flight SendAsync generation so a large-image
+            // P2P wait exits on its next 125ms check instead of lingering.
+            Interlocked.Increment(ref _targetGeneration);
 
             _ble.CancelPendingSends(
                 "기기간 복붙이 비활성화되어 BLE Clipboard ACK 대기를 취소했습니다.");
