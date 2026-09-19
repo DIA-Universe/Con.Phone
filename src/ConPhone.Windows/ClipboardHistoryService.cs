@@ -41,8 +41,8 @@ public sealed class ClipboardHistoryService : IDisposable
     private bool _disposed;
     private string? _lastRemoteHash;
     private DateTimeOffset _lastRemoteAppliedAt;
-    private string? _suppressedSelfCaptureHash;
-    private DateTimeOffset _suppressedSelfCaptureUntil;
+    private uint _suppressedSelfClipboardSequence;
+    private DateTimeOffset _suppressedSelfClipboardUntil;
 
     private static readonly string Root = Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
@@ -101,6 +101,10 @@ public sealed class ClipboardHistoryService : IDisposable
     private void ScheduleCapture()
     {
         if (_disposed || _selfWrite) return;
+
+        if (ConsumeSelfClipboardSequence())
+            return;
+
         _attempt = 0;
         _retryTimer.Stop();
         _retryTimer.Start();
@@ -174,43 +178,45 @@ public sealed class ClipboardHistoryService : IDisposable
         Convert.ToHexString(
             SHA256.HashData(pngBytes));
 
-    private void ArmSelfCaptureSuppression(string hash)
+    private void ArmSelfClipboardSequence()
     {
-        _suppressedSelfCaptureHash = hash;
-        _suppressedSelfCaptureUntil =
-            DateTimeOffset.UtcNow.AddSeconds(2);
+        var sequence = GetClipboardSequenceNumber();
+        if (sequence == 0)
+            return;
+
+        _suppressedSelfClipboardSequence = sequence;
+        _suppressedSelfClipboardUntil =
+            DateTimeOffset.UtcNow.AddSeconds(5);
     }
 
-    private void ClearSelfCaptureSuppression()
+    private void ClearSelfClipboardSequence()
     {
-        _suppressedSelfCaptureHash = null;
-        _suppressedSelfCaptureUntil = default;
+        _suppressedSelfClipboardSequence = 0;
+        _suppressedSelfClipboardUntil = default;
     }
 
-    private bool ConsumeSelfCaptureSuppression(string hash)
+    private bool ConsumeSelfClipboardSequence()
     {
-        if (_suppressedSelfCaptureHash is null)
+        var expected = _suppressedSelfClipboardSequence;
+        if (expected == 0)
             return false;
 
         if (DateTimeOffset.UtcNow >
-            _suppressedSelfCaptureUntil)
+            _suppressedSelfClipboardUntil)
         {
-            ClearSelfCaptureSuppression();
+            ClearSelfClipboardSequence();
             return false;
         }
 
-        if (!string.Equals(
-                _suppressedSelfCaptureHash,
-                hash,
-                StringComparison.Ordinal))
+        var current = GetClipboardSequenceNumber();
+        if (current != expected)
         {
-            // Clipboard has already moved to a different value. Never let a stale
-            // suppression token hide a later user copy.
-            ClearSelfCaptureSuppression();
+            // A later user copy has already advanced the Windows sequence.
+            ClearSelfClipboardSequence();
             return false;
         }
 
-        ClearSelfCaptureSuppression();
+        ClearSelfClipboardSequence();
         Status?.Invoke(
             "Con.Phone 자체 Clipboard 쓰기 알림을 중복 캡처하지 않았습니다.");
         return true;
@@ -219,10 +225,6 @@ public sealed class ClipboardHistoryService : IDisposable
     private void AddText(string text, bool publish)
     {
         var hash = TextCaptureHash(text);
-
-        if (publish &&
-            ConsumeSelfCaptureSuppression(hash))
-            return;
 
         var preview = text
             .Replace("\r", " ")
@@ -271,10 +273,6 @@ public sealed class ClipboardHistoryService : IDisposable
     {
         var bytes = EncodePng(image);
         var hash = ImageCaptureHash(bytes);
-
-        if (publish &&
-            ConsumeSelfCaptureSuppression(hash))
-            return;
 
         var historyChanged = false;
 
@@ -386,11 +384,10 @@ public sealed class ClipboardHistoryService : IDisposable
             if (content.Kind == ClipboardContentKind.TextUtf8)
             {
                 var text = content.GetText();
-                ArmSelfCaptureSuppression(
-                    TextCaptureHash(text));
                 Clipboard.SetText(
                     text,
                     TextDataFormat.UnicodeText);
+                ArmSelfClipboardSequence();
                 AddText(text, publish: false);
                 _lastRemoteHash = content.Hash;
                 _lastRemoteAppliedAt = now;
@@ -410,10 +407,8 @@ public sealed class ClipboardHistoryService : IDisposable
                 source.Width,
                 source.Height);
             using var copy = new Bitmap(source);
-            var normalizedPng = EncodePng(copy);
-            ArmSelfCaptureSuppression(
-                ImageCaptureHash(normalizedPng));
             Clipboard.SetImage(copy);
+            ArmSelfClipboardSequence();
             AddImage(copy, publish: false);
             _lastRemoteHash = content.Hash;
             _lastRemoteAppliedAt = now;
@@ -423,12 +418,10 @@ public sealed class ClipboardHistoryService : IDisposable
         }
         catch (ExternalException)
         {
-            ClearSelfCaptureSuppression();
             Status?.Invoke("다른 프로그램이 클립보드를 사용 중이라 휴대폰 내용을 적용하지 못했습니다.");
         }
         catch (Exception ex)
         {
-            ClearSelfCaptureSuppression();
             Status?.Invoke($"휴대폰 클립보드 적용 실패: {ex.Message}");
         }
         finally
@@ -465,11 +458,10 @@ public sealed class ClipboardHistoryService : IDisposable
 
             if (entry.Kind == ClipboardEntryKind.Text && entry.Text is not null)
             {
-                ArmSelfCaptureSuppression(
-                    TextCaptureHash(entry.Text));
                 Clipboard.SetText(
                     entry.Text,
                     TextDataFormat.UnicodeText);
+                ArmSelfClipboardSequence();
                 Status?.Invoke("선택한 텍스트를 Windows 클립보드로 복원했습니다.");
                 return true;
             }
@@ -479,22 +471,18 @@ public sealed class ClipboardHistoryService : IDisposable
             {
                 using var source = Image.FromFile(path);
                 using var copy = new Bitmap(source);
-                var normalizedPng = EncodePng(copy);
-                ArmSelfCaptureSuppression(
-                    ImageCaptureHash(normalizedPng));
                 Clipboard.SetImage(copy);
+                ArmSelfClipboardSequence();
                 Status?.Invoke("선택한 이미지를 Windows 클립보드로 복원했습니다.");
                 return true;
             }
         }
         catch (ExternalException)
         {
-            ClearSelfCaptureSuppression();
             Status?.Invoke("다른 프로그램이 클립보드를 사용 중이라 복원하지 못했습니다.");
         }
         catch (Exception ex)
         {
-            ClearSelfCaptureSuppression();
             Status?.Invoke($"클립보드 복원 실패: {ex.Message}");
         }
         finally
@@ -661,6 +649,9 @@ public sealed class ClipboardHistoryService : IDisposable
             DestroyHandle();
         }
     }
+
+    [DllImport("user32.dll")]
+    private static extern uint GetClipboardSequenceNumber();
 
     [DllImport("user32.dll", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
