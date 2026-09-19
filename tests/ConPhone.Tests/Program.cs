@@ -137,6 +137,33 @@ Check("clipboard ACK roundtrip",
 Check("clipboard ACK rejects data frame",
     !ClipboardAckCodec.TryDecode(new byte[] { 1, 2, 3 }, out _));
 
+var ackBleFragments = BleFragmentCodec.Split(
+    ackFrame,
+    maxGattValue: 20,
+    transferId: 0xAABBCCDD);
+Check(
+    "clipboard ACK fragments fit MTU-23 payload",
+    ackBleFragments.Count > 1 &&
+    ackBleFragments.All(x => x.Length <= 20));
+
+var ackBleReassembler = new BleFragmentReassembler();
+byte[]? rebuiltAck = null;
+foreach (var fragment in ackBleFragments.Reverse())
+{
+    rebuiltAck =
+        ackBleReassembler.Add(
+            BleFragmentCodec.Decode(fragment))
+        ?? rebuiltAck;
+}
+
+Check(
+    "clipboard ACK survives BLE fragmentation",
+    rebuiltAck is not null &&
+    ClipboardAckCodec.TryDecode(
+        rebuiltAck,
+        out var rebuiltAckId) &&
+    rebuiltAckId == ackId);
+
 // Clipboard text/image sync protocol.
 var clipText = ClipboardContent.FromText(string.Concat(Enumerable.Repeat("한글🙂abc", 120)));
 Check("clipboard text utf8 roundtrip", clipText.GetText() == string.Concat(Enumerable.Repeat("한글🙂abc", 120)));
