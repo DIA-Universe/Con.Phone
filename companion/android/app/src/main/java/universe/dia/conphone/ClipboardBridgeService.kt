@@ -318,6 +318,7 @@ class ClipboardBridgeService : Service() {
             else if (characteristic.uuid == DIRECT_LINK_UUID) {
                 activeTarget = false
                 bleAckQueue.clear()
+                requeueActiveBleTransfer("활성 대상 변경")
                 directConfig = null
                 p2p?.close()
                 p2p = null
@@ -345,6 +346,7 @@ class ClipboardBridgeService : Service() {
             else if (characteristic.uuid == DIRECT_LINK_UUID) {
                 activeTarget = false
                 bleAckQueue.clear()
+                requeueActiveBleTransfer("활성 대상 변경")
                 directConfig = null
                 p2p?.close()
                 p2p = null
@@ -434,6 +436,7 @@ class ClipboardBridgeService : Service() {
 
                     if (!reportedActive) {
                         bleAckQueue.clear()
+                        requeueActiveBleTransfer("활성 대상 변경")
                         directConfig = null
                         p2p?.close()
                         p2p = null
