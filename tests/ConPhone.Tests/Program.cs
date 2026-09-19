@@ -128,6 +128,15 @@ Check(
     Convert.ToHexString(p2pSessionKey) ==
     "16BE739CCB5056785C93854CFD3C384105BE7F799292A5BEBA8FFE2BE73248D0");
 
+var ackId = Guid.NewGuid();
+var ackFrame = ClipboardAckCodec.Encode(ackId);
+Check("clipboard ACK fixed length", ackFrame.Length == ClipboardAckCodec.FrameLength);
+Check("clipboard ACK roundtrip",
+    ClipboardAckCodec.TryDecode(ackFrame, out var ackDecoded) &&
+    ackDecoded == ackId);
+Check("clipboard ACK rejects data frame",
+    !ClipboardAckCodec.TryDecode(new byte[] { 1, 2, 3 }, out _));
+
 // Clipboard text/image sync protocol.
 var clipText = ClipboardContent.FromText(string.Concat(Enumerable.Repeat("한글🙂abc", 120)));
 Check("clipboard text utf8 roundtrip", clipText.GetText() == string.Concat(Enumerable.Repeat("한글🙂abc", 120)));
