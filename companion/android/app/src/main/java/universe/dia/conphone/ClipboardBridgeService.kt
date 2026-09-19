@@ -81,8 +81,10 @@ class ClipboardBridgeService : Service() {
     @Volatile private var directConfig: DirectConfig? = null
     @Volatile private var activeTarget = false
     @Volatile private var p2p: P2PChannel? = null
-    @Volatile private var pendingContent: ClipboardContent? = null
-    @Volatile private var pendingGeneration = 0
+    private val pendingLock = Any()
+    private val pendingQueue = java.util.ArrayDeque<PendingSend>()
+    private var pendingBytes = 0L
+    private var nextPendingId = 0L
     @Volatile private var scanning = false
     @Volatile private var p2pNetwork: Network? = null
     @Volatile private var directNetworkCallback: ConnectivityManager.NetworkCallback? = null
@@ -90,6 +92,17 @@ class ClipboardBridgeService : Service() {
 
     private data class Credential(val deviceHash: ByteArray, val secret: ByteArray)
     private data class DirectConfig(val ssid: String, val passphrase: String, val hostAddress: String?)
+    private data class PendingSend(
+        val id: Long,
+        val content: ClipboardContent,
+        val expiresAt: Long
+    )
+
+    private companion object PendingPolicy {
+        const val MAX_PENDING_ITEMS = 8
+        const val MAX_PENDING_BYTES = 40L * 1024 * 1024
+        const val PENDING_TTL_MS = 60_000L
+    }
 
     override fun onCreate() {
         super.onCreate()
@@ -742,6 +755,7 @@ class ClipboardBridgeService : Service() {
                     ClipboardProtocol.encode(content).forEach(fast::sendFrame)
                 }.onSuccess {
                     showStatus("Clipboard 전송 완료 · P2P")
+                    flushPendingContent()
                 }.onFailure {
                     fast.close()
                     if (p2p === fast) p2p = null
@@ -768,7 +782,9 @@ class ClipboardBridgeService : Service() {
             return
         }
 
-        setPendingContent(content)
+        if (!setPendingContent(content))
+            return
+
         showStatus(
             if (!bleAllowed)
                 "P2P 연결 후 이미지 전송 대기"
@@ -784,46 +800,110 @@ class ClipboardBridgeService : Service() {
     }
 
     private fun flushPendingContent() {
-        val content = pendingContent ?: return
+        val pending = synchronized(pendingLock) {
+            pruneExpiredPendingLocked()
 
-        val canP2P = p2p?.ready == true
-        val canBle =
-            activeTarget &&
-            (content.kind == ClipboardKind.TEXT || content.data.size <= bleImageLimitBytes) &&
-            gatt != null && rx != null && credential != null
+            val first = pendingQueue.peekFirst() ?: return
 
-        if (!canP2P && !canBle) return
+            val canP2P = p2p?.ready == true
+            val canBle =
+                activeTarget &&
+                (first.content.kind == ClipboardKind.TEXT ||
+                    first.content.data.size <= bleImageLimitBytes) &&
+                gatt != null && rx != null && credential != null
 
-        clearPendingContent()
-        sendContent(content)
+            if (!canP2P && !canBle)
+                return
+
+            pendingQueue.removeFirst()
+            pendingBytes -= first.content.data.size.toLong()
+            first
+        }
+
+        sendContent(pending.content)
     }
 
-    private fun setPendingContent(content: ClipboardContent) {
-        pendingContent = content
-        val generation = pendingGeneration + 1
-        pendingGeneration = generation
+    private fun setPendingContent(content: ClipboardContent): Boolean {
+        val pending = synchronized(pendingLock) {
+            pruneExpiredPendingLocked()
 
-        main.postDelayed({
-            if (pendingGeneration == generation && pendingContent === content) {
-                pendingContent = null
-                pendingGeneration++
-                showStatus("Clipboard 전송 대기 시간이 만료됐습니다.")
+            val size = content.data.size.toLong()
+            if (pendingQueue.size >= MAX_PENDING_ITEMS ||
+                pendingBytes + size > MAX_PENDING_BYTES) {
+                false
+            } else {
+                val id = ++nextPendingId
+                val item = PendingSend(
+                    id = id,
+                    content = content,
+                    expiresAt = System.currentTimeMillis() + PENDING_TTL_MS)
+                pendingQueue.addLast(item)
+                pendingBytes += size
+
+                main.postDelayed({
+                    expirePending(id)
+                }, PENDING_TTL_MS)
+
+                true
             }
-        }, 60_000)
+        }
+
+        if (!pending)
+            showStatus("Clipboard 전송 대기열이 가득 찼습니다.")
+
+        return pending
+    }
+
+    private fun expirePending(id: Long) {
+        val expired = synchronized(pendingLock) {
+            val iterator = pendingQueue.iterator()
+            var removed = false
+
+            while (iterator.hasNext()) {
+                val item = iterator.next()
+                if (item.id == id) {
+                    pendingBytes -= item.content.data.size.toLong()
+                    iterator.remove()
+                    removed = true
+                    break
+                }
+            }
+
+            removed
+        }
+
+        if (expired)
+            showStatus("Clipboard 전송 대기 항목 1개가 만료됐습니다.")
+    }
+
+    private fun pruneExpiredPendingLocked() {
+        val now = System.currentTimeMillis()
+        val iterator = pendingQueue.iterator()
+
+        while (iterator.hasNext()) {
+            val item = iterator.next()
+            if (item.expiresAt <= now) {
+                pendingBytes -= item.content.data.size.toLong()
+                iterator.remove()
+            }
+        }
     }
 
     private fun clearPendingContent() {
-        pendingContent = null
-        pendingGeneration++
+        synchronized(pendingLock) {
+            pendingQueue.clear()
+            pendingBytes = 0
+        }
     }
 
     private fun enqueueBle(content: ClipboardContent) {
         val g = gatt
         val rxLocal = rx
         if (g == null || rxLocal == null || credential == null) {
-            setPendingContent(content)
-            showStatus("PC 연결 후 Clipboard 전송 대기")
-            main.post { beginScan() }
+            if (setPendingContent(content)) {
+                showStatus("PC 연결 후 Clipboard 전송 대기")
+                main.post { beginScan() }
+            }
             return
         }
 
@@ -846,6 +926,7 @@ class ClipboardBridgeService : Service() {
         val characteristic = rx ?: return
         val next = bleQueue.poll() ?: run {
             showStatus("Clipboard 전송 완료 · BLE")
+            flushPendingContent()
             return
         }
 
