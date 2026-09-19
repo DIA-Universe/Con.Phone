@@ -843,19 +843,10 @@ public sealed class MainForm : Form
 
         if (_clipboardSync is not null)
         {
-            _clipboardSync.Status += text => Post(() => Log(text));
-            _clipboardSync.Received += content => Post(() =>
-            {
-                if (_clipboard?.ApplyRemote(content) == true)
-                {
-                    // Treat the remote value as the current clipboard generation so a later
-                    // PC -> phone switch cannot overwrite it with an older local copy.
-                    _latestLocalClipboard = content;
-                    if (_ble.ApprovedId is { } sourceDeviceId)
-                        _lastSentClipboardHashByDevice[sourceDeviceId] = content.Hash;
-                    Log("휴대폰 클립보드를 Windows에 적용했습니다.");
-                }
-            });
+            _clipboardSync.Status +=
+                text => Post(() => Log(text));
+            _clipboardSync.SetReceiver(
+                ApplyReceivedClipboardAsync);
         }
 
         _ble.Changed += () =>
@@ -959,6 +950,78 @@ public sealed class MainForm : Form
             Log("Bluetooth HID 검색 신호를 시작했습니다.");
             Log("HID 프로필이 바뀌었습니다. LOCK/MEDIA가 0이면 휴대폰에서 기존 PC 등록을 삭제하고 한 번 다시 페어링해 주세요.");
         });
+    }
+
+    private Task<bool> ApplyReceivedClipboardAsync(
+        ClipboardContent content)
+    {
+        var completion =
+            new TaskCompletionSource<bool>(
+                TaskCreationOptions.RunContinuationsAsynchronously);
+
+        void ApplyOnUi()
+        {
+            if (_closed ||
+                IsDisposed ||
+                _clipboard is null)
+            {
+                completion.TrySetResult(false);
+                return;
+            }
+
+            try
+            {
+                var applied =
+                    _clipboard.ApplyRemote(content);
+
+                if (applied)
+                {
+                    // Treat the remote value as the current clipboard generation
+                    // so a later PC -> phone switch cannot overwrite it with an
+                    // older local copy.
+                    _latestLocalClipboard = content;
+
+                    if (_ble.ApprovedId is { } sourceDeviceId)
+                        _lastSentClipboardHashByDevice[sourceDeviceId] =
+                            content.Hash;
+
+                    Log(
+                        "휴대폰 클립보드를 Windows에 적용했습니다.");
+                }
+
+                completion.TrySetResult(applied);
+            }
+            catch (Exception ex)
+            {
+                _lastError =
+                    $"ClipboardApply:{ex.GetType().Name}:0x{ex.HResult:X8}";
+                Log(
+                    $"휴대폰 클립보드 적용 실패: {ex.Message}");
+                completion.TrySetResult(false);
+            }
+        }
+
+        if (_closed ||
+            IsDisposed ||
+            !IsHandleCreated)
+        {
+            completion.TrySetResult(false);
+            return completion.Task;
+        }
+
+        try
+        {
+            if (InvokeRequired)
+                BeginInvoke((Action)ApplyOnUi);
+            else
+                ApplyOnUi();
+        }
+        catch (InvalidOperationException)
+        {
+            completion.TrySetResult(false);
+        }
+
+        return completion.Task;
     }
 
     private void InitializeClipboardHistory()
