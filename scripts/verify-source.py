@@ -22,6 +22,7 @@ def require(condition: bool, message: str) -> None:
 win_settings = read("src/ConPhone.Windows/AppSettings.cs")
 win_ble = read("src/ConPhone.Windows/BleClipboardService.cs")
 win_p2p = read("src/ConPhone.Windows/P2PClipboardServer.cs")
+win_direct = read("src/ConPhone.Windows/DirectClipboardLink.cs")
 core = read("src/ConPhone.Core/ClipboardSync.cs")
 win_project = read("src/ConPhone.Windows/ConPhone.Windows.csproj")
 
@@ -72,6 +73,10 @@ for path, text in [
 ]:
     require("CONPHONE_DISCOVER_V1" not in text, f"{path}: shared-LAN discovery returned")
     require("DiscoveryPort" not in text, f"{path}: UDP discovery port returned")
+
+# Wi-Fi Direct publisher status values must come from the Wi-Fi Direct enum only.
+require("StartedWithoutAllAdvertisementData" not in win_direct,
+        "Windows P2P uses an invalid GATT-only publisher status value")
 
 # P2P protocol v2 must match on all platforms.
 for path, text in [
@@ -135,12 +140,15 @@ require("NEARBY_WIFI_DEVICES" in android_manifest,
         "Android P2P permission declaration missing")
 require("private fun hasBluetoothPermissions()" in android_main,
         "Android Bluetooth permission gate missing")
-require("NEARBY_WIFI_DEVICES" not in re.search(
-            r"private fun hasBluetoothPermissions\(\): Boolean =(?P<body>.*?)(?:\n\s*private fun|\Z)",
-            android_main,
-            re.S
-        ).group("body"),
-        "Android BLE transport must not require Nearby Wi-Fi permission")
+bluetooth_gate = re.search(
+    r"private fun hasBluetoothPermissions\(\): Boolean =(?P<body>.*?)(?:\n\s*private fun|\Z)",
+    android_main,
+    re.S)
+require(bluetooth_gate is not None,
+        "Android Bluetooth permission gate body could not be parsed")
+if bluetooth_gate is not None:
+    require("NEARBY_WIFI_DEVICES" not in bluetooth_gate.group("body"),
+            "Android BLE transport must not require Nearby Wi-Fi permission")
 require("checkSelfPermission(Manifest.permission.BLUETOOTH_SCAN)" in android_share and
         "checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT)" in android_share,
         "Android Share target must be able to dispatch with Bluetooth-only permission")
