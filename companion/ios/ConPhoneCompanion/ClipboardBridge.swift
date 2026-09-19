@@ -13,6 +13,7 @@ final class ClipboardBridge: NSObject, ObservableObject {
     private let txUUID = CBUUID(string: "67A7F002-7E5B-4A2E-9B8B-1C9A5B6D1001")
     private let rxUUID = CBUUID(string: "67A7F003-7E5B-4A2E-9B8B-1C9A5B6D1001")
     private let secretUUID = CBUUID(string: "67A7F004-7E5B-4A2E-9B8B-1C9A5B6D1001")
+    private let capabilitiesUUID = CBUUID(string: "67A7F005-7E5B-4A2E-9B8B-1C9A5B6D1001")
     private let directLinkUUID = CBUUID(string: "67A7F006-7E5B-4A2E-9B8B-1C9A5B6D1001")
 
     private lazy var central = CBCentralManager(
@@ -24,8 +25,10 @@ final class ClipboardBridge: NSObject, ObservableObject {
     private var peripheral: CBPeripheral?
     private var tx: CBCharacteristic?
     private var rx: CBCharacteristic?
+    private var capabilitiesCharacteristic: CBCharacteristic?
     private var directLinkCharacteristic: CBCharacteristic?
     private var credential: Data?
+    private var bleImageLimitBytes = 512 * 1024
     private var directConfig: DirectConfig?
     private var activeTarget = false
     private var p2p: P2PClipboardChannel?
@@ -143,7 +146,7 @@ final class ClipboardBridge: NSObject, ObservableObject {
 
         let bleAllowed =
             content.kind == .text ||
-            content.data.count <= 512 * 1024
+            content.data.count <= bleImageLimitBytes
 
         if bleAllowed,
            activeTarget,
@@ -192,7 +195,7 @@ final class ClipboardBridge: NSObject, ObservableObject {
 
             let bleAllowed =
                 content.kind == .text ||
-                content.data.count <= 512 * 1024
+                content.data.count <= bleImageLimitBytes
 
             if bleAllowed,
                activeTarget,
@@ -383,6 +386,15 @@ final class ClipboardBridge: NSObject, ObservableObject {
         }
     }
 
+    private func parseBleImageLimit(_ value: Data) -> Int {
+        guard value.count >= 8, value[0] == 2 else {
+            return 512 * 1024
+        }
+
+        let raw = Int(value.int32LE(at: 4))
+        return min(max(raw, 64 * 1024), 4 * 1024 * 1024)
+    }
+
     private func parseDirectConfig(_ value: Data) -> DirectConfig? {
         guard value.count >= 4, value[0] == 2 else { return nil }
         let ssidLength = Int(value[1])
@@ -568,7 +580,9 @@ extension ClipboardBridge: CBCentralManagerDelegate {
     ) {
         tx = nil
         rx = nil
+        capabilitiesCharacteristic = nil
         directLinkCharacteristic = nil
+        bleImageLimitBytes = 512 * 1024
         activeTarget = false
 
         let dataPlaneAlive = p2p?.ready == true
@@ -599,7 +613,9 @@ extension ClipboardBridge: CBPeripheralDelegate {
             status = "Clipboard BLE 서비스 없음"
             return
         }
-        peripheral.discoverCharacteristics([txUUID, rxUUID, secretUUID, directLinkUUID], for: service)
+        peripheral.discoverCharacteristics(
+            [txUUID, rxUUID, secretUUID, capabilitiesUUID, directLinkUUID],
+            for: service)
     }
 
     func peripheral(
@@ -621,6 +637,8 @@ extension ClipboardBridge: CBPeripheralDelegate {
                 rx = characteristic
             case secretUUID:
                 peripheral.readValue(for: characteristic)
+            case capabilitiesUUID:
+                capabilitiesCharacteristic = characteristic
             case directLinkUUID:
                 directLinkCharacteristic = characteristic
             default:
@@ -642,6 +660,11 @@ extension ClipboardBridge: CBPeripheralDelegate {
                 DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self, weak peripheral] in
                     guard self != nil, let peripheral else { return }
                     peripheral.readValue(for: characteristic)
+                }
+            } else if characteristic.uuid == capabilitiesUUID {
+                bleImageLimitBytes = 512 * 1024
+                if let directLinkCharacteristic {
+                    peripheral.readValue(for: directLinkCharacteristic)
                 }
             } else if characteristic.uuid == directLinkUUID {
                 activeTarget = false
@@ -668,9 +691,20 @@ extension ClipboardBridge: CBPeripheralDelegate {
                 credential = value
                 status = "BLE Clipboard 연결됨 · 동일 Wi-Fi 불필요"
                 flushPendingContent()
-                if let directLinkCharacteristic {
+                if let capabilitiesCharacteristic {
+                    peripheral.readValue(for: capabilitiesCharacteristic)
+                } else if let directLinkCharacteristic {
                     peripheral.readValue(for: directLinkCharacteristic)
                 }
+            }
+            return
+        }
+
+        if characteristic.uuid == capabilitiesUUID {
+            bleImageLimitBytes = parseBleImageLimit(value)
+            status = "BLE Clipboard 이미지 한도 · (bleImageLimitBytes / 1024) KiB"
+            if let directLinkCharacteristic {
+                peripheral.readValue(for: directLinkCharacteristic)
             }
             return
         }
