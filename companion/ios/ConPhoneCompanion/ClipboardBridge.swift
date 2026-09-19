@@ -32,6 +32,7 @@ final class ClipboardBridge: NSObject, ObservableObject {
     private var directConfig: DirectConfig?
     private var activeTarget = false
     private var p2p: P2PClipboardChannel?
+    private var p2pGeneration: UUID?
     private var directHostRefreshAttempt = 0
     private var directConfigReadAttempt = 0
     private var pendingFastLinkConnect = false
@@ -346,7 +347,12 @@ final class ClipboardBridge: NSObject, ObservableObject {
         let deviceHash = credential.subdata(in: 0..<32)
         let secret = credential.subdata(in: 32..<64)
 
+        p2pGeneration = nil
         p2p?.close()
+
+        let generation = UUID()
+        p2pGeneration = generation
+
         let channel = P2PClipboardChannel(
             host: host,
             port: 47911,
@@ -364,7 +370,19 @@ final class ClipboardBridge: NSObject, ObservableObject {
             },
             onReady: { [weak self] in
                 DispatchQueue.main.async {
-                    self?.flushPendingContent()
+                    guard let self,
+                          self.p2pGeneration == generation else { return }
+                    self.flushPendingContent()
+                }
+            },
+            onClosed: { [weak self] in
+                DispatchQueue.main.async {
+                    guard let self,
+                          self.p2pGeneration == generation else { return }
+
+                    self.p2p = nil
+                    self.p2pGeneration = nil
+                    self.status = "P2P 채널 종료 · BLE fallback 유지"
                 }
             }
         )
@@ -693,6 +711,7 @@ extension ClipboardBridge: CBPeripheralDelegate {
                 }
                 directConfig = nil
                 fastLinkAvailable = false
+                p2pGeneration = nil
                 p2p?.close()
                 p2p = nil
                 status = "현재 비활성 기기 또는 P2P 준비 전 · 활성화 대기"
