@@ -106,6 +106,8 @@ public sealed class ClipboardSyncCoordinator : IAsyncDisposable
     public void TargetChanged()
     {
         Interlocked.Increment(ref _targetGeneration);
+        _ble.CancelPendingSends(
+            "활성 휴대폰이 변경되어 이전 BLE Clipboard ACK 대기를 취소했습니다.");
         _p2p.Deactivate();
         _direct.RotateCredentials();
         Status?.Invoke("활성 휴대폰 변경 · P2P 채널과 Wi-Fi 자격 증명을 새 대상으로 재설정합니다.");
@@ -119,6 +121,8 @@ public sealed class ClipboardSyncCoordinator : IAsyncDisposable
             return;
         }
 
+        _ble.CancelPendingSends(
+            "기기간 복붙이 비활성화되어 BLE Clipboard ACK 대기를 취소했습니다.");
         _ble.StopAdvertising();
         _direct.Stop();
         _p2p.Deactivate();
