@@ -328,6 +328,7 @@ public sealed class BleClipboardService : IDisposable
             }
 
             var valid = false;
+            Guid? ackToSend = null;
             try
             {
                 var bytes = request.Value.ToArray();
@@ -381,11 +382,7 @@ public sealed class BleClipboardService : IDisposable
                                     throw new InvalidDataException(
                                         "Windows clipboard apply failed.");
 
-                                await SendAckAsync(
-                                        id,
-                                        chunk.TransferId,
-                                        CancellationToken.None)
-                                    .ConfigureAwait(false);
+                                ackToSend = chunk.TransferId;
                             }
                         }
                     }
@@ -405,6 +402,23 @@ public sealed class BleClipboardService : IDisposable
             {
                 if (valid) request.Respond();
                 else request.RespondWithProtocolError(0x0D);
+            }
+
+            if (valid && ackToSend is { } transferId)
+            {
+                try
+                {
+                    await SendAckAsync(
+                            id,
+                            transferId,
+                            CancellationToken.None)
+                        .ConfigureAwait(false);
+                }
+                catch (Exception ex)
+                {
+                    Status?.Invoke(
+                        $"Clipboard BLE ACK 전송 실패 · 상대가 재시도할 수 있습니다: {ex.Message}");
+                }
             }
         }
         catch (Exception ex)
