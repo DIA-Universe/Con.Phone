@@ -455,7 +455,7 @@ class ClipboardBridgeService : Service() {
         val socket = network.socketFactory.createSocket()
         socket.connect(InetSocketAddress(target, 47911), 3000)
         socket.tcpNoDelay = true
-        socket.soTimeout = 0
+        socket.soTimeout = 5000
 
         val channel = P2PChannel(
             socket,
@@ -464,6 +464,9 @@ class ClipboardBridgeService : Service() {
             ::onP2PClosed
         )
         channel.handshake()
+
+        // Handshake must be bounded, but the authenticated session is long-lived.
+        socket.soTimeout = 0
         p2p = channel
         showStatus("Clipboard P2P 고속 채널 연결됨 · $target")
         flushPendingContent()
