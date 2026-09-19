@@ -42,6 +42,7 @@ class ClipboardBridgeService : Service() {
         const val ACTION_SEND = "universe.dia.conphone.SEND"
         const val ACTION_SEND_SHARED_TEXT = "universe.dia.conphone.SEND_SHARED_TEXT"
         const val ACTION_SEND_SHARED_IMAGE = "universe.dia.conphone.SEND_SHARED_IMAGE"
+        const val ACTION_DRAIN_SHARED = "universe.dia.conphone.DRAIN_SHARED"
         const val ACTION_STOP = "universe.dia.conphone.STOP"
 
         const val EXTRA_SHARED_TEXT = "shared_text"
@@ -70,6 +71,8 @@ class ClipboardBridgeService : Service() {
     private val bleReassembler = BleReassembler()
     private val bleWireReassembler = ClipboardWireReassembler()
     private val p2pWireReassembler = ClipboardWireReassembler()
+    private val sharedStore by lazy { AndroidSharedPayloadStore(this) }
+    private val loadedPersistentShareIds = HashSet<String>()
 
     @Volatile private var gatt: BluetoothGatt? = null
     @Volatile private var tx: BluetoothGattCharacteristic? = null
@@ -82,6 +85,7 @@ class ClipboardBridgeService : Service() {
     @Volatile private var bleWriting = false
     private val bleSendLock = Any()
     private var bleActiveContent: ClipboardContent? = null
+    private var bleActivePersistentShareId: String? = null
     @Volatile private var credential: Credential? = null
     @Volatile private var directConfig: DirectConfig? = null
     @Volatile private var activeTarget = false
@@ -100,6 +104,7 @@ class ClipboardBridgeService : Service() {
     private data class PendingSend(
         val id: Long,
         val content: ClipboardContent,
+        val persistedShareId: String?,
         val expiresAt: Long
     )
 
@@ -108,6 +113,7 @@ class ClipboardBridgeService : Service() {
         super.onCreate()
         createNotificationChannel()
         showStatus("연결 준비 중")
+        main.post { drainPersistedShares() }
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -122,6 +128,7 @@ class ClipboardBridgeService : Service() {
             ACTION_SEND_SHARED_IMAGE -> sendSharedImage(
                 intent?.getStringExtra(EXTRA_SHARED_IMAGE_PATH),
                 intent?.getStringExtra(EXTRA_SHARED_IMAGE_MIME))
+            ACTION_DRAIN_SHARED -> drainPersistedShares()
             else -> beginScan()
         }
         return START_STICKY
