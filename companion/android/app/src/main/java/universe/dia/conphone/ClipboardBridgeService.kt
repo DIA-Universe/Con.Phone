@@ -34,6 +34,7 @@ import java.util.concurrent.CompletableFuture
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.ConcurrentLinkedQueue
 import java.util.concurrent.Executors
+import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import javax.crypto.Cipher
 import javax.crypto.Mac
@@ -78,6 +79,9 @@ class ClipboardBridgeService : Service() {
     private val p2pWireReassembler = ClipboardWireReassembler()
     private val sharedStore by lazy { AndroidSharedPayloadStore(this) }
     private val loadedPersistentShareIds = HashSet<String>()
+    private val applyGate = Any()
+    private var lastAppliedHash: ByteArray? = null
+    private var lastAppliedAt = 0L
 
     @Volatile private var gatt: BluetoothGatt? = null
     @Volatile private var tx: BluetoothGattCharacteristic? = null
@@ -565,8 +569,11 @@ class ClipboardBridgeService : Service() {
                 bleWireReassembler.add(chunk)
                     ?: return
 
-            applyRemoteClipboard(content)
-            enqueueBleAck(chunk.transferId)
+            if (applyRemoteClipboardBlocking(content))
+                enqueueBleAck(chunk.transferId)
+            else
+                showStatus(
+                    "BLE Clipboard 적용 실패 · ACK를 보내지 않아 PC 재시도를 유도합니다.")
         }.onFailure {
             showStatus(
                 "BLE Clipboard 수신 거부: ${it.message}")
@@ -735,11 +742,20 @@ class ClipboardBridgeService : Service() {
     private fun onP2PFrame(frame: ByteArray): ByteArray? {
         return runCatching {
             val chunk = ClipboardProtocol.decode(frame)
-            val content = p2pWireReassembler.add(chunk) ?: return@runCatching null
-            applyRemoteClipboard(content)
+            val content =
+                p2pWireReassembler.add(chunk)
+                    ?: return@runCatching null
+
+            if (!applyRemoteClipboardBlocking(content)) {
+                showStatus(
+                    "P2P Clipboard 적용 실패 · ACK를 보내지 않아 상대 재시도를 유도합니다.")
+                return@runCatching null
+            }
+
             ClipboardProtocol.encodeAck(chunk.transferId)
         }.onFailure {
-            showStatus("P2P Clipboard 수신 거부: ${it.message}")
+            showStatus(
+                "P2P Clipboard 수신 거부: ${it.message}")
         }.getOrNull()
     }
 
@@ -1408,33 +1424,114 @@ class ClipboardBridgeService : Service() {
         }
     }
 
-    private fun applyRemoteClipboard(content: ClipboardContent) {
-        main.post {
-            val clipboard = getSystemService(android.content.ClipboardManager::class.java)
-            when (content.kind) {
-                ClipboardKind.TEXT -> {
-                    val text = content.data.toString(Charsets.UTF_8)
-                    clipboard.setPrimaryClip(ClipData.newPlainText("Con.Phone", text))
-                    toast("PC 텍스트를 클립보드에 받았습니다.")
-                }
-                else -> {
-                    runCatching {
-                        ensureSafeImageDimensions(content.data)
-                        val bitmap = BitmapFactory.decodeByteArray(content.data, 0, content.data.size)
-                            ?: error("수신 이미지를 해석할 수 없습니다.")
-                        FileOutputStream(File(cacheDir, ClipboardImageProvider.FILE_NAME)).use { out ->
-                            bitmap.compress(Bitmap.CompressFormat.PNG, 100, out)
-                        }
-                        bitmap.recycle()
-                        val clip = ClipData.newUri(contentResolver, "Con.Phone image", ClipboardImageProvider.URI)
-                        clipboard.setPrimaryClip(clip)
-                        toast("PC 이미지를 클립보드에 받았습니다.")
-                    }.onFailure {
-                        toast("이미지 클립보드 적용 실패: ${it.message}")
-                    }
-                }
+    private fun applyRemoteClipboardBlocking(
+        content: ClipboardContent
+    ): Boolean {
+        synchronized(applyGate) {
+            val now = System.currentTimeMillis()
+            val previous = lastAppliedHash
+
+            if (previous != null &&
+                previous.contentEquals(content.hash) &&
+                now - lastAppliedAt <= 120_000L) {
+                return true
             }
         }
+
+        if (Looper.myLooper() == Looper.getMainLooper()) {
+            return applyRemoteClipboardOnMain(content)
+        }
+
+        val latch = CountDownLatch(1)
+        var applied = false
+
+        main.post {
+            try {
+                applied = applyRemoteClipboardOnMain(content)
+            } finally {
+                latch.countDown()
+            }
+        }
+
+        return try {
+            latch.await(8, TimeUnit.SECONDS) && applied
+        } catch (_: InterruptedException) {
+            Thread.currentThread().interrupt()
+            false
+        }
+    }
+
+    private fun applyRemoteClipboardOnMain(
+        content: ClipboardContent
+    ): Boolean {
+        return runCatching {
+            val clipboard =
+                getSystemService(
+                    android.content.ClipboardManager::class.java)
+
+            when (content.kind) {
+                ClipboardKind.TEXT -> {
+                    val text =
+                        content.data.toString(Charsets.UTF_8)
+                    clipboard.setPrimaryClip(
+                        ClipData.newPlainText(
+                            "Con.Phone",
+                            text))
+                    toast(
+                        "PC 텍스트를 클립보드에 받았습니다.")
+                }
+
+                else -> {
+                    ensureSafeImageDimensions(content.data)
+
+                    val bitmap =
+                        BitmapFactory.decodeByteArray(
+                            content.data,
+                            0,
+                            content.data.size)
+                            ?: error(
+                                "수신 이미지를 해석할 수 없습니다.")
+
+                    try {
+                        FileOutputStream(
+                            File(
+                                cacheDir,
+                                ClipboardImageProvider.FILE_NAME)
+                        ).use { out ->
+                            check(
+                                bitmap.compress(
+                                    Bitmap.CompressFormat.PNG,
+                                    100,
+                                    out)
+                            ) {
+                                "수신 이미지를 PNG로 저장하지 못했습니다."
+                            }
+                        }
+                    } finally {
+                        bitmap.recycle()
+                    }
+
+                    val clip =
+                        ClipData.newUri(
+                            contentResolver,
+                            "Con.Phone image",
+                            ClipboardImageProvider.URI)
+                    clipboard.setPrimaryClip(clip)
+                    toast(
+                        "PC 이미지를 클립보드에 받았습니다.")
+                }
+            }
+
+            synchronized(applyGate) {
+                lastAppliedHash = content.hash.copyOf()
+                lastAppliedAt = System.currentTimeMillis()
+            }
+
+            true
+        }.onFailure {
+            toast(
+                "클립보드 적용 실패: ${it.message}")
+        }.getOrDefault(false)
     }
 
     private fun showStatus(text: String) {
