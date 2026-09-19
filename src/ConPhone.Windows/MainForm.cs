@@ -208,7 +208,7 @@ public sealed class MainForm : Form
     private Task? _pump;
     private long _epoch, _sent, _lastPointerSentTicks;
     private int _lastObservedPointerButtons, _lastSentPointerButtons;
-    private bool _closing, _closed, _exitRequested;
+    private bool _closing, _closed, _exitRequested, _servicesPaused;
     private string _lastError = "None";
 
     public MainForm(bool previewMode = false)
@@ -374,13 +374,24 @@ public sealed class MainForm : Form
             ActionButton("Bluetooth 다시 검사", async () => _diagnosis.Text = await BleHidServer.DiagnoseAsync()),
             ActionButton("Bluetooth 검색 신호 확인 / 시작", async () =>
             {
+                _servicesPaused = false;
                 await _ble.StartAsync();
-                Log("Bluetooth HID 검색 신호 상태를 확인했습니다.");
+
+                if (_settings.ClipboardSyncEnabled && _clipboardSync is not null)
+                    await _clipboardSync.SetActiveAsync(true);
+
+                Log("Bluetooth HID/Clipboard 서비스를 시작했습니다.");
             }, primary: true),
             ActionButton("서비스 중지", async () =>
             {
+                _servicesPaused = true;
                 await ReturnLocalAsync();
+
+                if (_clipboardSync is not null)
+                    await _clipboardSync.SetActiveAsync(false);
+
                 _ble.Stop();
+                Log("Bluetooth HID/Clipboard 서비스를 사용자가 중지했습니다.");
             })));
         flow.Controls.Add(connect);
 
@@ -877,10 +888,12 @@ public sealed class MainForm : Form
         {
             Dispatch(async () =>
             {
-                if (_ble.DesiredRunning)
+                if (!_servicesPaused && _ble.DesiredRunning)
                     await _ble.EnsureAdvertisingAsync();
 
-                if (_settings.ClipboardSyncEnabled && _clipboardSync is not null)
+                if (!_servicesPaused &&
+                    _settings.ClipboardSyncEnabled &&
+                    _clipboardSync is not null)
                     await _clipboardSync.EnsureHealthyAsync();
 
                 if (_ble.Advertisement is "Started" or "StartedWithoutAllAdvertisementData")
@@ -891,6 +904,7 @@ public sealed class MainForm : Form
 
         Shown += (_, _) => Dispatch(async () =>
         {
+            _servicesPaused = false;
             await _input.Started;
             InitializeClipboardHistory();
 
@@ -1950,6 +1964,7 @@ public sealed class MainForm : Form
             SystemSubscribers = _ble.SystemSubscribers,
             ConsumerSubscribers = _ble.ConsumerSubscribers,
             ApprovedAndSubscribed = _ble.Ready,
+            ServicesPausedByUser = _servicesPaused,
             TrustedDeviceCount = _ble.TrustedDeviceCount,
             ActiveDeviceFingerprint = _ble.ApprovedId is { } activeDeviceId
                 ? Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(
@@ -1997,9 +2012,19 @@ public sealed class MainForm : Form
         {
             Dispatch(async () =>
             {
+                if (_servicesPaused)
+                {
+                    Log("절전 복귀 · 사용자가 서비스를 중지한 상태를 유지합니다.");
+                    return;
+                }
+
                 await Task.Delay(1200);
                 await _ble.StartAsync();
-                Log("절전 복귀 · Bluetooth HID 검색 신호를 다시 확인했습니다.");
+
+                if (_settings.ClipboardSyncEnabled && _clipboardSync is not null)
+                    await _clipboardSync.EnsureHealthyAsync();
+
+                Log("절전 복귀 · Bluetooth HID/Clipboard 검색 신호를 다시 확인했습니다.");
             });
         }
     }
