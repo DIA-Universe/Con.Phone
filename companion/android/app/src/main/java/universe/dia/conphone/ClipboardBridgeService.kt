@@ -1326,7 +1326,7 @@ class ClipboardBridgeService : Service() {
 
         synchronized(bleSendLock) {
             val expected = bleActiveTransferId
-            if (bleAwaitingContentAck &&
+            if (bleActiveContent != null &&
                 expected != null &&
                 expected.contentEquals(transferId)) {
                 matched = true
