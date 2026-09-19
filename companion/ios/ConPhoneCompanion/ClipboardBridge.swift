@@ -864,11 +864,12 @@ extension ClipboardBridge: CBPeripheralDelegate {
             if let config = directConfig {
                 if config.hostAddress != nil && directHostRefreshAttempt > 0 {
                     startP2PFastPath()
-                } else if pendingFastLinkConnect {
+                } else if p2p?.ready != true {
+                    // Windows creates the direct link lazily only when a fast path is
+                    // actually needed. A valid config therefore acts as the request.
                     pendingFastLinkConnect = false
+                    status = "Windows가 P2P 고속 전송을 요청했습니다 · iOS 승인 필요"
                     applyFastLinkConfiguration()
-                } else {
-                    status = "P2P 고속 연결 사용 가능 · 필요하면 버튼으로 연결"
                 }
             }
             return
