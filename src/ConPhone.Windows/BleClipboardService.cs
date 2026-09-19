@@ -404,7 +404,7 @@ public sealed class BleClipboardService : IDisposable
         await _sendGate.WaitAsync(token).ConfigureAwait(false);
         try
         {
-            foreach (var wireFrame in ClipboardWireCodec.Encode(content, 16 * 1024))
+            foreach (var wireFrame in ClipboardWireCodec.Enumerate(content, 16 * 1024))
             {
                 var transferId = BitConverter.ToUInt32(RandomNumberGenerator.GetBytes(4));
                 var fragmentIndex = 0;
