@@ -137,11 +137,31 @@ public sealed class DirectClipboardLink : IDisposable
     public void Start()
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
+
         if (_publisher is not null)
         {
-            if (_publisher.Status == WiFiDirectAdvertisementPublisherStatus.Stopped)
-                _publisher.Start();
-            return;
+            if (Running)
+                return;
+
+            if (_publisher.Status == WiFiDirectAdvertisementPublisherStatus.Aborted)
+            {
+                Status?.Invoke("Clipboard P2P AP가 Aborted 상태라 publisher를 다시 만듭니다.");
+                Stop();
+            }
+            else
+            {
+                try
+                {
+                    _publisher.Start();
+                    Status?.Invoke("Clipboard P2P 고속 링크 재시작 요청.");
+                    return;
+                }
+                catch (Exception ex)
+                {
+                    Status?.Invoke($"기존 P2P publisher 재시작 실패 · 재생성: {ex.Message}");
+                    Stop();
+                }
+            }
         }
 
         _baselineIpv4 = CurrentIpv4();
