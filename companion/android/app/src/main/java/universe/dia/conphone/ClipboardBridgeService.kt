@@ -80,6 +80,8 @@ class ClipboardBridgeService : Service() {
     @Volatile private var mtu = 23
     @Volatile private var bleImageLimitBytes = 512 * 1024
     @Volatile private var bleWriting = false
+    private val bleSendLock = Any()
+    private var bleActiveContent: ClipboardContent? = null
     @Volatile private var credential: Credential? = null
     @Volatile private var directConfig: DirectConfig? = null
     @Volatile private var activeTarget = false
@@ -197,6 +199,7 @@ class ClipboardBridgeService : Service() {
                     g.discoverServices()
                 }
             } else if (newState == BluetoothProfile.STATE_DISCONNECTED) {
+                requeueActiveBleTransfer("Bluetooth 연결 끊김")
                 if (gatt === g) gatt = null
                 tx = null
                 rx = null
@@ -349,8 +352,12 @@ class ClipboardBridgeService : Service() {
         ) {
             if (characteristic.uuid == RX_UUID) {
                 bleWriting = false
-                if (status == BluetoothGatt.GATT_SUCCESS) writeNextBle()
-                else showStatus("BLE Clipboard 쓰기 실패: $status")
+                if (status == BluetoothGatt.GATT_SUCCESS) {
+                    writeNextBle()
+                } else {
+                    requeueActiveBleTransfer("BLE Clipboard 쓰기 실패: $status")
+                    main.postDelayed({ beginScan() }, 1000)
+                }
             }
         }
     }
@@ -947,42 +954,102 @@ class ClipboardBridgeService : Service() {
             return
         }
 
-        val maxGatt = maxOf(20, mtu - 3)
-        ClipboardProtocol.encodeSequence(content, 16 * 1024).forEach { frame ->
-            val transfer = secureRandom.nextInt().toUInt()
-            ClipboardProtocol.splitBle(frame, maxGatt, transfer).forEach(bleQueue::add)
+        val accepted = synchronized(bleSendLock) {
+            if (bleActiveContent != null || bleWriting || bleQueue.isNotEmpty()) {
+                false
+            } else {
+                bleActiveContent = content
+                true
+            }
         }
+
+        if (!accepted) {
+            if (setPendingContent(content))
+                showStatus("BLE 전송 중 · 다음 Clipboard를 대기열에 추가했습니다.")
+            return
+        }
+
+        runCatching {
+            val maxGatt = maxOf(20, mtu - 3)
+            ClipboardProtocol.encodeSequence(content, 16 * 1024).forEach { frame ->
+                val transfer = secureRandom.nextInt().toUInt()
+                ClipboardProtocol.splitBle(frame, maxGatt, transfer).forEach(bleQueue::add)
+            }
+        }.onFailure {
+            synchronized(bleSendLock) {
+                bleActiveContent = null
+                bleQueue.clear()
+            }
+            showStatus("BLE Clipboard 프레임 준비 실패: ${it.message}")
+            return
+        }
+
         writeNextBle()
+    }
+
+    private fun requeueActiveBleTransfer(reason: String) {
+        val content = synchronized(bleSendLock) {
+            val current = bleActiveContent
+            bleActiveContent = null
+            bleWriting = false
+            bleQueue.clear()
+            current
+        } ?: return
+
+        if (setPendingContent(content)) {
+            showStatus("$reason · Clipboard를 재전송 대기열로 이동했습니다.")
+        } else {
+            showStatus("$reason · 재전송 대기열이 가득 차 Clipboard를 보존하지 못했습니다.")
+        }
     }
 
     private fun writeNextBle() {
         if (bleWriting) return
-        val g = gatt ?: return
-        val characteristic = rx ?: return
+
+        val g = gatt
+        val characteristic = rx
+        if (g == null || characteristic == null) {
+            requeueActiveBleTransfer("BLE 연결 준비 안 됨")
+            return
+        }
+
         val next = bleQueue.poll() ?: run {
+            synchronized(bleSendLock) {
+                bleActiveContent = null
+                bleWriting = false
+            }
             showStatus("Clipboard 전송 완료 · BLE")
             flushPendingContent()
             return
         }
 
-        if (checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT) != PackageManager.PERMISSION_GRANTED)
+        if (checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT) != PackageManager.PERMISSION_GRANTED) {
+            requeueActiveBleTransfer("Bluetooth 권한 없음")
             return
+        }
 
         bleWriting = true
         val result = if (Build.VERSION.SDK_INT >= 33) {
-            g.writeCharacteristic(characteristic, next, BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT)
+            g.writeCharacteristic(
+                characteristic,
+                next,
+                BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT)
         } else {
             @Suppress("DEPRECATION")
             run {
                 characteristic.writeType = BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT
                 characteristic.value = next
-                if (g.writeCharacteristic(characteristic)) BluetoothStatusCodes.SUCCESS else BluetoothStatusCodes.ERROR_UNKNOWN
+                if (g.writeCharacteristic(characteristic))
+                    BluetoothStatusCodes.SUCCESS
+                else
+                    BluetoothStatusCodes.ERROR_UNKNOWN
             }
         }
 
         if (result != BluetoothStatusCodes.SUCCESS) {
             bleWriting = false
-            showStatus("BLE Clipboard 쓰기 시작 실패: $result")
+            requeueActiveBleTransfer("BLE Clipboard 쓰기 시작 실패: $result")
+            main.postDelayed({ beginScan() }, 1000)
         }
     }
 
@@ -1077,6 +1144,11 @@ class ClipboardBridgeService : Service() {
         main.post { Toast.makeText(this, text, Toast.LENGTH_SHORT).show() }
 
     override fun onDestroy() {
+        synchronized(bleSendLock) {
+            bleActiveContent = null
+            bleWriting = false
+            bleQueue.clear()
+        }
         clearPendingContent()
         scanning = false
         p2p?.close()
