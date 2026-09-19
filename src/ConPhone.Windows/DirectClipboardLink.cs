@@ -42,23 +42,29 @@ public static class DirectLinkCredentialStore
 {
     private const string Resource = "ConPhone.DirectLink";
 
-    public static DirectLinkConfig GetOrCreate(string linkName)
+    public static DirectLinkConfig GetOrCreate(
+        string linkName,
+        bool forceRotate = false)
     {
         var vault = new PasswordVault();
         var desiredSsid = BuildSsid(linkName);
-        try
+
+        if (!forceRotate)
         {
-            var existing = vault.FindAllByResource(Resource).FirstOrDefault();
-            if (existing is not null)
+            try
             {
-                existing.RetrievePassword();
-                if (string.Equals(existing.UserName, desiredSsid, StringComparison.Ordinal) &&
-                    !string.IsNullOrWhiteSpace(existing.Password))
-                    return new DirectLinkConfig(existing.UserName, existing.Password);
+                var existing = vault.FindAllByResource(Resource).FirstOrDefault();
+                if (existing is not null)
+                {
+                    existing.RetrievePassword();
+                    if (string.Equals(existing.UserName, desiredSsid, StringComparison.Ordinal) &&
+                        !string.IsNullOrWhiteSpace(existing.Password))
+                        return new DirectLinkConfig(existing.UserName, existing.Password);
+                }
             }
-        }
-        catch (Exception)
-        {
+            catch (Exception)
+            {
+            }
         }
 
         try
@@ -118,6 +124,7 @@ public sealed class DirectClipboardLink : IDisposable
     private readonly Func<string> _linkName;
     private WiFiDirectAdvertisementPublisher? _publisher;
     private DirectLinkConfig? _config;
+    private bool _forceCredentialRotation;
     private HashSet<string> _baselineIpv4 = [];
     private bool _disposed;
 
@@ -165,7 +172,11 @@ public sealed class DirectClipboardLink : IDisposable
         }
 
         _baselineIpv4 = CurrentIpv4();
-        var config = DirectLinkCredentialStore.GetOrCreate(_linkName());
+        var forceRotate = _forceCredentialRotation;
+        _forceCredentialRotation = false;
+        var config = DirectLinkCredentialStore.GetOrCreate(
+            _linkName(),
+            forceRotate);
 
         var publisher = new WiFiDirectAdvertisementPublisher();
         publisher.Advertisement.IsAutonomousGroupOwnerEnabled = true;
@@ -228,8 +239,9 @@ public sealed class DirectClipboardLink : IDisposable
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
         Stop();
+        _forceCredentialRotation = true;
         DirectLinkCredentialStore.Invalidate();
-        Status?.Invoke("활성 휴대폰 변경 · P2P Wi-Fi 비밀번호를 회전했습니다.");
+        Status?.Invoke("활성 휴대폰 변경 · P2P Wi-Fi 비밀번호를 다음 시작에서 강제 회전합니다.");
     }
 
     private string? FindDirectIpv4()
