@@ -84,6 +84,10 @@ require("StopListeningAsync" in win_p2p,
 coordinator = read("src/ConPhone.Windows/ClipboardSyncCoordinator.cs")
 require("await _p2p.StopListeningAsync()" in coordinator,
         "Clipboard disable path must close the P2P TCP listener")
+require("_started" not in coordinator and "StartCoreAsync" in coordinator,
+        "Clipboard coordinator must restart P2P after disable/re-enable")
+require("_lifecycle" in coordinator,
+        "Clipboard transport start/stop must be lifecycle-serialized")
 
 # P2P protocol v2 must match on all platforms.
 for path, text in [
