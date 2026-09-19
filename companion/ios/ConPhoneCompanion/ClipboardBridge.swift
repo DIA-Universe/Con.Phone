@@ -48,6 +48,7 @@ final class ClipboardBridge: NSObject, ObservableObject {
     private let p2pWireReassembler = ClipboardWireReassembler()
     private var writeQueue: [Data] = []
     private var writeInFlight = false
+    private var bleTransferCompletion: (() -> Void)?
     private var pendingContent: ClipboardContent?
     private var pendingSharedPayloadId: UUID?
     private var pendingGeneration = 0
@@ -137,12 +138,14 @@ final class ClipboardBridge: NSObject, ObservableObject {
         sharedPayloadId: UUID? = nil
     ) throws {
         if let p2p, p2p.ready {
-            let frames = try ClipboardProtocol.encode(content)
-            p2p.send(frames: frames)
-            if let sharedPayloadId {
-                SharedPayloadStore.clear(sharedPayloadId)
-                DispatchQueue.main.async { [weak self] in
-                    self?.sendPendingShareIfPresent()
+            let cursor = try ClipboardProtocol.makeFrameCursor(content)
+            p2p.send(cursor: cursor) { [weak self] in
+                DispatchQueue.main.async {
+                    guard let self else { return }
+                    if let sharedPayloadId {
+                        SharedPayloadStore.clear(sharedPayloadId)
+                        self.sendPendingShareIfPresent()
+                    }
                 }
             }
             return
@@ -157,13 +160,16 @@ final class ClipboardBridge: NSObject, ObservableObject {
            let peripheral,
            rx != nil,
            credential != nil {
-            try enqueueBle(content, peripheral: peripheral)
-            if let sharedPayloadId {
-                SharedPayloadStore.clear(sharedPayloadId)
-                DispatchQueue.main.async { [weak self] in
-                    self?.sendPendingShareIfPresent()
-                }
-            }
+            try enqueueBle(
+                content,
+                peripheral: peripheral,
+                completion: { [weak self] in
+                    guard let self else { return }
+                    if let sharedPayloadId {
+                        SharedPayloadStore.clear(sharedPayloadId)
+                        self.sendPendingShareIfPresent()
+                    }
+                })
             return
         }
 
@@ -194,9 +200,21 @@ final class ClipboardBridge: NSObject, ObservableObject {
 
         do {
             if let p2p, p2p.ready {
-                let frames = try ClipboardProtocol.encode(content)
-                p2p.send(frames: frames)
-                clearPendingContent(clearSharedStore: true)
+                let sharedId = pendingSharedPayloadId
+                pendingContent = nil
+                pendingSharedPayloadId = nil
+                pendingGeneration += 1
+
+                let cursor = try ClipboardProtocol.makeFrameCursor(content)
+                p2p.send(cursor: cursor) { [weak self] in
+                    DispatchQueue.main.async {
+                        guard let self else { return }
+                        if let sharedId {
+                            SharedPayloadStore.clear(sharedId)
+                            self.sendPendingShareIfPresent()
+                        }
+                    }
+                }
                 return
             }
 
@@ -209,8 +227,21 @@ final class ClipboardBridge: NSObject, ObservableObject {
                let peripheral,
                rx != nil,
                credential != nil {
-                try enqueueBle(content, peripheral: peripheral)
-                clearPendingContent(clearSharedStore: true)
+                let sharedId = pendingSharedPayloadId
+                pendingContent = nil
+                pendingSharedPayloadId = nil
+                pendingGeneration += 1
+
+                try enqueueBle(
+                    content,
+                    peripheral: peripheral,
+                    completion: { [weak self] in
+                        guard let self else { return }
+                        if let sharedId {
+                            SharedPayloadStore.clear(sharedId)
+                            self.sendPendingShareIfPresent()
+                        }
+                    })
             }
         } catch {
             status = "대기 중 Clipboard 전송 실패: \(error.localizedDescription)"
@@ -253,12 +284,21 @@ final class ClipboardBridge: NSObject, ObservableObject {
 
     private func enqueueBle(
         _ content: ClipboardContent,
-        peripheral: CBPeripheral
+        peripheral: CBPeripheral,
+        completion: @escaping () -> Void = {}
     ) throws {
-        let maxWrite = peripheral.maximumWriteValueLength(for: .withResponse)
-        let frames = try ClipboardProtocol.encode(content, chunkSize: 16 * 1024)
+        guard !writeInFlight,
+              writeQueue.isEmpty,
+              bleTransferCompletion == nil else {
+            throw ClipboardProtocol.ProtocolError.busy
+        }
 
-        for frame in frames {
+        let maxWrite = peripheral.maximumWriteValueLength(for: .withResponse)
+        let cursor = try ClipboardProtocol.makeFrameCursor(
+            content,
+            chunkSize: 16 * 1024)
+
+        while let frame = cursor.next() {
             let transferId = UInt32.random(in: UInt32.min...UInt32.max)
             writeQueue.append(contentsOf: try ClipboardProtocol.splitBle(
                 frame,
@@ -267,6 +307,7 @@ final class ClipboardBridge: NSObject, ObservableObject {
             ))
         }
 
+        bleTransferCompletion = completion
         writeNext()
     }
 
@@ -615,6 +656,7 @@ extension ClipboardBridge: CBCentralManagerDelegate {
         let dataPlaneAlive = p2p?.ready == true
         writeQueue.removeAll()
         writeInFlight = false
+        bleTransferCompletion = nil
         status = dataPlaneAlive
             ? "Bluetooth 연결 끊김 · 기존 P2P Clipboard 채널 유지"
             : "PC Bluetooth 연결 끊김 · 재검색"
@@ -784,12 +826,16 @@ extension ClipboardBridge: CBPeripheralDelegate {
 
         if let error {
             writeQueue.removeAll()
+            bleTransferCompletion = nil
             status = "BLE Clipboard 전송 실패: \(error.localizedDescription)"
             return
         }
 
         if writeQueue.isEmpty {
             status = "Clipboard 전송 완료 · BLE"
+            let completion = bleTransferCompletion
+            bleTransferCompletion = nil
+            completion?()
         } else {
             writeNext()
         }
