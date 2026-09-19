@@ -193,9 +193,11 @@ public sealed class ClipboardSyncCoordinator : IAsyncDisposable
                         ? "입력 품질 보호 · 이미지 P2P 연결을 우선 확인합니다."
                         : "이미지 전송 · P2P 고속 링크를 우선 확인합니다.");
 
-                var wait = interactive
-                    ? TimeSpan.FromSeconds(4)
-                    : TimeSpan.FromSeconds(2);
+                var wait = !bleAllowed
+                    ? TimeSpan.FromSeconds(15)
+                    : interactive
+                        ? TimeSpan.FromSeconds(2)
+                        : TimeSpan.FromSeconds(1);
                 var deadline = DateTimeOffset.UtcNow + wait;
 
                 while (!_p2p.HasClient(id) && DateTimeOffset.UtcNow < deadline)
