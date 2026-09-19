@@ -98,6 +98,7 @@ class ClipboardBridgeService : Service() {
     @Volatile private var p2pNetwork: Network? = null
     @Volatile private var directNetworkCallback: ConnectivityManager.NetworkCallback? = null
     @Volatile private var directConfigReadAttempts = 0
+    @Volatile private var capabilitiesPollScheduled = false
 
     private data class Credential(val deviceHash: ByteArray, val secret: ByteArray)
     private data class DirectConfig(val ssid: String, val passphrase: String, val hostAddress: String?)
@@ -212,6 +213,7 @@ class ClipboardBridgeService : Service() {
                 rx = null
                 secretCharacteristic = null
                 capabilitiesCharacteristic = null
+                capabilitiesPollScheduled = false
                 activeTarget = false
                 directLinkCharacteristic = null
                 bleImageLimitBytes = 512 * 1024
@@ -299,7 +301,7 @@ class ClipboardBridgeService : Service() {
                 retrySecretRead(g)
             else if (characteristic.uuid == CAPABILITIES_UUID) {
                 bleImageLimitBytes = 512 * 1024
-                directLinkCharacteristic?.let { g.readCharacteristic(it) }
+                scheduleCapabilitiesRead()
             }
             else if (characteristic.uuid == DIRECT_LINK_UUID) {
                 activeTarget = false
@@ -307,8 +309,8 @@ class ClipboardBridgeService : Service() {
                 p2p?.close()
                 p2p = null
                 releaseDirectNetwork()
-                showStatus("현재 비활성 기기 또는 P2P 준비 전 · 활성화 대기")
-                retryDirectLinkRead()
+                showStatus("활성 대상이 변경되어 상태 확인 대기")
+                scheduleCapabilitiesRead()
             }
 
         }
@@ -325,7 +327,7 @@ class ClipboardBridgeService : Service() {
                 retrySecretRead(g)
             else if (characteristic.uuid == CAPABILITIES_UUID) {
                 bleImageLimitBytes = 512 * 1024
-                directLinkCharacteristic?.let { g.readCharacteristic(it) }
+                scheduleCapabilitiesRead()
             }
             else if (characteristic.uuid == DIRECT_LINK_UUID) {
                 activeTarget = false
@@ -333,8 +335,8 @@ class ClipboardBridgeService : Service() {
                 p2p?.close()
                 p2p = null
                 releaseDirectNetwork()
-                showStatus("현재 비활성 기기 또는 P2P 준비 전 · 활성화 대기")
-                retryDirectLinkRead()
+                showStatus("활성 대상이 변경되어 상태 확인 대기")
+                scheduleCapabilitiesRead()
             }
 
         }
@@ -400,10 +402,34 @@ class ClipboardBridgeService : Service() {
             }
             CAPABILITIES_UUID -> {
                 bleImageLimitBytes = parseBleImageLimit(value)
-                showStatus(
-                    "BLE Clipboard 이미지 한도 · ${bleImageLimitBytes / 1024} KiB")
-                if (checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT) == PackageManager.PERMISSION_GRANTED)
+                val reportedActive = parseActiveTarget(value)
+
+                if (reportedActive != null) {
+                    val changed = activeTarget != reportedActive
+                    activeTarget = reportedActive
+
+                    if (!reportedActive) {
+                        directConfig = null
+                        p2p?.close()
+                        p2p = null
+                        releaseDirectNetwork()
+                        if (changed)
+                            showStatus("현재 기기는 대기 대상 · BLE/P2P 전송 비활성")
+                    } else {
+                        if (changed)
+                            showStatus("현재 기기가 활성 대상이 됐습니다.")
+                        flushPendingContent()
+                        drainPersistedShares()
+
+                        if (checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT) == PackageManager.PERMISSION_GRANTED)
+                            directLinkCharacteristic?.let { gatt?.readCharacteristic(it) }
+                    }
+                } else if (checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT) == PackageManager.PERMISSION_GRANTED) {
+                    // Compatibility with older v2 servers that do not expose byte [8].
                     directLinkCharacteristic?.let { gatt?.readCharacteristic(it) }
+                }
+
+                scheduleCapabilitiesRead()
             }
             DIRECT_LINK_UUID -> {
                 // Windows only allows the current active target to read this
@@ -434,12 +460,34 @@ class ClipboardBridgeService : Service() {
         }
     }
 
+    private fun scheduleCapabilitiesRead() {
+        if (capabilitiesPollScheduled) return
+        capabilitiesPollScheduled = true
+
+        main.postDelayed({
+            capabilitiesPollScheduled = false
+
+            if (gatt != null &&
+                checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT) == PackageManager.PERMISSION_GRANTED) {
+                capabilitiesCharacteristic?.let { gatt?.readCharacteristic(it) }
+            }
+        }, 5000)
+    }
+
+    private fun parseActiveTarget(value: ByteArray): Boolean? {
+        if (value.size < 9 || value[0].toInt() != 2)
+            return null
+
+        return value[8].toInt() == 1
+    }
+
     private fun retryDirectLinkRead() {
         directConfigReadAttempts++
         val delay = if (directConfigReadAttempts <= 8) 1200L else 5000L
 
         main.postDelayed({
-            if (gatt != null &&
+            if (activeTarget &&
+                gatt != null &&
                 p2p?.ready != true &&
                 checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT) == PackageManager.PERMISSION_GRANTED) {
                 directLinkCharacteristic?.let { gatt?.readCharacteristic(it) }
