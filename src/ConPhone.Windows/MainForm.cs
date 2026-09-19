@@ -1211,7 +1211,17 @@ public sealed class MainForm : Form
         try
         {
             await _clipboardSync.StartAsync();
-            Log("기기간 복붙 서비스 시작 · Direct Wi-Fi/P2P → BLE");
+
+            using var firewallTimeout =
+                new CancellationTokenSource(TimeSpan.FromSeconds(5));
+            var firewallReady = await P2PFirewallSupport.IsConfiguredAsync(
+                firewallTimeout.Token);
+
+            Log(
+                firewallReady
+                    ? "기기간 복붙 서비스 시작 · Direct Wi-Fi/P2P → BLE · 방화벽 준비됨"
+                    : "기기간 복붙 서비스 시작 · Direct Wi-Fi/P2P → BLE · " +
+                      "P2P 방화벽 규칙 미확인(큰 이미지 P2P가 실패하면 방화벽 허용을 실행하세요)");
         }
         catch (Exception ex)
         {
@@ -1813,7 +1823,17 @@ public sealed class MainForm : Form
     {
         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(45));
         await P2PFirewallSupport.ConfigureAsync(timeout.Token);
-        Log($"Windows 방화벽 P2P 허용 완료 · TCP {P2PFirewallSupport.Port}");
+
+        using var verifyTimeout =
+            new CancellationTokenSource(TimeSpan.FromSeconds(5));
+        var verified = await P2PFirewallSupport.IsConfiguredAsync(
+            verifyTimeout.Token);
+
+        if (!verified)
+            throw new InvalidOperationException(
+                "방화벽 규칙을 추가했지만 활성 상태를 다시 확인하지 못했습니다.");
+
+        Log($"Windows 방화벽 P2P 허용/검증 완료 · TCP {P2PFirewallSupport.Port}");
     }
 
     private Task ApplyLocalUpdateAsync()
