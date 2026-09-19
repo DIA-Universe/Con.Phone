@@ -223,7 +223,7 @@ class AndroidSharedPayloadStore(private val context: Context) {
                 )
             }
         }.getOrElse {
-            prefs.edit().remove(QUEUE_KEY).apply()
+            prefs.edit().remove(QUEUE_KEY).commit()
             mutableListOf()
         }
     }
