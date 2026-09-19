@@ -251,18 +251,22 @@ public sealed class BleClipboardService : IDisposable
                 return;
             }
 
-            // protocol v2:
+            // protocol v2 (backward-compatible extension):
             // [0]=version, [1]=text, [2]=image, [3]=direct P2P,
-            // [4..7]=BLE image fallback limit in bytes, little-endian.
+            // [4..7]=BLE image fallback limit in bytes, little-endian,
+            // [8]=1 when this trusted peer is the current active target.
             var limit = Math.Clamp(
                 _bleImageLimitBytes(),
                 64 * 1024,
                 4 * 1024 * 1024);
 
-            var response = new byte[8] { 2, 1, 1, 1, 0, 0, 0, 0 };
+            var response = new byte[9] { 2, 1, 1, 1, 0, 0, 0, 0, 0 };
             System.Buffers.Binary.BinaryPrimitives.WriteInt32LittleEndian(
                 response.AsSpan(4, 4),
                 limit);
+            response[8] = IsActive(args.Session.DeviceId.Id)
+                ? (byte)1
+                : (byte)0;
             request.RespondWithValue(response.AsBuffer());
         }
         finally
