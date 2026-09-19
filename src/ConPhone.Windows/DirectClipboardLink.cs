@@ -158,6 +158,15 @@ public sealed class DirectClipboardLink : IDisposable
         }
     }
 
+    public bool Requested
+    {
+        get
+        {
+            lock (_gate)
+                return !_disposed && _publisher is not null;
+        }
+    }
+
     private bool RunningUnsafe() =>
         _publisher?.Status ==
         WiFiDirectAdvertisementPublisherStatus.Started;
