@@ -32,7 +32,8 @@ public static class P2PFirewallSupport
             "if ($null -eq $app) { exit 5 };" +
             "$addr=$rule | Get-NetFirewallAddressFilter;" +
             "if ($null -eq $addr -or ($addr.RemoteAddress -notcontains 'LocalSubnet')) { exit 6 };" +
-            "if ($rule.InterfaceType -ne 'Wireless') { exit 7 };" +
+            "$iface=$rule | Get-NetFirewallInterfaceTypeFilter;" +
+            "if ($null -eq $iface -or ($iface.InterfaceType -notcontains 'Wireless')) { exit 7 };" +
             "exit 0";
 
         var start = new ProcessStartInfo
