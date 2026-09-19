@@ -55,6 +55,8 @@ object ClipboardProtocol {
     const val MAX_WIRE_FRAME = WIRE_HEADER + MAX_CHUNK
     const val MAX_INFLIGHT = 8
     private val magic = byteArrayOf('C'.code.toByte(), 'P'.code.toByte(), 'H'.code.toByte(), '1'.code.toByte())
+    private val ackMagic = "CPACK1".toByteArray(Charsets.US_ASCII)
+    const val ACK_LENGTH = 22
     private val random = SecureRandom()
 
     fun text(value: String): ClipboardContent {
@@ -165,6 +167,19 @@ object ClipboardProtocol {
         val payload = ByteArray(payloadLength).also(b::get)
 
         return ClipboardWireChunk(transfer, kind, index, count, total, hash, payload)
+    }
+
+    fun encodeAck(transferId: ByteArray): ByteArray {
+        require(transferId.size == 16)
+        return ackMagic + transferId
+    }
+
+    fun decodeAck(frame: ByteArray): ByteArray? {
+        if (frame.size != ACK_LENGTH ||
+            !frame.copyOfRange(0, 6).contentEquals(ackMagic))
+            return null
+
+        return frame.copyOfRange(6, 22)
     }
 
     fun splitBle(message: ByteArray, maxGattValue: Int, transferId: UInt): List<ByteArray> {
