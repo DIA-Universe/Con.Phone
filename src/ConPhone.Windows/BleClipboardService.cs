@@ -313,7 +313,10 @@ public sealed class BleClipboardService : IDisposable
         GattLocalCharacteristic sender,
         GattWriteRequestedEventArgs args)
     {
+        Guid? ackToSend = null;
+        string? ackDeviceId = null;
         var deferral = args.GetDeferral();
+
         try
         {
             var request = await args.GetRequestAsync();
@@ -328,7 +331,6 @@ public sealed class BleClipboardService : IDisposable
             }
 
             var valid = false;
-            Guid? ackToSend = null;
             try
             {
                 var bytes = request.Value.ToArray();
@@ -383,6 +385,7 @@ public sealed class BleClipboardService : IDisposable
                                         "Windows clipboard apply failed.");
 
                                 ackToSend = chunk.TransferId;
+                                ackDeviceId = id;
                             }
                         }
                     }
@@ -395,7 +398,8 @@ public sealed class BleClipboardService : IDisposable
                 ArgumentException or
                 TimeoutException)
             {
-                Status?.Invoke($"Clipboard BLE 수신 프레임 거부: {ex.Message}");
+                Status?.Invoke(
+                    $"Clipboard BLE 수신 프레임 거부: {ex.Message}");
             }
 
             if (request.Option == GattWriteOption.WriteWithResponse)
@@ -403,35 +407,40 @@ public sealed class BleClipboardService : IDisposable
                 if (valid) request.Respond();
                 else request.RespondWithProtocolError(0x0D);
             }
-
-            if (valid && ackToSend is { } transferId)
-            {
-                try
-                {
-                    using var ackTimeout =
-                        new CancellationTokenSource(
-                            TimeSpan.FromSeconds(5));
-
-                    await SendAckAsync(
-                            id,
-                            transferId,
-                            ackTimeout.Token)
-                        .ConfigureAwait(false);
-                }
-                catch (Exception ex)
-                {
-                    Status?.Invoke(
-                        $"Clipboard BLE ACK 전송 실패 · 상대가 재시도할 수 있습니다: {ex.Message}");
-                }
-            }
         }
         catch (Exception ex)
         {
-            Status?.Invoke($"Clipboard BLE 수신 실패: {ex.Message}");
+            Status?.Invoke(
+                $"Clipboard BLE 수신 실패: {ex.Message}");
         }
         finally
         {
+            // Complete the GATT write transaction before sending the application
+            // notification ACK. Some Bluetooth stacks serialize server callbacks
+            // and notifications behind this deferral.
             deferral.Complete();
+        }
+
+        if (ackToSend is { } transferId &&
+            ackDeviceId is { } deviceId)
+        {
+            try
+            {
+                using var ackTimeout =
+                    new CancellationTokenSource(
+                        TimeSpan.FromSeconds(5));
+
+                await SendAckAsync(
+                        deviceId,
+                        transferId,
+                        ackTimeout.Token)
+                    .ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                Status?.Invoke(
+                    $"Clipboard BLE ACK 전송 실패 · 상대가 재시도할 수 있습니다: {ex.Message}");
+            }
         }
     }
 
