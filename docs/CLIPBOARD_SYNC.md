@@ -173,3 +173,8 @@ Direct Wi-Fi/P2P 링크 자체의 WPA2 비밀번호만 신뢰하지 않는다.
 - 작은 payload는 BLE, 큰 이미지는 사용자 승인형 P2P 경로로 전송한다.
 - 120초 안에 transport가 준비되지 않으면 memory pending은 만료시키되 App Group payload는 유지하여 다음 앱 실행 때 재시도한다.
 - 실제 transport queue에 들어간 뒤에만 App Group payload를 삭제한다.
+
+
+## Windows 방화벽 진단
+
+P2P 데이터 채널은 TCP 47911을 사용한다. Con.Phone은 시작 시 전용 방화벽 규칙 상태를 비권한 조회로 확인하며, 규칙이 없거나 확인되지 않아도 BLE fallback을 막지 않는다. 사용자가 P2P 허용 버튼을 누른 경우에만 UAC를 요청해 inbound rule을 생성하고 다시 검증한다.
