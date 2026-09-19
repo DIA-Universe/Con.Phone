@@ -8,9 +8,6 @@ import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.widget.Toast
-import java.io.File
-import java.io.FileOutputStream
-import java.util.UUID
 
 class ShareActivity : Activity() {
     companion object {
@@ -43,12 +40,14 @@ class ShareActivity : Activity() {
             return
         }
 
-        dispatchServiceIntent(
-            Intent(this, ClipboardBridgeService::class.java)
-                .setAction(ClipboardBridgeService.ACTION_SEND_SHARED_TEXT)
-                .putExtra(ClipboardBridgeService.EXTRA_SHARED_TEXT, text)
-        )
-        Toast.makeText(this, "PC 전송 대기열에 추가했습니다.", Toast.LENGTH_SHORT).show()
+        runCatching {
+            AndroidSharedPayloadStore(this).saveText(text)
+        }.onSuccess {
+            dispatchDrain()
+            Toast.makeText(this, "PC 전송 대기열에 저장했습니다.", Toast.LENGTH_SHORT).show()
+        }.onFailure {
+            Toast.makeText(this, "공유 저장 실패: ${it.message}", Toast.LENGTH_SHORT).show()
+        }
         finish()
     }
 
@@ -60,47 +59,23 @@ class ShareActivity : Activity() {
             return
         }
 
-        val directory = File(cacheDir, "shared").apply { mkdirs() }
-        directory.listFiles()?.forEach {
-            if (System.currentTimeMillis() - it.lastModified() > 24 * 60 * 60 * 1000L)
-                runCatching { it.delete() }
-        }
-
-        val target = File(directory, "share-${UUID.randomUUID()}.bin")
-
         runCatching {
-            contentResolver.openInputStream(uri).use { input ->
-                requireNotNull(input) { "공유 이미지를 열 수 없습니다." }
-                FileOutputStream(target).use { output ->
-                    val buffer = ByteArray(64 * 1024)
-                    var total = 0L
-                    while (true) {
-                        val read = input.read(buffer)
-                        if (read <= 0) break
-                        total += read
-                        require(total <= MAX_STAGED_IMAGE_BYTES) {
-                            "공유 이미지가 임시 저장 한도(32 MiB)를 초과합니다."
-                        }
-                        output.write(buffer, 0, read)
-                    }
-                }
-            }
-
-            target
-        }.onSuccess { target ->
-            dispatchServiceIntent(
-                Intent(this, ClipboardBridgeService::class.java)
-                    .setAction(ClipboardBridgeService.ACTION_SEND_SHARED_IMAGE)
-                    .putExtra(ClipboardBridgeService.EXTRA_SHARED_IMAGE_PATH, target.absolutePath)
-                    .putExtra(ClipboardBridgeService.EXTRA_SHARED_IMAGE_MIME, intent.type)
-            )
-            Toast.makeText(this, "PC 이미지 전송 대기열에 추가했습니다.", Toast.LENGTH_SHORT).show()
+            AndroidSharedPayloadStore(this).saveImage(uri, intent.type)
+        }.onSuccess {
+            dispatchDrain()
+            Toast.makeText(this, "PC 이미지 전송 대기열에 저장했습니다.", Toast.LENGTH_SHORT).show()
         }.onFailure {
-            runCatching { target.delete() }
-            Toast.makeText(this, "이미지 공유 준비 실패: ${it.message}", Toast.LENGTH_SHORT).show()
+            Toast.makeText(this, "이미지 공유 저장 실패: ${it.message}", Toast.LENGTH_SHORT).show()
         }
 
         finish()
+    }
+
+    private fun dispatchDrain() {
+        dispatchServiceIntent(
+            Intent(this, ClipboardBridgeService::class.java)
+                .setAction(ClipboardBridgeService.ACTION_DRAIN_SHARED)
+        )
     }
 
     private fun dispatchServiceIntent(serviceIntent: Intent) {
