@@ -287,9 +287,15 @@ public sealed class ClipboardHistoryService : IDisposable
         return id is not null && TryGetContent(id, out content);
     }
 
-    public bool ApplyRemote(ClipboardContent content)
+    public bool ApplyRemote(ClipboardContent content) =>
+        ApplyRemote(content, out _);
+
+    public bool ApplyRemote(
+        ClipboardContent content,
+        out bool changed)
     {
         ArgumentNullException.ThrowIfNull(content);
+        changed = false;
 
         var now = DateTimeOffset.UtcNow;
         if (string.Equals(
@@ -315,6 +321,7 @@ public sealed class ClipboardHistoryService : IDisposable
                 AddText(text, publish: false);
                 _lastRemoteHash = content.Hash;
                 _lastRemoteAppliedAt = now;
+                changed = true;
                 Status?.Invoke("휴대폰에서 받은 텍스트를 Windows 클립보드에 적용했습니다.");
                 return true;
             }
@@ -327,6 +334,7 @@ public sealed class ClipboardHistoryService : IDisposable
             AddImage(copy, publish: false);
             _lastRemoteHash = content.Hash;
             _lastRemoteAppliedAt = now;
+            changed = true;
             Status?.Invoke("휴대폰에서 받은 이미지를 Windows 클립보드에 적용했습니다.");
             return true;
         }
