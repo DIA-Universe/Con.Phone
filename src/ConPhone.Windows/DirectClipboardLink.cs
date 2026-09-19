@@ -121,6 +121,7 @@ public static class DirectLinkCredentialStore
 
 public sealed class DirectClipboardLink : IDisposable
 {
+    private readonly object _gate = new();
     private readonly Func<string> _linkName;
     private WiFiDirectAdvertisementPublisher? _publisher;
     private DirectLinkConfig? _config;
@@ -135,25 +136,51 @@ public sealed class DirectClipboardLink : IDisposable
 
     public event Action<string>? Status;
 
-    public DirectLinkConfig? Config =>
-        !Running || _config is null
-            ? null
-            : _config with { HostAddress = FindDirectIpv4() };
-    public bool Running => _publisher?.Status == WiFiDirectAdvertisementPublisherStatus.Started;
+    public DirectLinkConfig? Config
+    {
+        get
+        {
+            lock (_gate)
+            {
+                return !RunningUnsafe() || _config is null
+                    ? null
+                    : _config with { HostAddress = FindDirectIpv4() };
+            }
+        }
+    }
+
+    public bool Running
+    {
+        get
+        {
+            lock (_gate)
+                return RunningUnsafe();
+        }
+    }
+
+    private bool RunningUnsafe() =>
+        _publisher?.Status ==
+        WiFiDirectAdvertisementPublisherStatus.Started;
 
     public void Start()
+    {
+        lock (_gate)
+            StartUnsafe();
+    }
+
+    private void StartUnsafe()
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
 
         if (_publisher is not null)
         {
-            if (Running)
+            if (RunningUnsafe())
                 return;
 
             if (_publisher.Status == WiFiDirectAdvertisementPublisherStatus.Aborted)
             {
                 Status?.Invoke("Clipboard P2P AP가 Aborted 상태라 publisher를 다시 만듭니다.");
-                Stop();
+                StopUnsafe();
             }
             else
             {
@@ -166,7 +193,7 @@ public sealed class DirectClipboardLink : IDisposable
                 catch (Exception ex)
                 {
                     Status?.Invoke($"기존 P2P publisher 재시작 실패 · 재생성: {ex.Message}");
-                    Stop();
+                    StopUnsafe();
                 }
             }
         }
@@ -207,11 +234,17 @@ public sealed class DirectClipboardLink : IDisposable
         catch (Exception ex)
         {
             Status?.Invoke($"Clipboard P2P 시작 불가; BLE fallback 유지: {ex.Message}");
-            Stop();
+            StopUnsafe();
         }
     }
 
     public void Stop()
+    {
+        lock (_gate)
+            StopUnsafe();
+    }
+
+    private void StopUnsafe()
     {
         var publisher = _publisher;
         _publisher = null;
@@ -233,11 +266,15 @@ public sealed class DirectClipboardLink : IDisposable
 
     public void RotateCredentials()
     {
-        ObjectDisposedException.ThrowIf(_disposed, this);
-        Stop();
-        _forceCredentialRotation = true;
-        DirectLinkCredentialStore.Invalidate();
-        Status?.Invoke("활성 휴대폰 변경 · P2P Wi-Fi 비밀번호를 다음 시작에서 강제 회전합니다.");
+        lock (_gate)
+        {
+            ObjectDisposedException.ThrowIf(_disposed, this);
+            StopUnsafe();
+            _forceCredentialRotation = true;
+            DirectLinkCredentialStore.Invalidate();
+            Status?.Invoke(
+                "활성 휴대폰 변경 · P2P Wi-Fi 비밀번호를 다음 시작에서 강제 회전합니다.");
+        }
     }
 
     private string? FindDirectIpv4()
@@ -329,8 +366,11 @@ public sealed class DirectClipboardLink : IDisposable
 
     public void Dispose()
     {
-        if (_disposed) return;
-        _disposed = true;
-        Stop();
+        lock (_gate)
+        {
+            if (_disposed) return;
+            _disposed = true;
+            StopUnsafe();
+        }
     }
 }
