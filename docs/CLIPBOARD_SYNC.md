@@ -195,4 +195,6 @@ Windows의 "BLE 이미지 한도"가 기준값이다. Clipboard GATT Capabilitie
 - iOS BLE 송신도 진행 중 Clipboard를 대기 상태로 복원하고, Share Extension 항목은 실제 전송 완료 전까지 App Group 저장소에서 삭제하지 않는다.
 - iOS P2P는 wire frame 전체 배열을 만들지 않고 FrameCursor로 순차 전송한다.
 - Android/iOS 공유 대기열은 최대 8개이며 크기/TTL 제한을 둔다.
+- Android 공유 메뉴 항목은 filesDir + SharedPreferences metadata에 24시간 보관하며, 서비스 프로세스가 종료되어도 다음 실행에서 재전송한다. 실제 P2P/BLE 전송 성공 뒤에만 삭제한다.
+- Android 영구 대기열 metadata는 동기 commit으로 확정해 공유 직후 프로세스 종료에도 항목 유실 가능성을 줄인다.
 - Android의 Nearby Wi-Fi 권한은 P2P 전용이다. 권한을 거부해도 BLE 텍스트/작은 이미지 fallback은 계속 동작한다.
