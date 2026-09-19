@@ -43,6 +43,7 @@ public sealed class ClipboardHistoryService : IDisposable
     private DateTimeOffset _lastRemoteAppliedAt;
     private uint _suppressedSelfClipboardSequence;
     private DateTimeOffset _suppressedSelfClipboardUntil;
+    private uint _lastCapturedClipboardSequence;
 
     private static readonly string Root = Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
@@ -126,7 +127,21 @@ public sealed class ClipboardHistoryService : IDisposable
             {
                 var text = Clipboard.GetText(TextDataFormat.UnicodeText);
                 _retryTimer.Stop();
-                if (!string.IsNullOrEmpty(text)) AddText(text, publish: true);
+
+                if (!string.IsNullOrEmpty(text))
+                {
+                    var sequence = GetClipboardSequenceNumber();
+                    var publish =
+                        sequence == 0 ||
+                        sequence != _lastCapturedClipboardSequence;
+
+                    AddText(
+                        text,
+                        publish: publish);
+
+                    if (sequence != 0)
+                        _lastCapturedClipboardSequence = sequence;
+                }
                 return;
             }
 
@@ -134,7 +149,21 @@ public sealed class ClipboardHistoryService : IDisposable
             {
                 using var image = Clipboard.GetImage();
                 _retryTimer.Stop();
-                if (image is not null) AddImage(image, publish: true);
+
+                if (image is not null)
+                {
+                    var sequence = GetClipboardSequenceNumber();
+                    var publish =
+                        sequence == 0 ||
+                        sequence != _lastCapturedClipboardSequence;
+
+                    AddImage(
+                        image,
+                        publish: publish);
+
+                    if (sequence != 0)
+                        _lastCapturedClipboardSequence = sequence;
+                }
                 return;
             }
 
@@ -185,6 +214,7 @@ public sealed class ClipboardHistoryService : IDisposable
             return;
 
         _suppressedSelfClipboardSequence = sequence;
+        _lastCapturedClipboardSequence = sequence;
         _suppressedSelfClipboardUntil =
             DateTimeOffset.UtcNow.AddSeconds(5);
     }
