@@ -96,6 +96,9 @@ class ClipboardBridgeService : Service() {
     private val bleSendLock = Any()
     private var bleActiveContent: ClipboardContent? = null
     private var bleActivePersistentShareId: String? = null
+    private var bleActiveTransferId: ByteArray? = null
+    private var bleAwaitingContentAck = false
+    private var bleAckGeneration = 0L
     @Volatile private var credential: Credential? = null
     @Volatile private var directConfig: DirectConfig? = null
     @Volatile private var activeTarget = false
@@ -571,6 +574,12 @@ class ClipboardBridgeService : Service() {
                 bleReassembler.add(
                     ClipboardProtocol.decodeBle(value))
                     ?: return
+
+            val ackId = ClipboardProtocol.decodeAck(message)
+            if (ackId != null) {
+                completeActiveBleTransferAck(ackId)
+                return
+            }
 
             val chunk = ClipboardProtocol.decode(message)
             val content =
@@ -1291,10 +1300,34 @@ class ClipboardBridgeService : Service() {
 
         runCatching {
             val maxGatt = maxOf(20, mtu - 3)
-            ClipboardProtocol.encodeSequence(content, 16 * 1024).forEach { frame ->
-                val transfer = secureRandom.nextInt().toUInt()
-                ClipboardProtocol.splitBle(frame, maxGatt, transfer).forEach(bleQueue::add)
+            val frames = ClipboardProtocol
+                .encodeSequence(content, 16 * 1024)
+                .iterator()
+
+            require(frames.hasNext()) {
+                "Clipboard BLE transfer has no frames."
             }
+
+            val firstFrame = frames.next()
+            val contentTransferId =
+                ClipboardProtocol.decode(firstFrame).transferId
+
+            synchronized(bleSendLock) {
+                bleActiveTransferId = contentTransferId.copyOf()
+                bleAwaitingContentAck = false
+                bleAckGeneration++
+            }
+
+            fun enqueueWireFrame(frame: ByteArray) {
+                val transfer = secureRandom.nextInt().toUInt()
+                ClipboardProtocol
+                    .splitBle(frame, maxGatt, transfer)
+                    .forEach(bleQueue::add)
+            }
+
+            enqueueWireFrame(firstFrame)
+            while (frames.hasNext())
+                enqueueWireFrame(frames.next())
         }.onFailure {
             requeueActiveBleTransfer(
                 "BLE Clipboard 프레임 준비 실패: ${it.message}")
@@ -1304,12 +1337,48 @@ class ClipboardBridgeService : Service() {
         writeNextBle()
     }
 
+    private fun completeActiveBleTransferAck(
+        transferId: ByteArray
+    ) {
+        var matched = false
+        var persistedId: String? = null
+
+        synchronized(bleSendLock) {
+            val expected = bleActiveTransferId
+            if (bleAwaitingContentAck &&
+                expected != null &&
+                expected.contentEquals(transferId)) {
+                matched = true
+                persistedId = bleActivePersistentShareId
+                bleActiveContent = null
+                bleActivePersistentShareId = null
+                bleActiveTransferId = null
+                bleAwaitingContentAck = false
+                bleAckGeneration++
+            }
+        }
+
+        if (!matched) {
+            showStatus(
+                "일치하지 않거나 늦게 도착한 BLE Clipboard ACK를 무시했습니다.")
+            return
+        }
+
+        showStatus(
+            "Clipboard 전송 완료 · BLE · Windows 적용 ACK 확인")
+        completePersistedShare(persistedId)
+        flushPendingContent()
+    }
+
     private fun requeueActiveBleTransfer(reason: String) {
         val active = synchronized(bleSendLock) {
             val current = bleActiveContent ?: return
             val persistedId = bleActivePersistentShareId
             bleActiveContent = null
             bleActivePersistentShareId = null
+            bleActiveTransferId = null
+            bleAwaitingContentAck = false
+            bleAckGeneration++
             bleWriting = false
             bleQueue.clear()
             current to persistedId
@@ -1351,20 +1420,34 @@ class ClipboardBridgeService : Service() {
         val next = ackFrame ?: contentFrame
 
         if (next == null) {
-            if (bleActiveContent != null) {
-                val persistedId = synchronized(bleSendLock) {
-                    val id = bleActivePersistentShareId
-                    bleActiveContent = null
-                    bleActivePersistentShareId = null
+            val waitGeneration = synchronized(bleSendLock) {
+                if (bleActiveContent == null ||
+                    bleActiveTransferId == null ||
+                    bleAwaitingContentAck) {
+                    null
+                } else {
+                    bleAwaitingContentAck = true
                     bleWriting = false
                     bleWritingAck = false
-                    id
+                    ++bleAckGeneration
                 }
+            }
 
+            if (waitGeneration != null) {
                 showStatus(
-                    "Clipboard 전송 완료 · BLE")
-                completePersistedShare(persistedId)
-                flushPendingContent()
+                    "Clipboard BLE 프레임 전송 완료 · Windows 적용 ACK 대기")
+
+                main.postDelayed({
+                    val timedOut = synchronized(bleSendLock) {
+                        bleAwaitingContentAck &&
+                            bleAckGeneration == waitGeneration &&
+                            bleActiveContent != null
+                    }
+
+                    if (timedOut)
+                        requeueActiveBleTransfer(
+                            "BLE Clipboard 적용 ACK 시간 초과")
+                }, 45_000)
             }
             return
         }
@@ -1670,6 +1753,9 @@ class ClipboardBridgeService : Service() {
         synchronized(bleSendLock) {
             bleActiveContent = null
             bleActivePersistentShareId = null
+            bleActiveTransferId = null
+            bleAwaitingContentAck = false
+            bleAckGeneration++
             bleWriting = false
             bleQueue.clear()
         }
