@@ -991,9 +991,11 @@ public sealed class MainForm : Form
             try
             {
                 var applied =
-                    _clipboard.ApplyRemote(content);
+                    _clipboard.ApplyRemote(
+                        content,
+                        out var changed);
 
-                if (applied)
+                if (applied && changed)
                 {
                     _latestLocalClipboard = content;
                     var generation =
@@ -1005,6 +1007,19 @@ public sealed class MainForm : Form
 
                     Log(
                         "휴대폰 클립보드를 Windows에 적용했습니다.");
+                }
+                else if (applied &&
+                         _ble.ApprovedId is { } replaySourceId)
+                {
+                    // ACK/retry of an already-applied remote value succeeds
+                    // without creating a new clipboard generation.
+                    var generation =
+                        Math.Max(
+                            1,
+                            Interlocked.Read(
+                                ref _latestClipboardGeneration));
+                    _lastSentClipboardGenerationByDevice[replaySourceId] =
+                        generation;
                 }
 
                 completion.TrySetResult(applied);
