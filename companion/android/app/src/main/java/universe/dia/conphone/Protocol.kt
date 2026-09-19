@@ -100,7 +100,15 @@ object ClipboardProtocol {
         }
     }
 
-    fun encode(content: ClipboardContent, chunkSize: Int = 64 * 1024): List<ByteArray> {
+    fun encode(
+        content: ClipboardContent,
+        chunkSize: Int = 64 * 1024
+    ): List<ByteArray> = encodeSequence(content, chunkSize).toList()
+
+    fun encodeSequence(
+        content: ClipboardContent,
+        chunkSize: Int = 64 * 1024
+    ): Sequence<ByteArray> = sequence {
         require(chunkSize in MIN_CHUNK..MAX_CHUNK)
         validate(content.kind, content.data)
 
@@ -108,24 +116,26 @@ object ClipboardProtocol {
         val hash = sha256(content.data)
         val count = (content.data.size + chunkSize - 1) / chunkSize
 
-        return (0 until count).map { index ->
+        for (index in 0 until count) {
             val offset = index * chunkSize
             val length = minOf(chunkSize, content.data.size - offset)
-            ByteBuffer.allocate(70 + length)
-                .order(ByteOrder.LITTLE_ENDIAN)
-                .apply {
-                    put(magic)
-                    put(1)
-                    put(transferId)
-                    put(content.kind.code.toByte())
-                    putInt(index)
-                    putInt(count)
-                    putInt(content.data.size)
-                    put(hash)
-                    putInt(length)
-                    put(content.data, offset, length)
-                }
-                .array()
+            yield(
+                ByteBuffer.allocate(WIRE_HEADER + length)
+                    .order(ByteOrder.LITTLE_ENDIAN)
+                    .apply {
+                        put(magic)
+                        put(1)
+                        put(transferId)
+                        put(content.kind.code.toByte())
+                        putInt(index)
+                        putInt(count)
+                        putInt(content.data.size)
+                        put(hash)
+                        putInt(length)
+                        put(content.data, offset, length)
+                    }
+                    .array()
+            )
         }
     }
 
