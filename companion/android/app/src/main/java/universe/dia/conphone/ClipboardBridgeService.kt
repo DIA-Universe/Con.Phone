@@ -48,6 +48,7 @@ class ClipboardBridgeService : Service() {
         const val ACTION_SEND_SHARED_TEXT = "universe.dia.conphone.SEND_SHARED_TEXT"
         const val ACTION_SEND_SHARED_IMAGE = "universe.dia.conphone.SEND_SHARED_IMAGE"
         const val ACTION_DRAIN_SHARED = "universe.dia.conphone.DRAIN_SHARED"
+        const val ACTION_RETRY_P2P = "universe.dia.conphone.RETRY_P2P"
         const val ACTION_STOP = "universe.dia.conphone.STOP"
 
         const val EXTRA_SHARED_TEXT = "shared_text"
@@ -144,6 +145,7 @@ class ClipboardBridgeService : Service() {
                 intent?.getStringExtra(EXTRA_SHARED_IMAGE_PATH),
                 intent?.getStringExtra(EXTRA_SHARED_IMAGE_MIME))
             ACTION_DRAIN_SHARED -> drainPersistedShares()
+            ACTION_RETRY_P2P -> retryP2PNow()
             else -> beginScan()
         }
         return START_STICKY
@@ -682,6 +684,37 @@ class ClipboardBridgeService : Service() {
             runCatching { socket.close() }
             throw error
         }
+    }
+
+    private fun retryP2PNow() {
+        if (!activeTarget) {
+            showStatus("현재 활성 휴대폰 대상이 아니라 P2P 연결을 기다립니다.")
+            scheduleCapabilitiesRead()
+            return
+        }
+
+        if (p2p?.ready == true) {
+            showStatus("P2P 고속 채널이 이미 연결되어 있습니다.")
+            flushPendingContent()
+            return
+        }
+
+        val currentConfig = directConfig
+        if (currentConfig != null) {
+            requestDirectNetwork()
+            return
+        }
+
+        if (checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT) ==
+            PackageManager.PERMISSION_GRANTED) {
+            directLinkCharacteristic?.let {
+                gatt?.readCharacteristic(it)
+                return
+            }
+        }
+
+        showStatus("P2P 설정을 다시 가져오기 위해 Bluetooth 연결을 확인합니다.")
+        beginScan()
     }
 
     private fun requestDirectNetwork() {
