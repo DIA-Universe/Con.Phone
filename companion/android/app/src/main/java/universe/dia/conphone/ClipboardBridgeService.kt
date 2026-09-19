@@ -701,7 +701,18 @@ class ClipboardBridgeService : Service() {
     private fun completePersistedShare(id: String?) {
         if (id == null) return
 
-        runCatching { sharedStore.clear(id) }
+        val cleared = runCatching {
+            sharedStore.clear(id)
+        }.onFailure {
+            showStatus("Android 공유 저장소 완료 처리 실패: ${it.message}")
+        }.isSuccess
+
+        if (!cleared) {
+            // Keep the id marked as loaded so the same persistent item cannot
+            // immediately be re-sent and duplicated.
+            return
+        }
+
         synchronized(pendingLock) {
             loadedPersistentShareIds.remove(id)
         }
@@ -1072,7 +1083,7 @@ class ClipboardBridgeService : Service() {
 
         if (expiredPersistentId != null) {
             showStatus(
-                "Clipboard 전송 대기 항목이 만료됐지만 Android 공유 저장소에는 보존했습니다.")
+                "Clipboard 전송 대기 항목이 만료됐지만 Android 공유 저장소에는 보존했습니다. 다음 연결 시 다시 시도합니다.")
         } else {
             showStatus("Clipboard 전송 대기 항목 1개가 만료됐습니다.")
         }
