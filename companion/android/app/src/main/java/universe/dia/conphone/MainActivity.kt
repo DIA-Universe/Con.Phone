@@ -114,7 +114,8 @@ class MainActivity : Activity() {
         val action = source?.action ?: return
         if (action != ClipboardBridgeService.ACTION_SEND &&
             action != ClipboardBridgeService.ACTION_SEND_SHARED_TEXT &&
-            action != ClipboardBridgeService.ACTION_SEND_SHARED_IMAGE)
+            action != ClipboardBridgeService.ACTION_SEND_SHARED_IMAGE &&
+            action != ClipboardBridgeService.ACTION_DRAIN_SHARED)
             return
 
         pendingServiceIntent =
