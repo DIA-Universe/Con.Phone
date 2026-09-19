@@ -83,7 +83,16 @@ using (var cts = new CancellationTokenSource(40))
     Check("empty queue cancellation", cancelled);
 }
 box.TryAdd(new(1, new PointerPacket(0, 32767)));
-Check("oversized coalescing fails safe", !box.TryAdd(new(1, new PointerPacket(0, 1))));
+Check(
+    "extreme pointer delta starts a second queue item instead of failing",
+    box.TryAdd(new(1, new PointerPacket(0, 1))) &&
+    box.Count == 2);
+Check(
+    "extreme pointer first segment preserved",
+    (await box.TakeAsync(default)).Packet == new PointerPacket(0, 32767));
+Check(
+    "extreme pointer overflow segment preserved",
+    (await box.TakeAsync(default)).Packet == new PointerPacket(0, 1));
 // Parse HID short items independently and calculate input/output bit counts per report ID.
 var map = Hid.ReportMap;
 int reportId = 0, reportSize = 0, reportCount = 0, depth = 0;
