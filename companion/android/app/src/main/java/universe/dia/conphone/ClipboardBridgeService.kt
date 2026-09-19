@@ -898,6 +898,12 @@ class ClipboardBridgeService : Service() {
         }
     }
 
+    private fun pendingSummary(): String =
+        synchronized(pendingLock) {
+            if (pendingQueue.isEmpty()) ""
+            else " · 대기 ${pendingQueue.size}개 / ${pendingBytes / 1024} KiB"
+        }
+
     private fun enqueueBle(content: ClipboardContent) {
         val g = gatt
         val rxLocal = rx
@@ -1026,7 +1032,7 @@ class ClipboardBridgeService : Service() {
         val notification = Notification.Builder(this, CHANNEL)
             .setSmallIcon(android.R.drawable.stat_sys_data_bluetooth)
             .setContentTitle("Con.Phone Companion")
-            .setContentText(text)
+            .setContentText(text + pendingSummary())
             .setOngoing(true)
             .build()
         startForeground(NOTIFICATION_ID, notification)
