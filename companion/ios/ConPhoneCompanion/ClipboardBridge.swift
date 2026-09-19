@@ -58,6 +58,8 @@ final class ClipboardBridge: NSObject, ObservableObject {
     private var pendingContent: ClipboardContent?
     private var pendingSharedPayloadId: UUID?
     private var pendingGeneration = 0
+    private var lastAppliedHash: Data?
+    private var lastAppliedAt: Date?
 
     func start() {
         _ = central
@@ -535,16 +537,24 @@ final class ClipboardBridge: NSObject, ObservableObject {
 
     private func receiveP2P(_ frame: Data) -> Data? {
         do {
-            let chunk = try ClipboardProtocol.decode(frame)
-            guard let content = try p2pWireReassembler.add(chunk) else {
+            let chunk =
+                try ClipboardProtocol.decode(frame)
+
+            guard let content =
+                    try p2pWireReassembler.add(chunk) else {
                 return nil
             }
 
-            DispatchQueue.main.async { [weak self] in
-                self?.apply(content)
+            guard applySynchronously(content) else {
+                DispatchQueue.main.async { [weak self] in
+                    self?.status =
+                        "P2P Clipboard 적용 실패 · ACK를 보내지 않아 상대 재시도를 유도합니다."
+                }
+                return nil
             }
 
-            return ClipboardProtocol.encodeAck(chunk.transferId)
+            return ClipboardProtocol.encodeAck(
+                chunk.transferId)
         } catch {
             DispatchQueue.main.async { [weak self] in
                 self?.status =
@@ -705,8 +715,12 @@ final class ClipboardBridge: NSObject, ObservableObject {
                 return
             }
 
-            apply(content)
-            try enqueueBleAck(chunk.transferId)
+            if applySynchronously(content) {
+                try enqueueBleAck(chunk.transferId)
+            } else {
+                status =
+                    "BLE Clipboard 적용 실패 · ACK를 보내지 않아 PC 재시도를 유도합니다."
+            }
         } catch {
             status =
                 "Clipboard BLE 수신 거부: \(error.localizedDescription)"
@@ -786,27 +800,71 @@ final class ClipboardBridge: NSObject, ObservableObject {
         try ensureSafeImageDimensions(width: width, height: height)
     }
 
-    private func apply(_ content: ClipboardContent) {
+    private func applySynchronously(
+        _ content: ClipboardContent
+    ) -> Bool {
+        if Thread.isMainThread {
+            return apply(content)
+        }
+
+        var applied = false
+        DispatchQueue.main.sync {
+            applied = apply(content)
+        }
+        return applied
+    }
+
+    @discardableResult
+    private func apply(
+        _ content: ClipboardContent
+    ) -> Bool {
+        let now = Date()
+
+        if let previousHash = lastAppliedHash,
+           let previousAt = lastAppliedAt,
+           previousHash == content.hash,
+           now.timeIntervalSince(previousAt) <= 120 {
+            return true
+        }
+
         do {
             switch content.kind {
             case .text:
-                guard let text = String(data: content.data, encoding: .utf8) else {
+                guard let text =
+                        String(
+                            data: content.data,
+                            encoding: .utf8) else {
                     throw ClipboardProtocol.ProtocolError.invalidContent
                 }
+
                 UIPasteboard.general.string = text
-                status = "PC 텍스트를 iPhone 클립보드에 받았습니다."
+                status =
+                    "PC 텍스트를 iPhone 클립보드에 받았습니다."
+
             case .png, .jpeg, .webp:
-                try ensureSafeImageDimensions(content.data)
-                guard let image = UIImage(data: content.data) else {
+                try ensureSafeImageDimensions(
+                    content.data)
+
+                guard let image =
+                        UIImage(data: content.data) else {
                     throw ClipboardProtocol.ProtocolError.invalidContent
                 }
+
                 UIPasteboard.general.image = image
-                status = "PC 이미지를 iPhone 클립보드에 받았습니다."
+                status =
+                    "PC 이미지를 iPhone 클립보드에 받았습니다."
             }
+
+            lastAppliedHash = content.hash
+            lastAppliedAt = now
+            return true
         } catch {
-            status = "iOS 클립보드 적용 실패: \(error.localizedDescription)"
+            status =
+                "iOS 클립보드 적용 실패: \(error.localizedDescription)"
+            return false
         }
     }
+
 }
 
 extension ClipboardBridge: CBCentralManagerDelegate {
