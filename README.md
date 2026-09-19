@@ -56,6 +56,7 @@
 - 전송 우선순위: Direct Wi-Fi/P2P 암호화 채널 → BLE fallback.
 - 같은 Wi-Fi 탐색/UDP broadcast에 의존하지 않습니다.
 - 파일/폴더는 전송하지 않습니다.
+- 기본 F7은 다음 등록 기기로 전환하며, 휴대폰 입력 중에도 이전 기기 release 후 다음 활성 기기로 직접 handoff합니다.
 
 Android 프로젝트는 companion/android, iOS 프로젝트 소스는 companion/ios에 있습니다. 세부 프로토콜·보안·제약은 docs/CLIPBOARD_SYNC.md를 참고하세요.
 
