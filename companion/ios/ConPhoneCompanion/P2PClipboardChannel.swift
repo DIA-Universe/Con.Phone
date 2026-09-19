@@ -12,6 +12,7 @@ final class P2PClipboardChannel {
     private let onFrame: (Data) -> Void
     private let onStatus: (String) -> Void
     private let onReady: () -> Void
+    private let onClosed: () -> Void
 
     private var pendingWrites: [Data] = []
     private var writing = false
@@ -19,6 +20,7 @@ final class P2PClipboardChannel {
     private var sendSequence: UInt64 = 0
     private var receiveSequence: UInt64 = 0
     private(set) var ready = false
+    private var closedNotified = false
 
     init(
         host: String,
@@ -27,7 +29,8 @@ final class P2PClipboardChannel {
         secret: Data,
         onFrame: @escaping (Data) -> Void,
         onStatus: @escaping (String) -> Void,
-        onReady: @escaping () -> Void = {}
+        onReady: @escaping () -> Void = {},
+        onClosed: @escaping () -> Void = {}
     ) {
         self.deviceHash = deviceHash
         self.secret = secret
@@ -35,6 +38,7 @@ final class P2PClipboardChannel {
         self.onFrame = onFrame
         self.onStatus = onStatus
         self.onReady = onReady
+        self.onClosed = onClosed
 
         let endpointPort = NWEndpoint.Port(rawValue: port)!
         self.connection = NWConnection(
@@ -66,9 +70,11 @@ final class P2PClipboardChannel {
                 self.connectionGeneration += 1
                 self.ready = false
                 self.onStatus("P2P TCP 연결 실패: \(error.localizedDescription)")
+                self.notifyClosedOnce()
             case .cancelled:
                 self.connectionGeneration += 1
                 self.ready = false
+                self.notifyClosedOnce()
             default:
                 break
             }
@@ -94,6 +100,14 @@ final class P2PClipboardChannel {
             self.pendingWrites.removeAll()
             self.connection.cancel()
         }
+    }
+
+    private func notifyClosedOnce() {
+        guard !closedNotified else { return }
+        closedNotified = true
+        sessionKey = nil
+        pendingWrites.removeAll()
+        onClosed()
     }
 
     private func handshake() {
