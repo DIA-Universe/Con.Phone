@@ -230,7 +230,9 @@ class AndroidSharedPayloadStore(private val context: Context) {
 
     private fun saveLocked(queue: List<Meta>) {
         if (queue.isEmpty()) {
-            prefs.edit().remove(QUEUE_KEY).apply()
+            check(prefs.edit().remove(QUEUE_KEY).commit()) {
+                "Android 공유 대기열 metadata 삭제에 실패했습니다."
+            }
             return
         }
 
@@ -246,7 +248,13 @@ class AndroidSharedPayloadStore(private val context: Context) {
                     .put("size", meta.size)
             )
         }
-        prefs.edit().putString(QUEUE_KEY, array.toString()).apply()
+        check(
+            prefs.edit()
+                .putString(QUEUE_KEY, array.toString())
+                .commit()
+        ) {
+            "Android 공유 대기열 metadata 저장에 실패했습니다."
+        }
     }
 
     private fun safeFile(fileName: String): File {
