@@ -18,6 +18,7 @@ public sealed class P2PClipboardServer : IAsyncDisposable
     private readonly Func<string?> _approvedDeviceId;
     private readonly Func<bool> _enabled;
     private readonly CancellationTokenSource _lifetime = new();
+    private readonly SemaphoreSlim _connectionSlots = new(4, 4);
     private readonly object _clientGate = new();
     private ClientConnection? _client;
     private TcpListener? _listener;
@@ -67,7 +68,25 @@ public sealed class P2PClipboardServer : IAsyncDisposable
             try
             {
                 var tcp = await _listener!.AcceptTcpClientAsync(token).ConfigureAwait(false);
-                _ = Task.Run(() => HandleClientAsync(tcp, token), token);
+
+                if (!await _connectionSlots.WaitAsync(0, token).ConfigureAwait(false))
+                {
+                    tcp.Dispose();
+                    Status?.Invoke("Clipboard P2P 연결 요청이 너무 많아 새 연결을 거부했습니다.");
+                    continue;
+                }
+
+                _ = Task.Run(async () =>
+                {
+                    try
+                    {
+                        await HandleClientAsync(tcp, token).ConfigureAwait(false);
+                    }
+                    finally
+                    {
+                        _connectionSlots.Release();
+                    }
+                });
             }
             catch (OperationCanceledException) when (token.IsCancellationRequested)
             {
@@ -93,44 +112,86 @@ public sealed class P2PClipboardServer : IAsyncDisposable
 
             var approvedHash = SHA256.HashData(Encoding.UTF8.GetBytes(approved));
             var secret = ClipboardPairingSecretStore.GetOrCreate(approved);
+            byte[]? sessionKey = null;
 
-            var hello = new byte[8 + 32 + 16 + 32];
-            if (!await ReadExactAsync(stream, hello, token).ConfigureAwait(false)) return;
-            if (!hello.AsSpan(0, 8).SequenceEqual(Hello)) return;
+            try
+            {
+                using var handshakeCts =
+                    CancellationTokenSource.CreateLinkedTokenSource(token);
+                handshakeCts.CancelAfter(TimeSpan.FromSeconds(5));
+                var handshakeToken = handshakeCts.Token;
 
-            var deviceHash = hello.AsSpan(8, 32);
-            var clientNonce = hello.AsSpan(40, 16).ToArray();
-            var clientMac = hello.AsSpan(56, 32);
+                var hello = new byte[8 + 32 + 16 + 32];
+                if (!await ReadExactAsync(stream, hello, handshakeToken).ConfigureAwait(false))
+                    return;
+                if (!hello.AsSpan(0, 8).SequenceEqual(Hello))
+                    return;
 
-            if (!CryptographicOperations.FixedTimeEquals(deviceHash, approvedHash))
+                var deviceHash = hello.AsSpan(8, 32);
+                var clientNonce = hello.AsSpan(40, 16).ToArray();
+                var clientMac = hello.AsSpan(56, 32);
+
+                if (!CryptographicOperations.FixedTimeEquals(deviceHash, approvedHash))
+                    return;
+
+                var clientSigned = new byte[8 + 32 + 16];
+                Hello.CopyTo(clientSigned, 0);
+                approvedHash.CopyTo(clientSigned, 8);
+                clientNonce.CopyTo(clientSigned, 40);
+                var expectedMac = HMACSHA256.HashData(secret, clientSigned);
+
+                try
+                {
+                    if (!CryptographicOperations.FixedTimeEquals(clientMac, expectedMac))
+                        return;
+                }
+                finally
+                {
+                    CryptographicOperations.ZeroMemory(expectedMac);
+                    CryptographicOperations.ZeroMemory(clientSigned);
+                }
+
+                var serverNonce = RandomNumberGenerator.GetBytes(16);
+                var readySigned = new byte[8 + 16 + 16];
+                Ready.CopyTo(readySigned, 0);
+                clientNonce.CopyTo(readySigned, 8);
+                serverNonce.CopyTo(readySigned, 24);
+                var serverMac = HMACSHA256.HashData(secret, readySigned);
+
+                try
+                {
+                    var ready = new byte[8 + 16 + 32];
+                    Ready.CopyTo(ready, 0);
+                    serverNonce.CopyTo(ready, 8);
+                    serverMac.CopyTo(ready, 24);
+                    await stream.WriteAsync(ready, handshakeToken).ConfigureAwait(false);
+
+                    sessionKey = P2PSecurity.DeriveSessionKey(
+                        secret,
+                        approvedHash,
+                        clientNonce,
+                        serverNonce);
+                }
+                finally
+                {
+                    CryptographicOperations.ZeroMemory(serverMac);
+                    CryptographicOperations.ZeroMemory(readySigned);
+                    CryptographicOperations.ZeroMemory(clientNonce);
+                    CryptographicOperations.ZeroMemory(serverNonce);
+                }
+            }
+            catch (OperationCanceledException) when (!token.IsCancellationRequested)
+            {
+                Status?.Invoke("Clipboard P2P 인증 시간이 초과되어 연결을 종료했습니다.");
                 return;
+            }
+            finally
+            {
+                CryptographicOperations.ZeroMemory(secret);
+            }
 
-            var clientSigned = new byte[8 + 32 + 16];
-            Hello.CopyTo(clientSigned, 0);
-            approvedHash.CopyTo(clientSigned, 8);
-            clientNonce.CopyTo(clientSigned, 40);
-            var expectedMac = HMACSHA256.HashData(secret, clientSigned);
-            if (!CryptographicOperations.FixedTimeEquals(clientMac, expectedMac))
+            if (sessionKey is null)
                 return;
-
-            var serverNonce = RandomNumberGenerator.GetBytes(16);
-            var readySigned = new byte[8 + 16 + 16];
-            Ready.CopyTo(readySigned, 0);
-            clientNonce.CopyTo(readySigned, 8);
-            serverNonce.CopyTo(readySigned, 24);
-            var serverMac = HMACSHA256.HashData(secret, readySigned);
-
-            var ready = new byte[8 + 16 + 32];
-            Ready.CopyTo(ready, 0);
-            serverNonce.CopyTo(ready, 8);
-            serverMac.CopyTo(ready, 24);
-            await stream.WriteAsync(ready, token).ConfigureAwait(false);
-
-            var sessionKey = P2PSecurity.DeriveSessionKey(
-                secret,
-                approvedHash,
-                clientNonce,
-                serverNonce);
 
             var connection = new ClientConnection(
                 approved,
@@ -140,7 +201,6 @@ public sealed class P2PClipboardServer : IAsyncDisposable
                 approvedHash);
 
             CryptographicOperations.ZeroMemory(sessionKey);
-            CryptographicOperations.ZeroMemory(secret);
             ClientConnection? replaced;
             lock (_clientGate)
             {
@@ -363,6 +423,7 @@ public sealed class P2PClipboardServer : IAsyncDisposable
             catch (OperationCanceledException) { }
         }
 
+        _connectionSlots.Dispose();
         _lifetime.Dispose();
     }
 }
