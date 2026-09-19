@@ -12,6 +12,7 @@ public sealed class ClipboardSyncCoordinator : IAsyncDisposable
     private readonly BleClipboardService _ble;
     private readonly P2PClipboardServer _p2p;
     private readonly SemaphoreSlim _send = new(1, 1);
+    private long _targetGeneration;
     private bool _started;
 
     public event Action<ClipboardContent>? Received;
@@ -81,6 +82,7 @@ public sealed class ClipboardSyncCoordinator : IAsyncDisposable
 
     public void TargetChanged()
     {
+        Interlocked.Increment(ref _targetGeneration);
         _p2p.Deactivate();
         _direct.Stop();
         Status?.Invoke("활성 휴대폰 변경 · P2P 채널을 새 대상으로 재설정합니다.");
@@ -131,9 +133,18 @@ public sealed class ClipboardSyncCoordinator : IAsyncDisposable
             return false;
         }
 
+        var generation = Interlocked.Read(ref _targetGeneration);
+
+        bool TargetStillActive() =>
+            generation == Interlocked.Read(ref _targetGeneration) &&
+            string.Equals(_approvedDeviceId(), id, StringComparison.Ordinal);
+
         await _send.WaitAsync(token).ConfigureAwait(false);
         try
         {
+            if (!TargetStillActive())
+                return false;
+
             if (_p2p.HasClient(id))
             {
                 try
@@ -174,8 +185,14 @@ public sealed class ClipboardSyncCoordinator : IAsyncDisposable
                 while (!_p2p.HasClient(id) && DateTimeOffset.UtcNow < deadline)
                 {
                     token.ThrowIfCancellationRequested();
+                    if (!TargetStillActive())
+                        return false;
+
                     await Task.Delay(125, token).ConfigureAwait(false);
                 }
+
+                if (!TargetStillActive())
+                    return false;
 
                 if (_p2p.HasClient(id))
                 {
@@ -191,6 +208,9 @@ public sealed class ClipboardSyncCoordinator : IAsyncDisposable
                     }
                 }
             }
+
+            if (!TargetStillActive())
+                return false;
 
             if (bleAllowed && _ble.HasSubscriber(id))
             {
