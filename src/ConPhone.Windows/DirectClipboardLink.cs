@@ -85,6 +85,19 @@ public static class DirectLinkCredentialStore
         return new DirectLinkConfig(ssid, passphrase);
     }
 
+    public static void Invalidate()
+    {
+        var vault = new PasswordVault();
+        try
+        {
+            foreach (var old in vault.FindAllByResource(Resource).ToArray())
+                vault.Remove(old);
+        }
+        catch
+        {
+        }
+    }
+
     private static string BuildSsid(string? linkName)
     {
         var raw = string.IsNullOrWhiteSpace(linkName) ? "ConPhone" : linkName.Trim();
@@ -182,6 +195,14 @@ public sealed class DirectClipboardLink : IDisposable
         catch
         {
         }
+    }
+
+    public void RotateCredentials()
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        Stop();
+        DirectLinkCredentialStore.Invalidate();
+        Status?.Invoke("활성 휴대폰 변경 · P2P Wi-Fi 비밀번호를 회전했습니다.");
     }
 
     private string? FindDirectIpv4()
