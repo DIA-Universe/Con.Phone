@@ -50,6 +50,9 @@ class ClipboardBridgeService : Service() {
 
         private const val CHANNEL = "conphone_bridge"
         private const val NOTIFICATION_ID = 7310
+        private const val MAX_PENDING_ITEMS = 8
+        private const val MAX_PENDING_BYTES = 40L * 1024 * 1024
+        private const val PENDING_TTL_MS = 60_000L
 
         private val SERVICE_UUID = UUID.fromString("67A7F001-7E5B-4A2E-9B8B-1C9A5B6D1001")
         private val TX_UUID = UUID.fromString("67A7F002-7E5B-4A2E-9B8B-1C9A5B6D1001")
@@ -98,11 +101,6 @@ class ClipboardBridgeService : Service() {
         val expiresAt: Long
     )
 
-    private companion object PendingPolicy {
-        const val MAX_PENDING_ITEMS = 8
-        const val MAX_PENDING_BYTES = 40L * 1024 * 1024
-        const val PENDING_TTL_MS = 60_000L
-    }
 
     override fun onCreate() {
         super.onCreate()
