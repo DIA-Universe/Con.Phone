@@ -106,6 +106,14 @@ internal static class Program
             captureText: true,
             captureImages: false);
 
+        var syncEvents = 0;
+        history.ContentCaptured += content =>
+        {
+            if (content.Kind == ConPhone.Core.ClipboardContentKind.TextUtf8 &&
+                string.Equals(content.GetText(), marker, StringComparison.Ordinal))
+                Interlocked.Increment(ref syncEvents);
+        };
+
         history.CaptureNow();
 
         var deadline = DateTime.UtcNow.AddSeconds(4);
@@ -116,11 +124,35 @@ internal static class Program
             Application.DoEvents();
             Thread.Sleep(40);
             entry = history.Entries.FirstOrDefault(x => x.Text == marker);
-            if (entry is not null) break;
+            if (entry is not null && Volatile.Read(ref syncEvents) >= 1) break;
         }
 
         if (entry is null)
             throw new InvalidOperationException("Clipboard history did not capture a real Windows text clipboard item.");
+
+        if (Volatile.Read(ref syncEvents) < 1)
+            throw new InvalidOperationException("Clipboard sync event was not emitted for the first copy.");
+
+        // Re-copy identical text. History should remain deduplicated, but sync intent
+        // must be emitted again so the same value can be sent to a phone later.
+        Clipboard.SetText(marker, TextDataFormat.UnicodeText);
+        history.CaptureNow();
+
+        deadline = DateTime.UtcNow.AddSeconds(4);
+        while (DateTime.UtcNow < deadline &&
+               Volatile.Read(ref syncEvents) < 2)
+        {
+            Application.DoEvents();
+            Thread.Sleep(40);
+        }
+
+        if (Volatile.Read(ref syncEvents) < 2)
+            throw new InvalidOperationException(
+                "Repeated identical clipboard copy did not emit a new sync event.");
+
+        if (history.Entries.Count(x => x.Text == marker) != 1)
+            throw new InvalidOperationException(
+                "Repeated identical clipboard copy duplicated the history row.");
 
         Clipboard.SetText("temporary replacement", TextDataFormat.UnicodeText);
         if (!history.Restore(entry.Id))
