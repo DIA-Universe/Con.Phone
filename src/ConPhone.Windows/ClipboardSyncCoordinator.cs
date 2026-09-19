@@ -11,6 +11,7 @@ public sealed class ClipboardSyncCoordinator : IAsyncDisposable
     private readonly DirectClipboardLink _direct;
     private readonly BleClipboardService _ble;
     private readonly P2PClipboardServer _p2p;
+    private readonly CancellationTokenSource _shutdown = new();
     private readonly SemaphoreSlim _lifecycle = new(1, 1);
     private readonly SemaphoreSlim _send = new(1, 1);
     private Func<string, ClipboardContent, Task<bool>>? _receiver;
@@ -195,8 +196,13 @@ public sealed class ClipboardSyncCoordinator : IAsyncDisposable
         int bleImageLimitBytes,
         CancellationToken token)
     {
-        if (!_enabled())
+        if (!_enabled() || _disposed)
             return false;
+
+        using var linked = CancellationTokenSource.CreateLinkedTokenSource(
+            token,
+            _shutdown.Token);
+        var sendToken = linked.Token;
 
         var id = _approvedDeviceId();
         if (id is null)
@@ -211,17 +217,17 @@ public sealed class ClipboardSyncCoordinator : IAsyncDisposable
             generation == Interlocked.Read(ref _targetGeneration) &&
             string.Equals(_approvedDeviceId(), id, StringComparison.Ordinal);
 
-        await _send.WaitAsync(token).ConfigureAwait(false);
+        await _send.WaitAsync(sendToken).ConfigureAwait(false);
         try
         {
-            if (!TargetStillActive())
+            if (_disposed || !TargetStillActive())
                 return false;
 
             if (_p2p.HasClient(id))
             {
                 try
                 {
-                    await _p2p.SendAsync(id, content, token).ConfigureAwait(false);
+                    await _p2p.SendAsync(id, content, sendToken).ConfigureAwait(false);
                     Status?.Invoke($"Clipboard 전송 완료 · P2P · {Describe(content)}");
                     return true;
                 }
@@ -258,11 +264,11 @@ public sealed class ClipboardSyncCoordinator : IAsyncDisposable
 
                 while (!_p2p.HasClient(id) && DateTimeOffset.UtcNow < deadline)
                 {
-                    token.ThrowIfCancellationRequested();
+                    sendToken.ThrowIfCancellationRequested();
                     if (!TargetStillActive())
                         return false;
 
-                    await Task.Delay(125, token).ConfigureAwait(false);
+                    await Task.Delay(125, sendToken).ConfigureAwait(false);
                 }
 
                 if (!TargetStillActive())
@@ -272,7 +278,7 @@ public sealed class ClipboardSyncCoordinator : IAsyncDisposable
                 {
                     try
                     {
-                        await _p2p.SendAsync(id, content, token).ConfigureAwait(false);
+                        await _p2p.SendAsync(id, content, sendToken).ConfigureAwait(false);
                         Status?.Invoke($"Clipboard 전송 완료 · P2P · {Describe(content)}");
                         return true;
                     }
@@ -379,20 +385,38 @@ public sealed class ClipboardSyncCoordinator : IAsyncDisposable
                 return;
 
             _disposed = true;
+            _shutdown.Cancel();
+
             _ble.CancelPendingSends(
                 "Clipboard coordinator가 종료되었습니다.");
             _ble.StopAdvertising();
             _direct.Stop();
-            await _p2p.DisposeAsync()
+            await _p2p.StopListeningAsync()
                 .ConfigureAwait(false);
-            _ble.Dispose();
-            _direct.Dispose();
-            _send.Dispose();
+
+            // Wait until the current clipboard send observes shutdown and unwinds.
+            await _send.WaitAsync()
+                .ConfigureAwait(false);
+            try
+            {
+                await _p2p.DisposeAsync()
+                    .ConfigureAwait(false);
+                _ble.Dispose();
+                _direct.Dispose();
+            }
+            finally
+            {
+                _send.Release();
+            }
         }
         finally
         {
             _lifecycle.Release();
-            _lifecycle.Dispose();
+            _shutdown.Dispose();
+
+            // SemaphoreSlim is intentionally not disposed here. A caller that entered
+            // immediately before shutdown may still be unwinding from WaitAsync/Release.
+            // Both semaphores are private managed objects and are collected with this coordinator.
         }
     }
 }
