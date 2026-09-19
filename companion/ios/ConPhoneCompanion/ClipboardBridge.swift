@@ -467,7 +467,13 @@ final class ClipboardBridge: NSObject, ObservableObject {
 
                     self.p2p = nil
                     self.p2pGeneration = nil
-                    self.status = "P2P 채널 종료 · BLE fallback 유지"
+                    self.status = "P2P 채널 종료 · BLE fallback 및 재전송 확인"
+                    self.flushPendingContent()
+
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [weak self] in
+                        guard let self, self.activeTarget else { return }
+                        self.sendPendingShareIfPresent()
+                    }
                 }
             }
         )
