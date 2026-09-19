@@ -264,6 +264,7 @@ public sealed class MainForm : Form
                 () => _ble.ApprovedId,
                 id => _ble.IsTrustedDevice(id),
                 () => _settings.ClipboardSyncEnabled,
+                () => _settings.ClipboardBleImageLimitKb * 1024,
                 () => _input.IsRemote,
                 IsPointerRecentlyActive,
                 () => _settings.P2PLinkName);
