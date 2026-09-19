@@ -254,6 +254,14 @@ public sealed class ClipboardHistoryService : IDisposable
 
     private void AddText(string text, bool publish)
     {
+        var utf8Bytes = Encoding.UTF8.GetByteCount(text);
+        if (utf8Bytes > ClipboardContent.MaxTextBytes)
+        {
+            Status?.Invoke(
+                $"텍스트 Clipboard가 동기화 한도(1 MiB)를 초과해 기록/전송하지 않았습니다: {utf8Bytes:N0} bytes");
+            return;
+        }
+
         var hash = TextCaptureHash(text);
 
         var preview = text
@@ -301,7 +309,18 @@ public sealed class ClipboardHistoryService : IDisposable
 
     private void AddImage(Image image, bool publish)
     {
+        EnsureSafeImageDimensions(
+            image.Width,
+            image.Height);
+
         var bytes = EncodePng(image);
+        if (bytes.Length > ClipboardContent.MaxImageBytes)
+        {
+            Status?.Invoke(
+                $"이미지 Clipboard가 동기화 한도(32 MiB)를 초과해 기록/전송하지 않았습니다: {bytes.Length / 1024.0 / 1024.0:N1} MiB");
+            return;
+        }
+
         var hash = ImageCaptureHash(bytes);
 
         var historyChanged = false;
@@ -367,7 +386,14 @@ public sealed class ClipboardHistoryService : IDisposable
         if (entry.Kind == ClipboardEntryKind.Image &&
             TryResolveImage(entry.ImageFileName, out var path))
         {
-            content = ClipboardContent.FromImage(ClipboardContentKind.Png, File.ReadAllBytes(path));
+            var file = new FileInfo(path);
+            if (!file.Exists ||
+                file.Length is <= 0 or > ClipboardContent.MaxImageBytes)
+                return false;
+
+            content = ClipboardContent.FromImage(
+                ClipboardContentKind.Png,
+                File.ReadAllBytes(path));
             return true;
         }
 
@@ -499,7 +525,16 @@ public sealed class ClipboardHistoryService : IDisposable
             if (entry.Kind == ClipboardEntryKind.Image &&
                 TryResolveImage(entry.ImageFileName, out var path))
             {
+                var file = new FileInfo(path);
+                if (!file.Exists ||
+                    file.Length is <= 0 or > ClipboardContent.MaxImageBytes)
+                    throw new InvalidDataException(
+                        "저장된 이미지 파일 크기가 안전 한도를 벗어났습니다.");
+
                 using var source = Image.FromFile(path);
+                EnsureSafeImageDimensions(
+                    source.Width,
+                    source.Height);
                 using var copy = new Bitmap(source);
                 Clipboard.SetImage(copy);
                 ArmSelfClipboardSequence();
