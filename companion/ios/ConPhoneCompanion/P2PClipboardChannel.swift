@@ -9,19 +9,22 @@ final class P2PClipboardChannel {
     private let deviceHash: Data
     private let aad: Data
     private let queue = DispatchQueue(label: "ConPhone.P2PClipboard")
-    private let onFrame: (Data) -> Void
+    private let onFrame: (Data) -> Data?
     private let onStatus: (String) -> Void
     private let onReady: () -> Void
     private let onClosed: () -> Void
 
     private struct PendingTransfer {
         let cursor: ClipboardProtocol.FrameCursor
+        let transferId: Data
         let completion: () -> Void
         let failure: (Error) -> Void
     }
 
     private var pendingTransfers: [PendingTransfer] = []
     private var activeTransfer: PendingTransfer?
+    private var awaitingAcks: [Data: PendingTransfer] = [:]
+    private var pendingControlFrames: [Data] = []
     private var writing = false
     private var sessionKey: Data?
     private var sendSequence: UInt64 = 0
@@ -35,7 +38,7 @@ final class P2PClipboardChannel {
         port: UInt16,
         deviceHash: Data,
         secret: Data,
-        onFrame: @escaping (Data) -> Void,
+        onFrame: @escaping (Data) -> Data?,
         onStatus: @escaping (String) -> Void,
         onReady: @escaping () -> Void = {},
         onClosed: @escaping () -> Void = {}
@@ -109,7 +112,12 @@ final class P2PClipboardChannel {
                 return
             }
 
-            guard self.pendingTransfers.count < 8 else {
+            let inFlight =
+                self.pendingTransfers.count +
+                self.awaitingAcks.count +
+                (self.activeTransfer == nil ? 0 : 1)
+
+            guard inFlight < 8 else {
                 self.onStatus("P2P 전송 대기열이 가득 찼습니다.")
                 failure(ChannelError.busy)
                 return
@@ -118,6 +126,7 @@ final class P2PClipboardChannel {
             self.pendingTransfers.append(
                 PendingTransfer(
                     cursor: cursor,
+                    transferId: cursor.transferId,
                     completion: completion,
                     failure: failure))
             self.pumpWrites()
@@ -134,6 +143,8 @@ final class P2PClipboardChannel {
             self.sessionKey = nil
             self.pendingTransfers.removeAll()
             self.activeTransfer = nil
+            self.awaitingAcks.removeAll()
+            self.pendingControlFrames.removeAll()
             self.connection.cancel()
         }
     }
@@ -144,6 +155,8 @@ final class P2PClipboardChannel {
         sessionKey = nil
         pendingTransfers.removeAll()
         activeTransfer = nil
+        awaitingAcks.removeAll()
+        pendingControlFrames.removeAll()
         onClosed()
     }
 
@@ -153,9 +166,12 @@ final class P2PClipboardChannel {
             failed.append(activeTransfer)
         }
         failed.append(contentsOf: pendingTransfers)
+        failed.append(contentsOf: awaitingAcks.values)
 
         activeTransfer = nil
         pendingTransfers.removeAll()
+        awaitingAcks.removeAll()
+        pendingControlFrames.removeAll()
 
         for transfer in failed {
             transfer.failure(error)
@@ -239,6 +255,29 @@ final class P2PClipboardChannel {
     private func pumpWrites() {
         guard ready, !writing else { return }
 
+        if !pendingControlFrames.isEmpty {
+            let control = pendingControlFrames.removeFirst()
+            writing = true
+            sendEncrypted(control) { [weak self] error in
+                guard let self else { return }
+                self.queue.async {
+                    self.writing = false
+
+                    if let error {
+                        self.ready = false
+                        self.failAllTransfers(error)
+                        self.onStatus(
+                            "P2P ACK 전송 실패: \(error.localizedDescription)")
+                        self.connection.cancel()
+                        return
+                    }
+
+                    self.pumpWrites()
+                }
+            }
+            return
+        }
+
         if activeTransfer == nil {
             guard !pendingTransfers.isEmpty else { return }
             activeTransfer = pendingTransfers.removeFirst()
@@ -248,51 +287,81 @@ final class P2PClipboardChannel {
 
         guard let plaintext = transfer.cursor.next() else {
             activeTransfer = nil
-            onStatus("Clipboard 전송 완료 · P2P")
-            transfer.completion()
+            awaitingAcks[transfer.transferId] = transfer
+
+            let transferId = transfer.transferId
+            queue.asyncAfter(deadline: .now() + 45) { [weak self] in
+                guard let self,
+                      let timedOut = self.awaitingAcks.removeValue(
+                        forKey: transferId) else { return }
+
+                timedOut.failure(ChannelError.ackTimeout)
+                self.ready = false
+                self.onStatus(
+                    "P2P Clipboard ACK 시간이 초과되어 연결을 재설정합니다.")
+                self.connection.cancel()
+            }
+
             pumpWrites()
             return
         }
 
         writing = true
+        sendEncrypted(plaintext) { [weak self] error in
+            guard let self else { return }
+            self.queue.async {
+                self.writing = false
 
+                if let error {
+                    self.ready = false
+                    self.failAllTransfers(error)
+                    self.onStatus(
+                        "P2P Clipboard 전송 실패: \(error.localizedDescription)")
+                    self.connection.cancel()
+                    return
+                }
+
+                self.pumpWrites()
+            }
+        }
+    }
+
+    private func sendEncrypted(
+        _ plaintext: Data,
+        completion: @escaping (Error?) -> Void
+    ) {
         do {
             sendSequence = try nextSequence(sendSequence)
             var sequenceData = Data()
             sequenceData.appendUInt64LE(sendSequence)
 
-            guard let sessionKey else { throw ChannelError.sessionKey }
+            guard let sessionKey else {
+                throw ChannelError.sessionKey
+            }
+
             let sealed = try AES.GCM.seal(
                 plaintext,
                 using: SymmetricKey(data: sessionKey),
                 authenticating: aad + sequenceData
             )
+
             let nonce = Data(sealed.nonce)
-            let body = nonce + sequenceData + sealed.ciphertext + sealed.tag
+            let body =
+                nonce +
+                sequenceData +
+                sealed.ciphertext +
+                sealed.tag
+
             var prefix = Data()
             prefix.appendInt32LE(Int32(body.count))
-            let packet = prefix + body
 
-            connection.send(content: packet, completion: .contentProcessed { [weak self] error in
-                guard let self else { return }
-                self.queue.async {
-                    self.writing = false
-                    if let error {
-                        self.ready = false
-                        self.failAllTransfers(error)
-                        self.onStatus("P2P Clipboard 전송 실패: \(error.localizedDescription)")
-                        self.connection.cancel()
-                        return
-                    }
-
-                    self.pumpWrites()
-                }
-            })
+            connection.send(
+                content: prefix + body,
+                completion: .contentProcessed { error in
+                    completion(error)
+                })
         } catch {
-            writing = false
-            failAllTransfers(error)
-            onStatus("P2P Clipboard 암호화 실패: \(error.localizedDescription)")
-            connection.cancel()
+            completion(error)
         }
     }
 
@@ -347,7 +416,22 @@ final class P2PClipboardChannel {
                                 authenticating: self.aad + sequenceData
                             )
                             self.receiveSequence = sequence
-                            self.onFrame(plaintext)
+
+                            if let ackId = ClipboardProtocol.decodeAck(plaintext) {
+                                if let transfer =
+                                    self.awaitingAcks.removeValue(forKey: ackId) {
+                                    self.onStatus("Clipboard 전송 완료 · P2P ACK")
+                                    transfer.completion()
+                                }
+                                self.readEncryptedLoop()
+                                return
+                            }
+
+                            if let response = self.onFrame(plaintext) {
+                                self.pendingControlFrames.append(response)
+                                self.pumpWrites()
+                            }
+
                             self.readEncryptedLoop()
                         } catch {
                             self.ready = false
@@ -417,6 +501,7 @@ final class P2PClipboardChannel {
     }
 
     private enum ChannelError: Error {
+        case ackTimeout
         case busy
         case closed
         case sequence
