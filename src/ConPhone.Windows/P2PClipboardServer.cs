@@ -26,7 +26,7 @@ public sealed class P2PClipboardServer : IAsyncDisposable
     private TcpListener? _listener;
     private Task? _acceptLoop;
 
-    public event Action<string, ClipboardContent>? Received;
+    public Func<string, ClipboardContent, Task<bool>>? ReceiveContentAsync { get; set; }
     public event Action<string>? Status;
 
     private sealed record AckWaiter(
@@ -248,14 +248,41 @@ public sealed class P2PClipboardServer : IAsyncDisposable
                     var content = reassembler.Add(chunk);
                     if (content is not null)
                     {
-                        Received?.Invoke(approved, content);
+                        var receiver = ReceiveContentAsync;
+                        if (receiver is null)
+                        {
+                            Status?.Invoke(
+                                "Clipboard P2P 수신기가 준비되지 않아 ACK를 보류합니다.");
+                            continue;
+                        }
+
+                        var applied = await receiver(
+                                approved,
+                                content)
+                            .WaitAsync(
+                                TimeSpan.FromSeconds(8),
+                                token)
+                            .ConfigureAwait(false);
+
+                        if (!applied)
+                        {
+                            Status?.Invoke(
+                                "Clipboard P2P 내용을 Windows 클립보드에 적용하지 못해 ACK를 보내지 않습니다.");
+                            continue;
+                        }
+
                         await connection.WriteEncryptedAsync(
                             ClipboardAckCodec.Encode(chunk.TransferId),
                             token).ConfigureAwait(false);
                     }
                 }
             }
-            catch (Exception ex) when (ex is IOException or SocketException or CryptographicException or InvalidDataException)
+            catch (Exception ex) when (
+                ex is IOException or
+                SocketException or
+                CryptographicException or
+                InvalidDataException or
+                TimeoutException)
             {
                 Status?.Invoke($"Clipboard P2P 연결 종료: {ex.Message}");
             }
