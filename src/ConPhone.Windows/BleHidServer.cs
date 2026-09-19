@@ -42,11 +42,14 @@ public sealed class BleHidServer : IDisposable
     private readonly ConcurrentDictionary<string, IDisposable> _throughputRequests = new();
     private readonly SemaphoreSlim _send = new(1, 1);
     private readonly SemaphoreSlim _deviceGate = new(1, 1);
+    private readonly SemaphoreSlim _recoveryGate = new(1, 1);
 
     private volatile string? _approved;
     private volatile string _lastOperation = "Idle";
     private volatile bool _running;
+    private volatile bool _desiredRunning;
     private volatile bool _interactiveMode;
+    private long _lastRecoveryAttemptTicks;
     private bool _everAdvertised;
     private bool _configured;
     private bool _disposed;
@@ -61,6 +64,7 @@ public sealed class BleHidServer : IDisposable
 
     public string Advertisement => _provider?.AdvertisementStatus.ToString() ?? "NotStarted";
     public string LastOperation => _lastOperation;
+    public bool DesiredRunning => _desiredRunning;
     public int KeyboardSubscribers => LiveClientCount(_keyboard);
     public int MouseSubscribers => LiveClientCount(_mouse);
     public int SystemSubscribers => LiveClientCount(_system);
@@ -97,6 +101,7 @@ public sealed class BleHidServer : IDisposable
     public async Task StartAsync()
     {
         ThrowIfDisposed();
+        _desiredRunning = true;
 
         _lastOperation = "BluetoothAdapter.GetDefaultAsync";
         var adapter = await BluetoothAdapter.GetDefaultAsync();
@@ -232,6 +237,61 @@ public sealed class BleHidServer : IDisposable
         }
 
         Changed?.Invoke();
+    }
+
+    public async Task<bool> EnsureAdvertisingAsync()
+    {
+        if (_disposed || !_desiredRunning)
+            return false;
+
+        if (_provider is not null && IsAdvertising(_provider.AdvertisementStatus))
+        {
+            _running = true;
+            return true;
+        }
+
+        if (!await _recoveryGate.WaitAsync(0).ConfigureAwait(false))
+            return false;
+
+        try
+        {
+            var now = System.Diagnostics.Stopwatch.GetTimestamp();
+            var previous = Interlocked.Read(ref _lastRecoveryAttemptTicks);
+            var elapsedSeconds = previous == 0
+                ? double.MaxValue
+                : (now - previous) / (double)System.Diagnostics.Stopwatch.Frequency;
+
+            if (elapsedSeconds < 4)
+                return false;
+
+            Interlocked.Exchange(ref _lastRecoveryAttemptTicks, now);
+
+            try
+            {
+                await StartAsync().ConfigureAwait(false);
+                if (_provider is not null && IsAdvertising(_provider.AdvertisementStatus))
+                {
+                    Status?.Invoke("Bluetooth HID 검색 신호 자동 복구 완료.");
+                    return true;
+                }
+            }
+            catch (Exception ex) when (
+                ex is InvalidOperationException or
+                NotSupportedException or
+                ObjectDisposedException)
+            {
+                _running = false;
+                _lastOperation = $"AutoRecovery:{ex.GetType().Name}:0x{ex.HResult:X8}";
+                Status?.Invoke(
+                    $"Bluetooth HID 자동 복구 대기 · {ex.Message}");
+            }
+
+            return false;
+        }
+        finally
+        {
+            _recoveryGate.Release();
+        }
     }
 
     private async Task<GattLocalCharacteristic> Characteristic(
@@ -930,6 +990,7 @@ public sealed class BleHidServer : IDisposable
     {
         if (_disposed) return;
 
+        _desiredRunning = false;
         _running = false;
         SetInteractiveMode(false);
         _keyboardValue = new byte[Hid.KeyboardReportLength];
@@ -983,6 +1044,7 @@ public sealed class BleHidServer : IDisposable
         _connectionIntervalMs.Clear();
         _send.Dispose();
         _deviceGate.Dispose();
+        _recoveryGate.Dispose();
     }
 
     private void ThrowIfDisposed()
