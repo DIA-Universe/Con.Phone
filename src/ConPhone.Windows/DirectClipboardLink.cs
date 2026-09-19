@@ -227,6 +227,21 @@ public sealed class DirectClipboardLink : IDisposable
 
     private string? FindDirectIpv4()
     {
+        var current = CurrentIpv4();
+
+        // Prefer an IPv4 address that appeared only after this P2P publisher
+        // started. This avoids selecting a stale Wi-Fi Direct virtual adapter
+        // left behind by an older group.
+        var created = current
+            .Where(address => !_baselineIpv4.Contains(address))
+            .OrderByDescending(address => address.StartsWith("192.168.", StringComparison.Ordinal))
+            .ThenByDescending(address => address.StartsWith("172.", StringComparison.Ordinal))
+            .ThenByDescending(address => address.StartsWith("10.", StringComparison.Ordinal))
+            .FirstOrDefault();
+
+        if (created is not null)
+            return created;
+
         var directAdapter = NetworkInterface.GetAllNetworkInterfaces()
             .Where(nic =>
                 nic.OperationalStatus == OperationalStatus.Up &&
@@ -253,18 +268,10 @@ public sealed class DirectClipboardLink : IDisposable
         if (directAdapter is not null)
             return directAdapter.ToString();
 
-        var current = CurrentIpv4();
-        var created = current
-            .Where(address => !_baselineIpv4.Contains(address))
-            .OrderByDescending(address => address.StartsWith("192.168.", StringComparison.Ordinal))
-            .ThenByDescending(address => address.StartsWith("172.", StringComparison.Ordinal))
-            .FirstOrDefault();
-
-        if (created is not null) return created;
-
         // Windows Wi-Fi Direct legacy GO commonly uses an ICS private address.
         // Only expose it if it is actually assigned on this machine.
-        return current.FirstOrDefault(address => address.StartsWith("192.168.137.", StringComparison.Ordinal));
+        return current.FirstOrDefault(
+            address => address.StartsWith("192.168.137.", StringComparison.Ordinal));
     }
 
     private static HashSet<string> CurrentIpv4()
