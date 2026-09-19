@@ -49,7 +49,9 @@ final class ClipboardBridge: NSObject, ObservableObject {
     private let bleWireReassembler = ClipboardWireReassembler()
     private let p2pWireReassembler = ClipboardWireReassembler()
     private var writeQueue: [Data] = []
+    private var bleAckQueue: [Data] = []
     private var writeInFlight = false
+    private var writeInFlightIsAck = false
     private var bleTransferCompletion: (() -> Void)?
     private var bleActiveContent: ClipboardContent?
     private var bleActiveSharedPayloadId: UUID?
@@ -645,7 +647,29 @@ final class ClipboardBridge: NSObject, ObservableObject {
     private func writeNext() {
         guard !writeInFlight else { return }
 
-        guard !writeQueue.isEmpty else {
+        guard let peripheral, let rx else {
+            if !bleAckQueue.isEmpty {
+                bleAckQueue.removeAll()
+                status =
+                    "BLE Clipboard ACK 연결이 끊겨 응답을 취소했습니다."
+            }
+
+            if bleActiveContent != nil {
+                recoverActiveBleTransfer(
+                    "BLE 연결 준비 안 됨")
+            }
+            return
+        }
+
+        let next: Data
+
+        if !bleAckQueue.isEmpty {
+            writeInFlightIsAck = true
+            next = bleAckQueue.removeFirst()
+        } else if !writeQueue.isEmpty {
+            writeInFlightIsAck = false
+            next = writeQueue.removeFirst()
+        } else {
             if bleActiveContent != nil {
                 let completion = bleTransferCompletion
                 bleTransferCompletion = nil
@@ -658,26 +682,65 @@ final class ClipboardBridge: NSObject, ObservableObject {
             return
         }
 
-        guard let peripheral, let rx else {
-            recoverActiveBleTransfer("BLE 연결 준비 안 됨")
-            return
-        }
-
         writeInFlight = true
-        let next = writeQueue.removeFirst()
-        peripheral.writeValue(next, for: rx, type: .withResponse)
+        peripheral.writeValue(
+            next,
+            for: rx,
+            type: .withResponse)
     }
 
     private func receiveBle(_ value: Data) {
         do {
-            let fragment = try ClipboardProtocol.decodeBle(value)
-            guard let frame = try bleReassembler.add(fragment) else { return }
-            let chunk = try ClipboardProtocol.decode(frame)
-            guard let content = try bleWireReassembler.add(chunk) else { return }
+            let fragment =
+                try ClipboardProtocol.decodeBle(value)
+            guard let frame =
+                    try bleReassembler.add(fragment) else {
+                return
+            }
+
+            let chunk =
+                try ClipboardProtocol.decode(frame)
+            guard let content =
+                    try bleWireReassembler.add(chunk) else {
+                return
+            }
+
             apply(content)
+            try enqueueBleAck(chunk.transferId)
         } catch {
-            status = "Clipboard BLE 수신 거부: \(error.localizedDescription)"
+            status =
+                "Clipboard BLE 수신 거부: \(error.localizedDescription)"
         }
+    }
+
+    private func enqueueBleAck(_ transferId: Data) throws {
+        guard activeTarget,
+              let peripheral,
+              rx != nil,
+              credential != nil else {
+            status =
+                "BLE Clipboard ACK를 보낼 활성 연결이 없습니다."
+            return
+        }
+
+        let maxWrite =
+            peripheral.maximumWriteValueLength(
+                for: .withResponse)
+
+        let ack =
+            ClipboardProtocol.encodeAck(transferId)
+        let transportId =
+            UInt32.random(
+                in: UInt32.min...UInt32.max)
+
+        let fragments =
+            try ClipboardProtocol.splitBle(
+                ack,
+                maxGattValue: maxWrite,
+                transferId: transportId)
+
+        bleAckQueue.append(contentsOf: fragments)
+        writeNext()
     }
 
     private func detectEncodedImageKind(_ data: Data) -> ClipboardKind? {
@@ -805,6 +868,8 @@ extension ClipboardBridge: CBCentralManagerDelegate {
         directJoinInFlight = false
 
         let dataPlaneAlive = p2p?.ready == true
+        bleAckQueue.removeAll()
+        writeInFlightIsAck = false
         recoverActiveBleTransfer("Bluetooth 연결 끊김")
         status = dataPlaneAlive
             ? "Bluetooth 연결 끊김 · 기존 P2P Clipboard 채널 유지"
@@ -1003,24 +1068,24 @@ extension ClipboardBridge: CBPeripheralDelegate {
         error: Error?
     ) {
         guard characteristic.uuid == rxUUID else { return }
+
+        let wasAck = writeInFlightIsAck
         writeInFlight = false
+        writeInFlightIsAck = false
 
         if let error {
-            recoverActiveBleTransfer(
-                "BLE Clipboard 전송 실패: \(error.localizedDescription)")
+            if wasAck {
+                bleAckQueue.removeAll()
+                status =
+                    "BLE Clipboard ACK 전송 실패: \(error.localizedDescription)"
+                writeNext()
+            } else {
+                recoverActiveBleTransfer(
+                    "BLE Clipboard 전송 실패: \(error.localizedDescription)")
+            }
             return
         }
 
-        if writeQueue.isEmpty {
-            status = "Clipboard 전송 완료 · BLE"
-            let completion = bleTransferCompletion
-            bleTransferCompletion = nil
-            bleActiveContent = nil
-            bleActiveSharedPayloadId = nil
-            completion?()
-            flushPendingContent()
-        } else {
-            writeNext()
-        }
+        writeNext()
     }
 }
