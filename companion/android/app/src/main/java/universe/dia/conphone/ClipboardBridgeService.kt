@@ -391,11 +391,15 @@ class ClipboardBridgeService : Service() {
                     directLinkCharacteristic?.let { gatt?.readCharacteristic(it) }
             }
             DIRECT_LINK_UUID -> {
+                // Windows only allows the current active target to read this
+                // characteristic. A successful read therefore proves that BLE
+                // fallback is authorized even when the PC cannot create P2P.
+                activeTarget = true
                 directConfig = parseDirectConfig(value)
+                directConfigReadAttempts = 0
+                flushPendingContent()
+
                 if (directConfig != null) {
-                    activeTarget = true
-                    directConfigReadAttempts = 0
-                    flushPendingContent()
                     val direct = p2pNetwork
                     if (direct != null && p2p?.ready != true) {
                         executor.execute {
