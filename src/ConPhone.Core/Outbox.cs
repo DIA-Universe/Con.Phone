@@ -28,21 +28,28 @@ public sealed class Outbox
 
                 // This path runs for every raw mouse packet. Keep it allocation-free
                 // so pointer coalescing itself cannot introduce GC jitter.
-                if (x is < short.MinValue or > short.MaxValue ||
-                    y is < short.MinValue or > short.MaxValue ||
-                    wheel is < short.MinValue or > short.MaxValue ||
-                    pan is < short.MinValue or > short.MaxValue)
-                    return false;
+                var canMerge =
+                    x is >= short.MinValue and <= short.MaxValue &&
+                    y is >= short.MinValue and <= short.MaxValue &&
+                    wheel is >= short.MinValue and <= short.MaxValue &&
+                    pan is >= short.MinValue and <= short.MaxValue;
 
-                last.Value = new(
-                    item.Epoch,
-                    new PointerPacket(
-                        a.Buttons,
-                        (int)x,
-                        (int)y,
-                        (int)wheel,
-                        (int)pan));
-                return true;
+                if (canMerge)
+                {
+                    last.Value = new(
+                        item.Epoch,
+                        new PointerPacket(
+                            a.Buttons,
+                            (int)x,
+                            (int)y,
+                            (int)wheel,
+                            (int)pan));
+                    return true;
+                }
+
+                // A very fast/high-DPI move is not a queue failure. Stop coalescing
+                // this pair and enqueue a second pointer item below; Hid.Encode will
+                // split each large relative move into legal HID reports.
             }
             if (_items.Count >= _capacity) return false;
             _items.AddLast(item);
