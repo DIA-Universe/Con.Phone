@@ -49,6 +49,8 @@ final class ClipboardBridge: NSObject, ObservableObject {
     private var writeQueue: [Data] = []
     private var writeInFlight = false
     private var bleTransferCompletion: (() -> Void)?
+    private var bleActiveContent: ClipboardContent?
+    private var bleActiveSharedPayloadId: UUID?
     private var pendingContent: ClipboardContent?
     private var pendingSharedPayloadId: UUID?
     private var pendingGeneration = 0
@@ -163,6 +165,7 @@ final class ClipboardBridge: NSObject, ObservableObject {
             try enqueueBle(
                 content,
                 peripheral: peripheral,
+                sharedPayloadId: sharedPayloadId,
                 completion: { [weak self] in
                     guard let self else { return }
                     if let sharedPayloadId {
@@ -235,6 +238,7 @@ final class ClipboardBridge: NSObject, ObservableObject {
                 try enqueueBle(
                     content,
                     peripheral: peripheral,
+                    sharedPayloadId: sharedId,
                     completion: { [weak self] in
                         guard let self else { return }
                         if let sharedId {
@@ -285,31 +289,71 @@ final class ClipboardBridge: NSObject, ObservableObject {
     private func enqueueBle(
         _ content: ClipboardContent,
         peripheral: CBPeripheral,
+        sharedPayloadId: UUID? = nil,
         completion: @escaping () -> Void = {}
     ) throws {
         guard !writeInFlight,
               writeQueue.isEmpty,
-              bleTransferCompletion == nil else {
+              bleTransferCompletion == nil,
+              bleActiveContent == nil else {
             throw ClipboardProtocol.ProtocolError.busy
         }
 
-        let maxWrite = peripheral.maximumWriteValueLength(for: .withResponse)
-        let cursor = try ClipboardProtocol.makeFrameCursor(
-            content,
-            chunkSize: 16 * 1024)
+        bleActiveContent = content
+        bleActiveSharedPayloadId = sharedPayloadId
 
-        while let frame = cursor.next() {
-            let transferId = UInt32.random(in: UInt32.min...UInt32.max)
-            writeQueue.append(contentsOf: try ClipboardProtocol.splitBle(
-                frame,
-                maxGattValue: maxWrite,
-                transferId: transferId
-            ))
+        do {
+            let maxWrite = peripheral.maximumWriteValueLength(for: .withResponse)
+            let cursor = try ClipboardProtocol.makeFrameCursor(
+                content,
+                chunkSize: 16 * 1024)
+
+            while let frame = cursor.next() {
+                let transferId = UInt32.random(in: UInt32.min...UInt32.max)
+                writeQueue.append(contentsOf: try ClipboardProtocol.splitBle(
+                    frame,
+                    maxGattValue: maxWrite,
+                    transferId: transferId
+                ))
+            }
+
+            bleTransferCompletion = completion
+            writeNext()
+        } catch {
+            writeQueue.removeAll()
+            bleTransferCompletion = nil
+            bleActiveContent = nil
+            bleActiveSharedPayloadId = nil
+            throw error
+        }
+    }
+
+    private func recoverActiveBleTransfer(_ reason: String) {
+        guard let content = bleActiveContent else {
+            writeQueue.removeAll()
+            writeInFlight = false
+            bleTransferCompletion = nil
+            return
         }
 
-        bleTransferCompletion = completion
-        writeNext()
+        let sharedId = bleActiveSharedPayloadId
+        writeQueue.removeAll()
+        writeInFlight = false
+        bleTransferCompletion = nil
+        bleActiveContent = nil
+        bleActiveSharedPayloadId = nil
+
+        setPendingContent(
+            content,
+            sharedPayloadId: sharedId)
+        status = "\(reason) · Clipboard를 재전송 대기 상태로 복원했습니다."
+
+        flushPendingContent()
+        if pendingContent != nil {
+            start()
+        }
     }
+
 
     func connectFastLink() {
         if let peripheral, let characteristic = directLinkCharacteristic {
@@ -509,10 +553,25 @@ final class ClipboardBridge: NSObject, ObservableObject {
     }
 
     private func writeNext() {
-        guard !writeInFlight,
-              !writeQueue.isEmpty,
-              let peripheral,
-              let rx else { return }
+        guard !writeInFlight else { return }
+
+        guard !writeQueue.isEmpty else {
+            if bleActiveContent != nil {
+                let completion = bleTransferCompletion
+                bleTransferCompletion = nil
+                bleActiveContent = nil
+                bleActiveSharedPayloadId = nil
+                status = "Clipboard 전송 완료 · BLE"
+                completion?()
+                flushPendingContent()
+            }
+            return
+        }
+
+        guard let peripheral, let rx else {
+            recoverActiveBleTransfer("BLE 연결 준비 안 됨")
+            return
+        }
 
         writeInFlight = true
         let next = writeQueue.removeFirst()
@@ -654,9 +713,7 @@ extension ClipboardBridge: CBCentralManagerDelegate {
         activeTarget = false
 
         let dataPlaneAlive = p2p?.ready == true
-        writeQueue.removeAll()
-        writeInFlight = false
-        bleTransferCompletion = nil
+        recoverActiveBleTransfer("Bluetooth 연결 끊김")
         status = dataPlaneAlive
             ? "Bluetooth 연결 끊김 · 기존 P2P Clipboard 채널 유지"
             : "PC Bluetooth 연결 끊김 · 재검색"
@@ -825,9 +882,8 @@ extension ClipboardBridge: CBPeripheralDelegate {
         writeInFlight = false
 
         if let error {
-            writeQueue.removeAll()
-            bleTransferCompletion = nil
-            status = "BLE Clipboard 전송 실패: \(error.localizedDescription)"
+            recoverActiveBleTransfer(
+                "BLE Clipboard 전송 실패: \(error.localizedDescription)")
             return
         }
 
@@ -835,7 +891,10 @@ extension ClipboardBridge: CBPeripheralDelegate {
             status = "Clipboard 전송 완료 · BLE"
             let completion = bleTransferCompletion
             bleTransferCompletion = nil
+            bleActiveContent = nil
+            bleActiveSharedPayloadId = nil
             completion?()
+            flushPendingContent()
         } else {
             writeNext()
         }
