@@ -859,34 +859,9 @@ class ClipboardBridgeService : Service() {
                         ClipboardProtocol.text(text)
                     }
                     AndroidSharedPayloadStore.Kind.IMAGE -> {
-                        ensureSafeImageDimensions(item.data)
-
-                        val encodedKind =
-                            detectEncodedImageKind(item.data, item.mime)
-                        if (encodedKind != null) {
-                            ClipboardProtocol.image(
-                                encodedKind,
-                                item.data)
-                        } else {
-                            val bitmap = BitmapFactory.decodeByteArray(
-                                item.data,
-                                0,
-                                item.data.size)
-                                ?: error("지원하지 않는 이미지 형식입니다.")
-
-                            try {
-                                val out = ByteArrayOutputStream()
-                                bitmap.compress(
-                                    Bitmap.CompressFormat.PNG,
-                                    100,
-                                    out)
-                                ClipboardProtocol.image(
-                                    ClipboardKind.PNG,
-                                    out.toByteArray())
-                            } finally {
-                                bitmap.recycle()
-                            }
-                        }
+                        sharedImageContentForWindows(
+                            item.data,
+                            item.mime)
                     }
                 }
             }.onSuccess { content ->
@@ -958,45 +933,51 @@ class ClipboardBridgeService : Service() {
 
             runCatching {
                 val bytes = file.readBytes()
-                ensureSafeImageDimensions(bytes)
-
-                val encodedKind =
-                    detectEncodedImageKind(bytes, mime)
-
-                if (encodedKind == ClipboardKind.PNG ||
-                    encodedKind == ClipboardKind.JPEG) {
-                    ClipboardProtocol.image(
-                        encodedKind,
-                        bytes)
-                } else {
-                    // Windows System.Drawing does not reliably decode WebP.
-                    // Normalize WebP and other decodable shared images to PNG
-                    // before sending them to the PC.
-                    val bitmap =
-                        decodeImageForPngNormalization(bytes)
-
-                    try {
-                        val out = ByteArrayOutputStream()
-                        check(
-                            bitmap.compress(
-                                Bitmap.CompressFormat.PNG,
-                                100,
-                                out)
-                        ) {
-                            "공유 이미지를 PNG로 변환하지 못했습니다."
-                        }
-
-                        ClipboardProtocol.image(
-                            ClipboardKind.PNG,
-                            out.toByteArray())
-                    } finally {
-                        bitmap.recycle()
-                    }
-                }
+                sharedImageContentForWindows(
+                    bytes,
+                    mime)
             }.onSuccess(::sendContent)
                 .onFailure { toast("이미지 전송 준비 실패: ${it.message}") }
 
             runCatching { file.delete() }
+        }
+    }
+
+    private fun sharedImageContentForWindows(
+        bytes: ByteArray,
+        mime: String?
+    ): ClipboardContent {
+        ensureSafeImageDimensions(bytes)
+
+        val encodedKind =
+            detectEncodedImageKind(bytes, mime)
+
+        if (encodedKind == ClipboardKind.PNG ||
+            encodedKind == ClipboardKind.JPEG) {
+            return ClipboardProtocol.image(
+                encodedKind,
+                bytes)
+        }
+
+        val bitmap =
+            decodeImageForPngNormalization(bytes)
+
+        return try {
+            val out = ByteArrayOutputStream()
+            check(
+                bitmap.compress(
+                    Bitmap.CompressFormat.PNG,
+                    100,
+                    out)
+            ) {
+                "공유 이미지를 PNG로 변환하지 못했습니다."
+            }
+
+            ClipboardProtocol.image(
+                ClipboardKind.PNG,
+                out.toByteArray())
+        } finally {
+            bitmap.recycle()
         }
     }
 
