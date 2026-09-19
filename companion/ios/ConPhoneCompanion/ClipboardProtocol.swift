@@ -272,6 +272,7 @@ enum ClipboardProtocol {
         case tooLarge
         case integrity
         case random
+        case busy
     }
 }
 
