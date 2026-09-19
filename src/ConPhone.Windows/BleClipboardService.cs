@@ -90,7 +90,7 @@ public sealed class BleClipboardService : IDisposable
     private GattLocalCharacteristic? _directLink;
     private bool _disposed;
 
-    public event Action<string, ClipboardContent>? Received;
+    public Func<string, ClipboardContent, Task<bool>>? ReceiveContentAsync { get; set; }
     public event Action<string>? Status;
 
     public BleClipboardService(
@@ -364,14 +364,33 @@ public sealed class BleClipboardService : IDisposable
                             var content = clipboard.Add(chunk);
 
                             if (content is not null)
-                                Received?.Invoke(id, content);
+                            {
+                                var receiver = ReceiveContentAsync;
+                                if (receiver is null)
+                                    throw new InvalidDataException(
+                                        "Windows clipboard receiver is not ready.");
+
+                                var applied = await receiver(
+                                        id,
+                                        content)
+                                    .WaitAsync(
+                                        TimeSpan.FromSeconds(8))
+                                    .ConfigureAwait(false);
+
+                                if (!applied)
+                                    throw new InvalidDataException(
+                                        "Windows clipboard apply failed.");
+                            }
                         }
                     }
 
                     valid = true;
                 }
             }
-            catch (Exception ex) when (ex is InvalidDataException or ArgumentException)
+            catch (Exception ex) when (
+                ex is InvalidDataException or
+                ArgumentException or
+                TimeoutException)
             {
                 Status?.Invoke($"Clipboard BLE 수신 프레임 거부: {ex.Message}");
             }
