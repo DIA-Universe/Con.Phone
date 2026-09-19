@@ -50,6 +50,9 @@ public sealed class BleHidServer : IDisposable
     private volatile bool _desiredRunning;
     private volatile bool _interactiveMode;
     private long _lastRecoveryAttemptTicks;
+    private long _autoRecoveryAttempts;
+    private long _autoRecoverySuccesses;
+    private long _lastRecoverySuccessUnixMs;
     private bool _everAdvertised;
     private bool _configured;
     private bool _disposed;
@@ -65,6 +68,12 @@ public sealed class BleHidServer : IDisposable
     public string Advertisement => _provider?.AdvertisementStatus.ToString() ?? "NotStarted";
     public string LastOperation => _lastOperation;
     public bool DesiredRunning => _desiredRunning;
+    public long AutoRecoveryAttempts => Interlocked.Read(ref _autoRecoveryAttempts);
+    public long AutoRecoverySuccesses => Interlocked.Read(ref _autoRecoverySuccesses);
+    public DateTimeOffset? LastRecoverySuccess =>
+        Interlocked.Read(ref _lastRecoverySuccessUnixMs) is var value && value > 0
+            ? DateTimeOffset.FromUnixTimeMilliseconds(value)
+            : null;
     public int KeyboardSubscribers => LiveClientCount(_keyboard);
     public int MouseSubscribers => LiveClientCount(_mouse);
     public int SystemSubscribers => LiveClientCount(_system);
@@ -265,12 +274,17 @@ public sealed class BleHidServer : IDisposable
                 return false;
 
             Interlocked.Exchange(ref _lastRecoveryAttemptTicks, now);
+            var attempt = Interlocked.Increment(ref _autoRecoveryAttempts);
 
             try
             {
                 await StartAsync().ConfigureAwait(false);
                 if (_provider is not null && IsAdvertising(_provider.AdvertisementStatus))
                 {
+                    Interlocked.Increment(ref _autoRecoverySuccesses);
+                    Interlocked.Exchange(
+                        ref _lastRecoverySuccessUnixMs,
+                        DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
                     Status?.Invoke("Bluetooth HID 검색 신호 자동 복구 완료.");
                     return true;
                 }
@@ -282,8 +296,11 @@ public sealed class BleHidServer : IDisposable
             {
                 _running = false;
                 _lastOperation = $"AutoRecovery:{ex.GetType().Name}:0x{ex.HResult:X8}";
-                Status?.Invoke(
-                    $"Bluetooth HID 자동 복구 대기 · {ex.Message}");
+                if (attempt == 1 || attempt % 6 == 0)
+                {
+                    Status?.Invoke(
+                        $"Bluetooth HID 자동 복구 대기 · 시도 {attempt} · {ex.Message}");
+                }
             }
 
             return false;
