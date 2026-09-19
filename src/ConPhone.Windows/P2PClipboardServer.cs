@@ -19,11 +19,13 @@ public sealed class P2PClipboardServer : IAsyncDisposable
     private readonly Func<bool> _enabled;
     private readonly CancellationTokenSource _lifetime = new();
     private readonly SemaphoreSlim _connectionSlots = new(4, 4);
+    private readonly object _listenerGate = new();
     private readonly object _clientGate = new();
     private readonly object _ackGate = new();
     private readonly Dictionary<Guid, AckWaiter> _ackWaiters = [];
     private ClientConnection? _client;
     private TcpListener? _listener;
+    private CancellationTokenSource? _listenerCts;
     private Task? _acceptLoop;
 
     public Func<string, ClipboardContent, Task<bool>>? ReceiveContentAsync { get; set; }
@@ -57,23 +59,48 @@ public sealed class P2PClipboardServer : IAsyncDisposable
 
     public Task StartAsync()
     {
-        if (_listener is not null) return Task.CompletedTask;
+        lock (_listenerGate)
+        {
+            if (_listener is not null)
+                return Task.CompletedTask;
 
-        _listener = new TcpListener(IPAddress.Any, DataPort);
-        _listener.Start();
+            ObjectDisposedException.ThrowIf(
+                _lifetime.IsCancellationRequested,
+                this);
 
-        _acceptLoop = Task.Run(() => AcceptLoopAsync(_lifetime.Token));
-        Status?.Invoke($"Clipboard P2P 보안 채널 대기 · TCP {DataPort}");
+            var listener = new TcpListener(
+                IPAddress.Any,
+                DataPort);
+            listener.Start();
+
+            var cts = CancellationTokenSource
+                .CreateLinkedTokenSource(_lifetime.Token);
+
+            _listener = listener;
+            _listenerCts = cts;
+            _acceptLoop = Task.Run(
+                () => AcceptLoopAsync(
+                    listener,
+                    cts.Token));
+
+            Status?.Invoke(
+                $"Clipboard P2P 보안 채널 대기 · TCP {DataPort}");
+        }
+
         return Task.CompletedTask;
     }
 
-    private async Task AcceptLoopAsync(CancellationToken token)
+    private async Task AcceptLoopAsync(
+        TcpListener listener,
+        CancellationToken token)
     {
         while (!token.IsCancellationRequested)
         {
             try
             {
-                var tcp = await _listener!.AcceptTcpClientAsync(token).ConfigureAwait(false);
+                var tcp = await listener
+                    .AcceptTcpClientAsync(token)
+                    .ConfigureAwait(false);
 
                 if (!await _connectionSlots.WaitAsync(0, token).ConfigureAwait(false))
                 {
@@ -102,6 +129,14 @@ public sealed class P2PClipboardServer : IAsyncDisposable
                 });
             }
             catch (OperationCanceledException) when (token.IsCancellationRequested)
+            {
+                break;
+            }
+            catch (ObjectDisposedException) when (token.IsCancellationRequested)
+            {
+                break;
+            }
+            catch (SocketException) when (token.IsCancellationRequested)
             {
                 break;
             }
@@ -383,6 +418,45 @@ public sealed class P2PClipboardServer : IAsyncDisposable
         Status?.Invoke("Clipboard P2P 연결 종료.");
     }
 
+    public async Task StopListeningAsync()
+    {
+        TcpListener? listener;
+        CancellationTokenSource? cts;
+        Task? acceptLoop;
+
+        lock (_listenerGate)
+        {
+            listener = _listener;
+            cts = _listenerCts;
+            acceptLoop = _acceptLoop;
+
+            _listener = null;
+            _listenerCts = null;
+            _acceptLoop = null;
+        }
+
+        if (listener is null)
+            return;
+
+        Deactivate();
+
+        try { cts?.Cancel(); }
+        catch (ObjectDisposedException) { }
+
+        try { listener.Stop(); }
+        catch { }
+
+        if (acceptLoop is not null)
+        {
+            try { await acceptLoop.ConfigureAwait(false); }
+            catch (OperationCanceledException) { }
+            catch (ObjectDisposedException) { }
+        }
+
+        cts?.Dispose();
+        Status?.Invoke("Clipboard P2P TCP listener 중지.");
+    }
+
     private void CompleteAck(
         ClientConnection connection,
         Guid transferId)
@@ -558,28 +632,10 @@ public sealed class P2PClipboardServer : IAsyncDisposable
     {
         _lifetime.Cancel();
 
-        ClientConnection? client;
-        lock (_clientGate)
-        {
-            client = _client;
-            _client = null;
-        }
-        if (client is not null)
-        {
-            client.Close();
-            FailAckWaiters(
-                client,
-                new IOException("Clipboard P2P 서버가 종료되었습니다."));
-        }
+        await StopListeningAsync()
+            .ConfigureAwait(false);
 
-        try { _listener?.Stop(); } catch { }
-
-        if (_acceptLoop is not null)
-        {
-            try { await _acceptLoop; }
-            catch (OperationCanceledException) { }
-        }
-
+        _connectionSlots.Dispose();
         _lifetime.Dispose();
     }
 }
