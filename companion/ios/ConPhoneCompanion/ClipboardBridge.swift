@@ -1030,6 +1030,9 @@ extension ClipboardBridge: CBPeripheralDelegate {
             } else if characteristic.uuid == directLinkUUID {
                 activeTarget = false
                 bleAckQueue.removeAll()
+                if bleActiveContent != nil {
+                    recoverActiveBleTransfer("활성 대상 변경")
+                }
                 directJoinInFlight = false
                 if let config = directConfig {
                     NEHotspotConfigurationManager.shared.removeConfiguration(
@@ -1073,6 +1076,9 @@ extension ClipboardBridge: CBPeripheralDelegate {
 
                 if !reportedActive {
                     bleAckQueue.removeAll()
+                    if bleActiveContent != nil {
+                        recoverActiveBleTransfer("활성 대상 변경")
+                    }
                     directJoinInFlight = false
                     if let config = directConfig {
                         NEHotspotConfigurationManager.shared.removeConfiguration(
