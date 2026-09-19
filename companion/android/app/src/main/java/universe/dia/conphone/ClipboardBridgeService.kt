@@ -98,6 +98,7 @@ class ClipboardBridgeService : Service() {
     private var bleActivePersistentShareId: String? = null
     private var bleActiveTransferId: ByteArray? = null
     private var bleAwaitingContentAck = false
+    private var bleContentAckReceived = false
     private var bleAckGeneration = 0L
     @Volatile private var credential: Credential? = null
     @Volatile private var directConfig: DirectConfig? = null
@@ -1296,6 +1297,7 @@ class ClipboardBridgeService : Service() {
             synchronized(bleSendLock) {
                 bleActiveTransferId = contentTransferId.copyOf()
                 bleAwaitingContentAck = false
+                bleContentAckReceived = false
                 bleAckGeneration++
             }
 
@@ -1322,6 +1324,7 @@ class ClipboardBridgeService : Service() {
         transferId: ByteArray
     ) {
         var matched = false
+        var completed = false
         var persistedId: String? = null
 
         synchronized(bleSendLock) {
@@ -1330,18 +1333,30 @@ class ClipboardBridgeService : Service() {
                 expected != null &&
                 expected.contentEquals(transferId)) {
                 matched = true
-                persistedId = bleActivePersistentShareId
-                bleActiveContent = null
-                bleActivePersistentShareId = null
-                bleActiveTransferId = null
-                bleAwaitingContentAck = false
-                bleAckGeneration++
+                bleContentAckReceived = true
+
+                if (!bleWriting && bleQueue.isEmpty()) {
+                    completed = true
+                    persistedId = bleActivePersistentShareId
+                    bleActiveContent = null
+                    bleActivePersistentShareId = null
+                    bleActiveTransferId = null
+                    bleAwaitingContentAck = false
+                    bleContentAckReceived = false
+                    bleAckGeneration++
+                }
             }
         }
 
         if (!matched) {
             showStatus(
                 "일치하지 않거나 늦게 도착한 BLE Clipboard ACK를 무시했습니다.")
+            return
+        }
+
+        if (!completed) {
+            showStatus(
+                "Windows 적용 ACK 확인 · 마지막 BLE write 완료 대기")
             return
         }
 
@@ -1359,6 +1374,7 @@ class ClipboardBridgeService : Service() {
             bleActivePersistentShareId = null
             bleActiveTransferId = null
             bleAwaitingContentAck = false
+            bleContentAckReceived = false
             bleAckGeneration++
             bleWriting = false
             bleQueue.clear()
@@ -1401,27 +1417,49 @@ class ClipboardBridgeService : Service() {
         val next = ackFrame ?: contentFrame
 
         if (next == null) {
-            val waitGeneration = synchronized(bleSendLock) {
-                if (bleActiveContent == null ||
-                    bleActiveTransferId == null ||
-                    bleAwaitingContentAck) {
-                    null
-                } else {
-                    bleAwaitingContentAck = true
-                    bleWriting = false
-                    bleWritingAck = false
-                    ++bleAckGeneration
+            var completed = false
+            var persistedId: String? = null
+            var waitGeneration: Long? = null
+
+            synchronized(bleSendLock) {
+                if (bleActiveContent != null &&
+                    bleActiveTransferId != null) {
+                    if (bleContentAckReceived && !bleWriting) {
+                        completed = true
+                        persistedId = bleActivePersistentShareId
+                        bleActiveContent = null
+                        bleActivePersistentShareId = null
+                        bleActiveTransferId = null
+                        bleAwaitingContentAck = false
+                        bleContentAckReceived = false
+                        bleAckGeneration++
+                    } else if (!bleAwaitingContentAck) {
+                        bleAwaitingContentAck = true
+                        bleWriting = false
+                        bleWritingAck = false
+                        waitGeneration = ++bleAckGeneration
+                    }
                 }
+            }
+
+            if (completed) {
+                showStatus(
+                    "Clipboard 전송 완료 · BLE · Windows 적용 ACK 확인")
+                completePersistedShare(persistedId)
+                flushPendingContent()
+                return
             }
 
             if (waitGeneration != null) {
                 showStatus(
                     "Clipboard BLE 프레임 전송 완료 · Windows 적용 ACK 대기")
 
+                val generation = waitGeneration!!
                 main.postDelayed({
                     val timedOut = synchronized(bleSendLock) {
                         bleAwaitingContentAck &&
-                            bleAckGeneration == waitGeneration &&
+                            !bleContentAckReceived &&
+                            bleAckGeneration == generation &&
                             bleActiveContent != null
                     }
 
@@ -1736,6 +1774,7 @@ class ClipboardBridgeService : Service() {
             bleActivePersistentShareId = null
             bleActiveTransferId = null
             bleAwaitingContentAck = false
+            bleContentAckReceived = false
             bleAckGeneration++
             bleWriting = false
             bleQueue.clear()
