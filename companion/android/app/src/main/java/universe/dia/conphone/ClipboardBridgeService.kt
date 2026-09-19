@@ -782,7 +782,13 @@ class ClipboardBridgeService : Service() {
     }
 
     private fun completePersistedShare(id: String?) {
-        if (id == null) return
+        if (id == null) {
+            // A normal clipboard item may have occupied the bounded in-memory queue
+            // while a persistent Share item was waiting. Re-check durable storage
+            // whenever capacity becomes available.
+            main.post { drainPersistedShares() }
+            return
+        }
 
         val cleared = runCatching {
             sharedStore.clear(id)
