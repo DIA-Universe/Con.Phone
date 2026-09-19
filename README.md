@@ -54,6 +54,7 @@
 - Windows → 휴대폰: Windows에서 복사 후 휴대폰 입력으로 전환하면 최신 텍스트/이미지를 Companion으로 동기화합니다.
 - 휴대폰 → Windows: Companion의 **현재 텍스트/이미지를 PC로 보내기**를 사용할 수 있습니다. Android는 다른 앱의 **공유 → Con.Phone**, iOS는 **Share Extension → Con.Phone 앱 실행** 경로도 제공합니다.
 - 전송 우선순위: Direct Wi-Fi/P2P 암호화 채널 → BLE fallback.
+- Windows의 BLE 이미지 한도 설정은 Companion에 전달되어 PC→폰/폰→PC 양쪽에 동일하게 적용됩니다.
 - 같은 Wi-Fi 탐색/UDP broadcast에 의존하지 않습니다.
 - 파일/폴더는 전송하지 않습니다.
 - 기본 F7은 다음 등록 기기로 전환하며, 휴대폰 입력 중에도 이전 기기 release 후 다음 활성 기기로 직접 handoff합니다.
