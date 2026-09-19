@@ -1,0 +1,154 @@
+#!/usr/bin/env python3
+from __future__ import annotations
+
+import pathlib
+import re
+import sys
+
+ROOT = pathlib.Path(__file__).resolve().parents[1]
+errors: list[str] = []
+
+def read(path: str) -> str:
+    p = ROOT / path
+    if not p.exists():
+        errors.append(f"missing required file: {path}")
+        return ""
+    return p.read_text(encoding="utf-8")
+
+def require(condition: bool, message: str) -> None:
+    if not condition:
+        errors.append(message)
+
+win_settings = read("src/ConPhone.Windows/AppSettings.cs")
+win_ble = read("src/ConPhone.Windows/BleClipboardService.cs")
+win_p2p = read("src/ConPhone.Windows/P2PClipboardServer.cs")
+core = read("src/ConPhone.Core/ClipboardSync.cs")
+win_project = read("src/ConPhone.Windows/ConPhone.Windows.csproj")
+
+android_manifest = read("companion/android/app/src/main/AndroidManifest.xml")
+android_service = read("companion/android/app/src/main/java/universe/dia/conphone/ClipboardBridgeService.kt")
+android_protocol = read("companion/android/app/src/main/java/universe/dia/conphone/Protocol.kt")
+android_gradle = read("companion/android/app/build.gradle.kts")
+
+ios_bridge = read("companion/ios/ConPhoneCompanion/ClipboardBridge.swift")
+ios_protocol = read("companion/ios/ConPhoneCompanion/ClipboardProtocol.swift")
+ios_p2p = read("companion/ios/ConPhoneCompanion/P2PClipboardChannel.swift")
+ios_project = read("companion/ios/project.yml")
+ios_app_entitlements = read("companion/ios/ConPhoneCompanion/ConPhoneCompanion.entitlements")
+ios_share_entitlements = read("companion/ios/ShareExtension/ConPhoneShare.entitlements")
+
+# Product version alignment.
+require("<Version>0.3.0</Version>" in win_project, "Windows version must be 0.3.0")
+require('versionName = "0.3.0"' in android_gradle, "Android versionName must be 0.3.0")
+require('MARKETING_VERSION: "0.3.0"' in ios_project, "iOS marketing version must be 0.3.0")
+
+# There must be no cloud relay/Railway dependency in product source.
+for path, text in [
+    ("AppSettings.cs", win_settings),
+    ("BleClipboardService.cs", win_ble),
+    ("ClipboardSync.cs", core),
+    ("Android service", android_service),
+    ("iOS bridge", ios_bridge),
+]:
+    require("Railway" not in text, f"{path}: Railway reference is not allowed")
+    require("ClipboardRelay" not in text and "RelayClipboard" not in text,
+            f"{path}: internet relay reference is not allowed")
+
+# Shared-LAN discovery must not return.
+for path, text in [
+    ("Windows P2P", win_p2p),
+    ("Android service", android_service),
+    ("iOS P2P", ios_p2p),
+]:
+    require("CONPHONE_DISCOVER_V1" not in text, f"{path}: shared-LAN discovery returned")
+    require("DiscoveryPort" not in text, f"{path}: UDP discovery port returned")
+
+# P2P protocol v2 must match on all platforms.
+for path, text in [
+    ("Windows P2P", win_p2p),
+    ("Android service", android_service),
+    ("iOS P2P", ios_p2p),
+]:
+    require("CPHELLO2" in text or "P2PSecurity.HelloMagic" in text,
+            f"{path}: P2P v2 hello missing")
+    require("CPREADY2" in text or "P2PSecurity.ReadyMagic" in text,
+            f"{path}: P2P v2 ready missing")
+    require("ConPhone-Clipboard-P2P-v2" in text or "P2PSecurity.AadPrefix" in text,
+            f"{path}: P2P v2 AAD missing")
+
+# Clipboard safety constants aligned.
+require("MaxTextBytes = 1024 * 1024" in core, "Core text max must be 1 MiB")
+require("MaxImageBytes = 32 * 1024 * 1024" in core, "Core image max must be 32 MiB")
+require("MAX_TEXT = 1024 * 1024" in android_protocol, "Android text max must be 1 MiB")
+require("MAX_IMAGE = 32 * 1024 * 1024" in android_protocol, "Android image max must be 32 MiB")
+require("static let maxText = 1024 * 1024" in ios_protocol, "iOS text max must be 1 MiB")
+require("static let maxImage = 32 * 1024 * 1024" in ios_protocol, "iOS image max must be 32 MiB")
+
+# BLE service/characteristic UUIDs must agree across desktop + companions.
+uuids = [
+    "67A7F001-7E5B-4A2E-9B8B-1C9A5B6D1001",
+    "67A7F002-7E5B-4A2E-9B8B-1C9A5B6D1001",
+    "67A7F003-7E5B-4A2E-9B8B-1C9A5B6D1001",
+    "67A7F004-7E5B-4A2E-9B8B-1C9A5B6D1001",
+    "67A7F006-7E5B-4A2E-9B8B-1C9A5B6D1001",
+]
+for uuid in uuids:
+    for path, text in [
+        ("Windows BLE", win_ble),
+        ("Android BLE", android_service),
+        ("iOS BLE", ios_bridge),
+    ]:
+        require(uuid.lower() in text.lower(), f"{path}: missing UUID {uuid}")
+
+# Application ACK must exist on every platform.
+require("ClipboardAckCodec" in win_ble, "Windows BLE application ACK missing")
+require("decodeAck" in android_service and "encodeAck" in android_protocol,
+        "Android BLE application ACK missing")
+require("decodeAck" in ios_bridge and "encodeAck" in ios_protocol,
+        "iOS BLE application ACK missing")
+
+# Android foreground service / optional P2P permission model.
+require('android:foregroundServiceType="connectedDevice"' in android_manifest,
+        "Android service must be connectedDevice foreground type")
+require("FOREGROUND_SERVICE_DATA_SYNC" not in android_manifest,
+        "Android dataSync FGS permission should not be required")
+require("NEARBY_WIFI_DEVICES" in android_manifest,
+        "Android P2P permission declaration missing")
+require("private fun hasBluetoothPermissions()" in read(
+    "companion/android/app/src/main/java/universe/dia/conphone/MainActivity.kt"),
+    "Android Bluetooth permission gate missing")
+
+# iOS Share Extension must share the same App Group.
+app_group = "group.universe.dia.conphone"
+require(app_group in ios_app_entitlements, "iOS app App Group missing")
+require(app_group in ios_share_entitlements, "iOS Share Extension App Group missing")
+require("ConPhoneShare:" in ios_project, "iOS Share Extension target missing")
+require("com.apple.developer.networking.HotspotConfiguration" in ios_app_entitlements,
+        "iOS Hotspot Configuration entitlement missing")
+
+# Product intentionally has no file/folder clipboard transfer.
+for path, text in [
+    ("Core clipboard", core),
+    ("Android protocol", android_protocol),
+    ("iOS protocol", ios_protocol),
+]:
+    lower = text.lower()
+    require("clipboardcontentkind.file" not in lower and "kind.file" not in lower,
+            f"{path}: file clipboard content is not allowed")
+
+if errors:
+    print("SOURCE SANITY FAILED")
+    for error in errors:
+        print(f" - {error}")
+    sys.exit(1)
+
+print("SOURCE SANITY PASSED")
+print(" - version alignment: 0.3.0")
+print(" - transport: Direct Wi-Fi/P2P -> BLE only")
+print(" - no Railway/internet relay")
+print(" - P2P v2 security markers aligned")
+print(" - clipboard caps aligned (1 MiB text / 32 MiB image)")
+print(" - BLE UUIDs aligned across Windows/Android/iOS")
+print(" - application ACK paths present")
+print(" - Android connectedDevice foreground service")
+print(" - iOS App Group + Share Extension aligned")
