@@ -84,8 +84,8 @@ public sealed class ClipboardSyncCoordinator : IAsyncDisposable
     {
         Interlocked.Increment(ref _targetGeneration);
         _p2p.Deactivate();
-        _direct.Stop();
-        Status?.Invoke("활성 휴대폰 변경 · P2P 채널을 새 대상으로 재설정합니다.");
+        _direct.RotateCredentials();
+        Status?.Invoke("활성 휴대폰 변경 · P2P 채널과 Wi-Fi 자격 증명을 새 대상으로 재설정합니다.");
     }
 
     public async Task SetActiveAsync(bool active)
