@@ -41,6 +41,10 @@ public static class P2PFirewallSupport
             await process.WaitForExitAsync(token).ConfigureAwait(false);
             return process.ExitCode == 0;
         }
+        catch (OperationCanceledException)
+        {
+            return false;
+        }
         catch (Exception ex) when (
             ex is InvalidOperationException or System.ComponentModel.Win32Exception)
         {
