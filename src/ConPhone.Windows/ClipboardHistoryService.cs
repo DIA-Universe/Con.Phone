@@ -39,6 +39,8 @@ public sealed class ClipboardHistoryService : IDisposable
     private int _attempt;
     private bool _selfWrite;
     private bool _disposed;
+    private string? _lastRemoteHash;
+    private DateTimeOffset _lastRemoteAppliedAt;
 
     private static readonly string Root = Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
@@ -270,6 +272,18 @@ public sealed class ClipboardHistoryService : IDisposable
     {
         ArgumentNullException.ThrowIfNull(content);
 
+        var now = DateTimeOffset.UtcNow;
+        if (string.Equals(
+                _lastRemoteHash,
+                content.Hash,
+                StringComparison.Ordinal) &&
+            now - _lastRemoteAppliedAt <= TimeSpan.FromMinutes(2))
+        {
+            Status?.Invoke(
+                "최근 동일 Clipboard 재전송을 감지해 중복 적용을 생략했습니다.");
+            return true;
+        }
+
         try
         {
             _selfWrite = true;
@@ -280,6 +294,8 @@ public sealed class ClipboardHistoryService : IDisposable
                 var text = content.GetText();
                 Clipboard.SetText(text, TextDataFormat.UnicodeText);
                 AddText(text, publish: false);
+                _lastRemoteHash = content.Hash;
+                _lastRemoteAppliedAt = now;
                 Status?.Invoke("휴대폰에서 받은 텍스트를 Windows 클립보드에 적용했습니다.");
                 return true;
             }
@@ -290,6 +306,8 @@ public sealed class ClipboardHistoryService : IDisposable
             using var copy = new Bitmap(source);
             Clipboard.SetImage(copy);
             AddImage(copy, publish: false);
+            _lastRemoteHash = content.Hash;
+            _lastRemoteAppliedAt = now;
             Status?.Invoke("휴대폰에서 받은 이미지를 Windows 클립보드에 적용했습니다.");
             return true;
         }
