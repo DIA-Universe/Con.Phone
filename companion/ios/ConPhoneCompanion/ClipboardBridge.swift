@@ -812,7 +812,7 @@ final class ClipboardBridge: NSObject, ObservableObject {
     private func completeActiveBleTransferAck(
         _ transferId: Data
     ) {
-        guard bleAwaitingContentAck,
+        guard bleActiveContent != nil,
               let expected = bleActiveTransferId,
               expected == transferId else {
             status =
