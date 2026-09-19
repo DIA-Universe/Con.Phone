@@ -217,6 +217,8 @@ class ClipboardBridgeService : Service() {
                     g.discoverServices()
                 }
             } else if (newState == BluetoothProfile.STATE_DISCONNECTED) {
+                bleAckQueue.clear()
+                bleWritingAck = false
                 requeueActiveBleTransfer("Bluetooth 연결 끊김")
                 if (gatt === g) gatt = null
                 tx = null
@@ -315,6 +317,7 @@ class ClipboardBridgeService : Service() {
             }
             else if (characteristic.uuid == DIRECT_LINK_UUID) {
                 activeTarget = false
+                bleAckQueue.clear()
                 directConfig = null
                 p2p?.close()
                 p2p = null
@@ -341,6 +344,7 @@ class ClipboardBridgeService : Service() {
             }
             else if (characteristic.uuid == DIRECT_LINK_UUID) {
                 activeTarget = false
+                bleAckQueue.clear()
                 directConfig = null
                 p2p?.close()
                 p2p = null
@@ -429,6 +433,7 @@ class ClipboardBridgeService : Service() {
                     activeTarget = reportedActive
 
                     if (!reportedActive) {
+                        bleAckQueue.clear()
                         directConfig = null
                         p2p?.close()
                         p2p = null
