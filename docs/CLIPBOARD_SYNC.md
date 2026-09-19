@@ -198,3 +198,15 @@ Windows의 "BLE 이미지 한도"가 기준값이다. Clipboard GATT Capabilitie
 - Android 공유 메뉴 항목은 filesDir + SharedPreferences metadata에 24시간 보관하며, 서비스 프로세스가 종료되어도 다음 실행에서 재전송한다. 실제 P2P/BLE 전송 성공 뒤에만 삭제한다.
 - Android 영구 대기열 metadata는 동기 commit으로 확정해 공유 직후 프로세스 종료에도 항목 유실 가능성을 줄인다.
 - Android의 Nearby Wi-Fi 권한은 P2P 전용이다. 권한을 거부해도 BLE 텍스트/작은 이미지 fallback은 계속 동작한다.
+
+
+## 전송 완료 / ACK 의미
+
+Con.Phone은 로컬 socket/GATT write 성공만으로 클립보드 전송 완료를 판단하지 않는다.
+
+- P2P: 수신 측이 모든 wire chunk를 재조립하고 OS 클립보드 적용에 성공한 뒤 `CPACK1 + transferId` ACK를 AES-GCM 보호 채널로 회신한다.
+- Windows -> Android/iOS BLE: 모바일이 전체 clipboard transfer를 재조립하고 OS 클립보드 적용에 성공한 뒤 ACK control frame을 BLE secondary fragmentation으로 RX characteristic에 회신한다. ACK도 MTU 23 환경을 고려해 일반 BLE fragment로 분할한다.
+- Android/iOS -> Windows BLE: 마지막 GATT write response는 Windows STA thread에서 실제 Clipboard 적용 결과를 기다린 뒤 성공/오류로 반환한다.
+- sender는 ACK 또는 성공 write-response가 확인되기 전에는 Share payload를 영구 대기열에서 삭제하지 않는다.
+- ACK가 유실되면 동일 content가 다른 경로로 재시도될 수 있으므로 Android/iOS는 최근 수신 SHA-256을 짧게 기억해 동일 fallback 재전송을 재적용하지 않는다.
+- P2P frame 자체에는 monotonic authenticated sequence가 포함되어 세션 내 replay/out-of-order를 거부한다.
