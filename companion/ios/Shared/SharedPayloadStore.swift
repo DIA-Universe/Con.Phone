@@ -16,6 +16,7 @@ struct SharedPayloadEnvelope: Codable {
 enum SharedPayloadStore {
     static let appGroup = "group.universe.dia.conphone"
     private static let defaultsKey = "pending-share-v2"
+    private static let legacyDefaultsKey = "pending-share-v1"
     private static let directoryName = "SharedPayloads"
     private static let maxTextBytes = 1024 * 1024
     private static let maxImageBytes = 32 * 1024 * 1024
@@ -158,14 +159,30 @@ enum SharedPayloadStore {
     }
 
     private static func loadQueue() -> [SharedPayloadEnvelope] {
-        guard let defaults = UserDefaults(suiteName: appGroup),
-              let data = defaults.data(forKey: defaultsKey),
-              let queue = try? JSONDecoder().decode(
-                [SharedPayloadEnvelope].self,
-                from: data) else {
+        guard let defaults = UserDefaults(suiteName: appGroup) else {
             return []
         }
-        return queue
+
+        if let data = defaults.data(forKey: defaultsKey),
+           let queue = try? JSONDecoder().decode(
+                [SharedPayloadEnvelope].self,
+                from: data) {
+            return queue
+        }
+
+        // One-time migration from the original single-item share slot.
+        if let legacyData = defaults.data(forKey: legacyDefaultsKey),
+           let legacy = try? JSONDecoder().decode(
+                SharedPayloadEnvelope.self,
+                from: legacyData) {
+            defaults.removeObject(forKey: legacyDefaultsKey)
+            if let data = try? JSONEncoder().encode([legacy]) {
+                defaults.set(data, forKey: defaultsKey)
+            }
+            return [legacy]
+        }
+
+        return []
     }
 
     private static func saveQueue(_ queue: [SharedPayloadEnvelope]) {
