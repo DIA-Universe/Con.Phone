@@ -775,22 +775,28 @@ class ClipboardBridgeService : Service() {
         toast("텍스트 또는 이미지만 지원합니다.")
     }
 
-    private fun sendContent(content: ClipboardContent) {
+    private fun sendContent(
+        content: ClipboardContent,
+        persistedShareId: String? = null
+    ) {
         val hasOlderPending = synchronized(pendingLock) {
             pruneExpiredPendingLocked()
             pendingQueue.isNotEmpty()
         }
 
         if (hasOlderPending) {
-            if (setPendingContent(content))
+            if (setPendingContent(content, persistedShareId))
                 flushPendingContent()
             return
         }
 
-        sendContentInternal(content)
+        sendContentInternal(content, persistedShareId)
     }
 
-    private fun sendContentInternal(content: ClipboardContent) {
+    private fun sendContentInternal(
+        content: ClipboardContent,
+        persistedShareId: String? = null
+    ) {
         val fast = p2p
         if (fast?.ready == true) {
             executor.execute {
@@ -798,20 +804,24 @@ class ClipboardBridgeService : Service() {
                     ClipboardProtocol.encodeSequence(content).forEach(fast::sendFrame)
                 }.onSuccess {
                     showStatus("Clipboard 전송 완료 · P2P")
+                    completePersistedShare(persistedShareId)
                     flushPendingContent()
                 }.onFailure {
                     fast.close()
                     if (p2p === fast) p2p = null
-                    sendViaBleOrQueue(content)
+                    sendViaBleOrQueue(content, persistedShareId)
                 }
             }
             return
         }
 
-        sendViaBleOrQueue(content)
+        sendViaBleOrQueue(content, persistedShareId)
     }
 
-    private fun sendViaBleOrQueue(content: ClipboardContent) {
+    private fun sendViaBleOrQueue(
+        content: ClipboardContent,
+        persistedShareId: String? = null
+    ) {
         val bleAllowed =
             content.kind == ClipboardKind.TEXT ||
             content.data.size <= bleImageLimitBytes
@@ -821,11 +831,11 @@ class ClipboardBridgeService : Service() {
             gatt != null &&
             rx != null &&
             credential != null) {
-            enqueueBle(content)
+            enqueueBle(content, persistedShareId)
             return
         }
 
-        if (!setPendingContent(content))
+        if (!setPendingContent(content, persistedShareId))
             return
 
         showStatus(
@@ -863,10 +873,15 @@ class ClipboardBridgeService : Service() {
             first
         }
 
-        sendContentInternal(pending.content)
+        sendContentInternal(
+            pending.content,
+            pending.persistedShareId)
     }
 
-    private fun setPendingContent(content: ClipboardContent): Boolean {
+    private fun setPendingContent(
+        content: ClipboardContent,
+        persistedShareId: String? = null
+    ): Boolean {
         val pending = synchronized(pendingLock) {
             pruneExpiredPendingLocked()
 
@@ -879,6 +894,7 @@ class ClipboardBridgeService : Service() {
                 val item = PendingSend(
                     id = id,
                     content = content,
+                    persistedShareId = persistedShareId,
                     expiresAt = System.currentTimeMillis() + PENDING_TTL_MS)
                 pendingQueue.addLast(item)
                 pendingBytes += size
@@ -945,11 +961,14 @@ class ClipboardBridgeService : Service() {
             else " · 대기 ${pendingQueue.size}개 / ${pendingBytes / 1024} KiB"
         }
 
-    private fun enqueueBle(content: ClipboardContent) {
+    private fun enqueueBle(
+        content: ClipboardContent,
+        persistedShareId: String? = null
+    ) {
         val g = gatt
         val rxLocal = rx
         if (g == null || rxLocal == null || credential == null) {
-            if (setPendingContent(content)) {
+            if (setPendingContent(content, persistedShareId)) {
                 showStatus("PC 연결 후 Clipboard 전송 대기")
                 main.post { beginScan() }
             }
@@ -966,12 +985,13 @@ class ClipboardBridgeService : Service() {
                 false
             } else {
                 bleActiveContent = content
+                bleActivePersistentShareId = persistedShareId
                 true
             }
         }
 
         if (!accepted) {
-            if (setPendingContent(content))
+            if (setPendingContent(content, persistedShareId))
                 showStatus("BLE 전송 중 · 다음 Clipboard를 대기열에 추가했습니다.")
             return
         }
@@ -983,11 +1003,8 @@ class ClipboardBridgeService : Service() {
                 ClipboardProtocol.splitBle(frame, maxGatt, transfer).forEach(bleQueue::add)
             }
         }.onFailure {
-            synchronized(bleSendLock) {
-                bleActiveContent = null
-                bleQueue.clear()
-            }
-            showStatus("BLE Clipboard 프레임 준비 실패: ${it.message}")
+            requeueActiveBleTransfer(
+                "BLE Clipboard 프레임 준비 실패: ${it.message}")
             return
         }
 
@@ -995,18 +1012,23 @@ class ClipboardBridgeService : Service() {
     }
 
     private fun requeueActiveBleTransfer(reason: String) {
-        val content = synchronized(bleSendLock) {
-            val current = bleActiveContent
+        val active = synchronized(bleSendLock) {
+            val current = bleActiveContent ?: return
+            val persistedId = bleActivePersistentShareId
             bleActiveContent = null
+            bleActivePersistentShareId = null
             bleWriting = false
             bleQueue.clear()
-            current
-        } ?: return
+            current to persistedId
+        }
 
-        if (setPendingContent(content)) {
+        if (setPendingContent(active.first, active.second)) {
             showStatus("$reason · Clipboard를 재전송 대기열로 이동했습니다.")
         } else {
-            showStatus("$reason · 재전송 대기열이 가득 차 Clipboard를 보존하지 못했습니다.")
+            synchronized(pendingLock) {
+                active.second?.let { loadedPersistentShareIds.remove(it) }
+            }
+            showStatus("$reason · 메모리 대기열은 가득 찼지만 영구 공유 항목은 보존합니다.")
         }
     }
 
@@ -1021,11 +1043,15 @@ class ClipboardBridgeService : Service() {
         }
 
         val next = bleQueue.poll() ?: run {
-            synchronized(bleSendLock) {
+            val persistedId = synchronized(bleSendLock) {
+                val id = bleActivePersistentShareId
                 bleActiveContent = null
+                bleActivePersistentShareId = null
                 bleWriting = false
+                id
             }
             showStatus("Clipboard 전송 완료 · BLE")
+            completePersistedShare(persistedId)
             flushPendingContent()
             return
         }
@@ -1153,6 +1179,7 @@ class ClipboardBridgeService : Service() {
     override fun onDestroy() {
         synchronized(bleSendLock) {
             bleActiveContent = null
+            bleActivePersistentShareId = null
             bleWriting = false
             bleQueue.clear()
         }
