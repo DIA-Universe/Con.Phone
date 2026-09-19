@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using System.Text;
@@ -32,6 +33,16 @@ public sealed class ClipboardHistoryService : IDisposable
     private readonly List<ClipboardEntry> _entries = [];
     private readonly ClipboardSink _sink;
     private readonly System.Windows.Forms.Timer _retryTimer;
+    private readonly BlockingCollection<ImageCaptureWork> _imageCaptureQueue =
+        new(new ConcurrentQueue<ImageCaptureWork>(), 4);
+    private readonly CancellationTokenSource _imageCaptureLifetime = new();
+    private readonly Task _imageCaptureWorker;
+
+    private sealed record ImageCaptureWork(
+        Bitmap Image,
+        bool Publish,
+        long Generation,
+        DateTime CapturedAt);
 
     private int _limit;
     private bool _captureText;
@@ -44,6 +55,7 @@ public sealed class ClipboardHistoryService : IDisposable
     private uint _suppressedSelfClipboardSequence;
     private DateTimeOffset _suppressedSelfClipboardUntil;
     private uint _lastCapturedClipboardSequence;
+    private long _captureGeneration;
 
     private static readonly string Root = Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
@@ -68,6 +80,8 @@ public sealed class ClipboardHistoryService : IDisposable
         Directory.CreateDirectory(Root);
         Directory.CreateDirectory(ImageRoot);
         Load();
+
+        _imageCaptureWorker = Task.Run(ProcessImageCaptureQueue);
 
         _sink = new ClipboardSink(this);
         _retryTimer = new System.Windows.Forms.Timer { Interval = 90 };
@@ -135,6 +149,8 @@ public sealed class ClipboardHistoryService : IDisposable
                         sequence == 0 ||
                         sequence != _lastCapturedClipboardSequence;
 
+                    Interlocked.Increment(ref _captureGeneration);
+
                     AddText(
                         text,
                         publish: publish);
@@ -152,14 +168,25 @@ public sealed class ClipboardHistoryService : IDisposable
 
                 if (image is not null)
                 {
+                    EnsureSafeImageDimensions(
+                        image.Width,
+                        image.Height);
+
                     var sequence = GetClipboardSequenceNumber();
                     var publish =
                         sequence == 0 ||
                         sequence != _lastCapturedClipboardSequence;
+                    var generation =
+                        Interlocked.Increment(
+                            ref _captureGeneration);
+                    var capturedAt = DateTime.Now;
+                    var copy = new Bitmap(image);
 
-                    AddImage(
-                        image,
-                        publish: publish);
+                    QueueImageCapture(
+                        copy,
+                        publish,
+                        generation,
+                        capturedAt);
 
                     if (sequence != 0)
                         _lastCapturedClipboardSequence = sequence;
@@ -184,6 +211,86 @@ public sealed class ClipboardHistoryService : IDisposable
         {
             _retryTimer.Stop();
             Status?.Invoke($"클립보드 읽기 실패: {ex.Message}");
+        }
+    }
+
+    private void QueueImageCapture(
+        Bitmap image,
+        bool publish,
+        long generation,
+        DateTime capturedAt)
+    {
+        if (_disposed || _imageCaptureQueue.IsAddingCompleted)
+        {
+            image.Dispose();
+            return;
+        }
+
+        var work = new ImageCaptureWork(
+            image,
+            publish,
+            generation,
+            capturedAt);
+
+        if (_imageCaptureQueue.TryAdd(work))
+            return;
+
+        // Keep the newest clipboard intent under bursty screenshot/copy workloads.
+        // The discarded item owns its Bitmap and must be disposed here.
+        if (_imageCaptureQueue.TryTake(out var stale))
+            stale.Image.Dispose();
+
+        if (!_imageCaptureQueue.TryAdd(work))
+        {
+            image.Dispose();
+            Status?.Invoke(
+                "이미지 처리 대기열이 가득 차 최신 캡처를 기록하지 못했습니다.");
+            return;
+        }
+
+        Status?.Invoke(
+            "이미지 처리 대기열이 밀려 오래된 캡처 1개를 건너뛰었습니다.");
+    }
+
+    private void ProcessImageCaptureQueue()
+    {
+        try
+        {
+            foreach (var work in _imageCaptureQueue.GetConsumingEnumerable(
+                         _imageCaptureLifetime.Token))
+            {
+                using (work.Image)
+                {
+                    try
+                    {
+                        var publish =
+                            work.Publish &&
+                            work.Generation ==
+                                Interlocked.Read(
+                                    ref _captureGeneration) &&
+                            !_disposed;
+
+                        AddImage(
+                            work.Image,
+                            publish,
+                            work.CapturedAt);
+                    }
+                    catch (Exception ex)
+                    {
+                        if (!_disposed)
+                            Status?.Invoke(
+                                $"이미지 클립보드 백그라운드 처리 실패: {ex.Message}");
+                    }
+                }
+            }
+        }
+        catch (OperationCanceledException)
+        {
+        }
+        finally
+        {
+            while (_imageCaptureQueue.TryTake(out var work))
+                work.Image.Dispose();
         }
     }
 
@@ -286,8 +393,13 @@ public sealed class ClipboardHistoryService : IDisposable
                     Text = text,
                     Preview = preview,
                     Hash = hash,
-                    CapturedAt = DateTime.Now
+                    CapturedAt = capturedAt ?? DateTime.Now
                 });
+
+                _entries.Sort(
+                    static (left, right) =>
+                        right.CapturedAt.CompareTo(
+                            left.CapturedAt));
 
                 TrimLocked();
                 SaveLocked();
@@ -307,7 +419,10 @@ public sealed class ClipboardHistoryService : IDisposable
             ContentCaptured?.Invoke(ClipboardContent.FromText(text));
     }
 
-    private void AddImage(Image image, bool publish)
+    private void AddImage(
+        Image image,
+        bool publish,
+        DateTime? capturedAt = null)
     {
         EnsureSafeImageDimensions(
             image.Width,
@@ -354,15 +469,19 @@ public sealed class ClipboardHistoryService : IDisposable
             }
         }
 
-        if (historyChanged)
+        if (!_disposed && historyChanged)
         {
             Status?.Invoke("이미지/캡처 클립보드를 기록했습니다.");
             Changed?.Invoke();
         }
 
         // Re-copying the same image is also a new sync generation.
-        if (publish)
-            ContentCaptured?.Invoke(ClipboardContent.FromImage(ClipboardContentKind.Png, bytes));
+        // Generation filtering happens in the background worker before this call.
+        if (!_disposed && publish)
+            ContentCaptured?.Invoke(
+                ClipboardContent.FromImage(
+                    ClipboardContentKind.Png,
+                    bytes));
     }
 
     public bool TryGetContent(string id, out ClipboardContent? content)
@@ -439,6 +558,7 @@ public sealed class ClipboardHistoryService : IDisposable
 
             if (content.Kind == ClipboardContentKind.TextUtf8)
             {
+                Interlocked.Increment(ref _captureGeneration);
                 var text = content.GetText();
                 Clipboard.SetText(
                     text,
@@ -465,7 +585,19 @@ public sealed class ClipboardHistoryService : IDisposable
             using var copy = new Bitmap(source);
             Clipboard.SetImage(copy);
             ArmSelfClipboardSequence();
-            AddImage(copy, publish: false);
+
+            var generation =
+                Interlocked.Increment(
+                    ref _captureGeneration);
+
+            // Windows clipboard application is complete at this point. History PNG
+            // encoding/disk I/O can happen off the STA thread without delaying ACK.
+            QueueImageCapture(
+                new Bitmap(copy),
+                publish: false,
+                generation,
+                DateTime.Now);
+
             _lastRemoteHash = content.Hash;
             _lastRemoteAppliedAt = now;
             changed = true;
@@ -680,6 +812,25 @@ public sealed class ClipboardHistoryService : IDisposable
         _retryTimer.Stop();
         _retryTimer.Dispose();
         _sink.Dispose();
+
+        _imageCaptureQueue.CompleteAdding();
+
+        try
+        {
+            if (!_imageCaptureWorker.Wait(750))
+                _imageCaptureLifetime.Cancel();
+        }
+        catch (AggregateException ex)
+            when (ex.InnerExceptions.All(
+                inner => inner is OperationCanceledException))
+        {
+        }
+
+        while (_imageCaptureQueue.TryTake(out var work))
+            work.Image.Dispose();
+
+        _imageCaptureLifetime.Dispose();
+        _imageCaptureQueue.Dispose();
     }
 
     private sealed class ClipboardSink : NativeWindow, IDisposable
