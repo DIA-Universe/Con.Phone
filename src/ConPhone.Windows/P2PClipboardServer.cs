@@ -262,7 +262,7 @@ public sealed class P2PClipboardServer : IAsyncDisposable
                 : throw new InvalidOperationException("Clipboard P2P 연결이 없습니다.");
         }
 
-        foreach (var frame in ClipboardWireCodec.Encode(content))
+        foreach (var frame in ClipboardWireCodec.Enumerate(content))
             await client.WriteEncryptedAsync(frame, token).ConfigureAwait(false);
     }
 
