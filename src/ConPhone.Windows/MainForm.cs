@@ -952,7 +952,25 @@ public sealed class MainForm : Form
         });
     }
 
-    private Task<bool> ApplyReceivedClipboardAsync(
+    private async Task<bool> ApplyReceivedClipboardAsync(
+        ClipboardContent content)
+    {
+        for (var attempt = 0; attempt < 6; attempt++)
+        {
+            var applied = await ApplyReceivedClipboardOnUiAsync(
+                content).ConfigureAwait(false);
+
+            if (applied)
+                return true;
+
+            if (attempt < 5)
+                await Task.Delay(120).ConfigureAwait(false);
+        }
+
+        return false;
+    }
+
+    private Task<bool> ApplyReceivedClipboardOnUiAsync(
         ClipboardContent content)
     {
         var completion =
@@ -976,9 +994,6 @@ public sealed class MainForm : Form
 
                 if (applied)
                 {
-                    // Treat the remote value as the current clipboard generation
-                    // so a later PC -> phone switch cannot overwrite it with an
-                    // older local copy.
                     _latestLocalClipboard = content;
 
                     if (_ble.ApprovedId is { } sourceDeviceId)
