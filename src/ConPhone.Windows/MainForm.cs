@@ -1603,6 +1603,12 @@ public sealed class MainForm : Form
         }
     }
 
+    private static TimeSpan ClipboardSendTimeout(
+        ClipboardContent content) =>
+        content.Kind == ClipboardContentKind.TextUtf8
+            ? TimeSpan.FromSeconds(12)
+            : TimeSpan.FromSeconds(60);
+
     private async Task SyncLatestClipboardToPhoneAsync()
     {
         if (!_settings.ClipboardSyncEnabled ||
@@ -1625,9 +1631,7 @@ public sealed class MainForm : Form
             return;
 
         using var timeout = new CancellationTokenSource(
-            content.Kind == ClipboardContentKind.TextUtf8
-                ? TimeSpan.FromSeconds(5)
-                : TimeSpan.FromSeconds(45));
+            ClipboardSendTimeout(content));
 
         if (await _clipboardSync.SendAsync(
                 content,
@@ -1652,9 +1656,7 @@ public sealed class MainForm : Form
             ?? throw new InvalidOperationException("활성 휴대폰을 먼저 선택해 주세요.");
 
         using var timeout = new CancellationTokenSource(
-            content.Kind == ClipboardContentKind.TextUtf8
-                ? TimeSpan.FromSeconds(5)
-                : TimeSpan.FromSeconds(45));
+            ClipboardSendTimeout(content));
 
         if (!await _clipboardSync.SendAsync(
                 content,
