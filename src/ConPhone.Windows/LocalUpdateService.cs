@@ -64,7 +64,22 @@ public static class LocalUpdateService
             : TryGetSignerThumbprint(currentPath);
         var candidateSigner = TryGetSignerThumbprint(path);
 
+        var currentSignatureValid =
+            currentSigner is not null &&
+            currentPath is not null &&
+            AuthenticodeVerifier.IsValid(currentPath);
+
+        var candidateSignatureValid =
+            candidateSigner is not null &&
+            AuthenticodeVerifier.IsValid(path);
+
+        if (currentSigner is not null && !currentSignatureValid)
+            throw new InvalidOperationException(
+                "현재 Con.Phone의 Authenticode 서명이 유효하지 않습니다. 업데이트를 중단합니다.");
+
         var signatureVerified =
+            currentSignatureValid &&
+            candidateSignatureValid &&
             currentSigner is not null &&
             candidateSigner is not null &&
             string.Equals(
@@ -72,9 +87,13 @@ public static class LocalUpdateService
                 candidateSigner,
                 StringComparison.OrdinalIgnoreCase);
 
+        if (currentSigner is not null && !candidateSignatureValid)
+            throw new InvalidOperationException(
+                "업데이트 EXE의 Authenticode 서명이 유효하지 않습니다.");
+
         if (currentSigner is not null && !signatureVerified)
             throw new InvalidOperationException(
-                "현재 Con.Phone과 업데이트 파일의 Authenticode 서명자가 다릅니다. 업데이트를 중단합니다.");
+                "현재 Con.Phone과 업데이트 파일의 유효한 Authenticode 서명자가 다릅니다. 업데이트를 중단합니다.");
 
         return new UpdateCandidate(
             path,
