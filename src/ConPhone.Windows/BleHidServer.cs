@@ -70,10 +70,16 @@ public sealed class BleHidServer : IDisposable
     public bool DesiredRunning => _desiredRunning;
     public long AutoRecoveryAttempts => Interlocked.Read(ref _autoRecoveryAttempts);
     public long AutoRecoverySuccesses => Interlocked.Read(ref _autoRecoverySuccesses);
-    public DateTimeOffset? LastRecoverySuccess =>
-        Interlocked.Read(ref _lastRecoverySuccessUnixMs) is var value && value > 0
-            ? DateTimeOffset.FromUnixTimeMilliseconds(value)
-            : null;
+    public DateTimeOffset? LastRecoverySuccess
+    {
+        get
+        {
+            var value = Interlocked.Read(ref _lastRecoverySuccessUnixMs);
+            return value > 0
+                ? DateTimeOffset.FromUnixTimeMilliseconds(value)
+                : null;
+        }
+    }
     public int KeyboardSubscribers => LiveClientCount(_keyboard);
     public int MouseSubscribers => LiveClientCount(_mouse);
     public int SystemSubscribers => LiveClientCount(_system);
