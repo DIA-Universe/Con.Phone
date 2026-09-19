@@ -114,6 +114,8 @@ Check("pointer pacing fallback 16ms", PointerPacing.FromBleConnectionInterval(0)
 Check("pointer pacing 12 units = 15ms", PointerPacing.FromBleConnectionInterval(12) == 15);
 Check("pointer pacing 24 units = 30ms", PointerPacing.FromBleConnectionInterval(24) == 30);
 Check("pointer pacing lower clamp", PointerPacing.FromBleConnectionInterval(6) == 8);
+Check("pointer pacing preserves 100ms negotiated interval", PointerPacing.FromBleConnectionInterval(80) == 100);
+Check("pointer pacing preserves 250ms negotiated interval", PointerPacing.FromBleConnectionInterval(200) == 250);
 
 var p2pSecret = Enumerable.Range(0, 32).Select(i => (byte)i).ToArray();
 var p2pDeviceHash = Enumerable.Range(32, 32).Select(i => (byte)i).ToArray();
