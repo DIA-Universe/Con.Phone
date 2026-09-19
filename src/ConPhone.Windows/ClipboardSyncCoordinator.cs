@@ -39,6 +39,7 @@ public sealed class ClipboardSyncCoordinator : IAsyncDisposable
             trustedDevice,
             enabled,
             bleImageLimitBytes,
+            () => _direct.Requested,
             GetDirectLinkConfig);
         _p2p = new P2PClipboardServer(approvedDeviceId, enabled);
 
