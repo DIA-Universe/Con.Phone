@@ -56,6 +56,9 @@ final class ClipboardBridge: NSObject, ObservableObject {
     private var bleTransferCompletion: (() -> Void)?
     private var bleActiveContent: ClipboardContent?
     private var bleActiveSharedPayloadId: UUID?
+    private var bleActiveTransferId: Data?
+    private var bleAwaitingContentAck = false
+    private var bleAckGeneration = 0
     private var pendingContent: ClipboardContent?
     private var pendingSharedPayloadId: UUID?
     private var pendingGeneration = 0
@@ -410,6 +413,10 @@ final class ClipboardBridge: NSObject, ObservableObject {
                 content,
                 chunkSize: 16 * 1024)
 
+            bleActiveTransferId = cursor.transferId
+            bleAwaitingContentAck = false
+            bleAckGeneration += 1
+
             while let frame = cursor.next() {
                 let transferId = UInt32.random(in: UInt32.min...UInt32.max)
                 writeQueue.append(contentsOf: try ClipboardProtocol.splitBle(
@@ -426,6 +433,9 @@ final class ClipboardBridge: NSObject, ObservableObject {
             bleTransferCompletion = nil
             bleActiveContent = nil
             bleActiveSharedPayloadId = nil
+            bleActiveTransferId = nil
+            bleAwaitingContentAck = false
+            bleAckGeneration += 1
             throw error
         }
     }
@@ -444,6 +454,9 @@ final class ClipboardBridge: NSObject, ObservableObject {
         bleTransferCompletion = nil
         bleActiveContent = nil
         bleActiveSharedPayloadId = nil
+        bleActiveTransferId = nil
+        bleAwaitingContentAck = false
+        bleAckGeneration += 1
 
         setPendingContent(
             content,
@@ -732,14 +745,26 @@ final class ClipboardBridge: NSObject, ObservableObject {
             writeInFlightIsAck = false
             next = writeQueue.removeFirst()
         } else {
-            if bleActiveContent != nil {
-                let completion = bleTransferCompletion
-                bleTransferCompletion = nil
-                bleActiveContent = nil
-                bleActiveSharedPayloadId = nil
-                status = "Clipboard 전송 완료 · BLE"
-                completion?()
-                flushPendingContent()
+            if bleActiveContent != nil,
+               bleActiveTransferId != nil,
+               !bleAwaitingContentAck {
+                bleAwaitingContentAck = true
+                bleAckGeneration += 1
+                let generation = bleAckGeneration
+                status =
+                    "Clipboard BLE 프레임 전송 완료 · Windows 적용 ACK 대기"
+
+                DispatchQueue.main.asyncAfter(deadline: .now() + 45) { [weak self] in
+                    guard let self,
+                          self.bleAwaitingContentAck,
+                          self.bleAckGeneration == generation,
+                          self.bleActiveContent != nil else {
+                        return
+                    }
+
+                    self.recoverActiveBleTransfer(
+                        "BLE Clipboard 적용 ACK 시간 초과")
+                }
             }
             return
         }
@@ -760,6 +785,11 @@ final class ClipboardBridge: NSObject, ObservableObject {
                 return
             }
 
+            if let ackId = ClipboardProtocol.decodeAck(frame) {
+                completeActiveBleTransferAck(ackId)
+                return
+            }
+
             let chunk =
                 try ClipboardProtocol.decode(frame)
             guard let content =
@@ -777,6 +807,31 @@ final class ClipboardBridge: NSObject, ObservableObject {
             status =
                 "Clipboard BLE 수신 거부: \(error.localizedDescription)"
         }
+    }
+
+    private func completeActiveBleTransferAck(
+        _ transferId: Data
+    ) {
+        guard bleAwaitingContentAck,
+              let expected = bleActiveTransferId,
+              expected == transferId else {
+            status =
+                "일치하지 않거나 늦게 도착한 BLE Clipboard ACK를 무시했습니다."
+            return
+        }
+
+        let completion = bleTransferCompletion
+        bleTransferCompletion = nil
+        bleActiveContent = nil
+        bleActiveSharedPayloadId = nil
+        bleActiveTransferId = nil
+        bleAwaitingContentAck = false
+        bleAckGeneration += 1
+
+        status =
+            "Clipboard 전송 완료 · BLE · Windows 적용 ACK 확인"
+        completion?()
+        flushPendingContent()
     }
 
     private func enqueueBleAck(_ transferId: Data) throws {
