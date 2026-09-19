@@ -636,7 +636,10 @@ extension ClipboardBridge: CBPeripheralDelegate {
             case rxUUID:
                 rx = characteristic
             case secretUUID:
-                peripheral.readValue(for: characteristic)
+                // Read after all characteristics are collected so the
+                // Secret -> Capabilities -> DirectLink chain never depends
+                // on CoreBluetooth's characteristic array order.
+                break
             case capabilitiesUUID:
                 capabilitiesCharacteristic = characteristic
             case directLinkUUID:
@@ -644,6 +647,13 @@ extension ClipboardBridge: CBPeripheralDelegate {
             default:
                 break
             }
+        }
+
+        if let secret = service.characteristics?.first(where: { $0.uuid == secretUUID }) {
+            peripheral.readValue(for: secret)
+        } else {
+            status = "Clipboard 인증 characteristic 없음"
+            return
         }
 
         status = "BLE Clipboard 준비 중"
@@ -702,7 +712,7 @@ extension ClipboardBridge: CBPeripheralDelegate {
 
         if characteristic.uuid == capabilitiesUUID {
             bleImageLimitBytes = parseBleImageLimit(value)
-            status = "BLE Clipboard 이미지 한도 · (bleImageLimitBytes / 1024) KiB"
+            status = "BLE Clipboard 이미지 한도 · \(bleImageLimitBytes / 1024) KiB"
             if let directLinkCharacteristic {
                 peripheral.readValue(for: directLinkCharacteristic)
             }
