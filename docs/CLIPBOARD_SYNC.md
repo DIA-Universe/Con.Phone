@@ -210,3 +210,27 @@ Con.Phone은 로컬 socket/GATT write 성공만으로 클립보드 전송 완료
 - sender는 ACK 또는 성공 write-response가 확인되기 전에는 Share payload를 영구 대기열에서 삭제하지 않는다.
 - ACK가 유실되면 동일 content가 다른 경로로 재시도될 수 있으므로 Android/iOS는 최근 수신 SHA-256을 짧게 기억해 동일 fallback 재전송을 재적용하지 않는다.
 - P2P frame 자체에는 monotonic authenticated sequence가 포함되어 세션 내 replay/out-of-order를 거부한다.
+
+
+## 휴대폰 → PC 공유 대기열
+
+모바일 OS의 클립보드 개인정보 보호 정책 때문에 휴대폰 → PC는 명시적 사용자 동작을 사용한다.
+
+### Android
+
+- 다른 앱의 공유 메뉴에서 **Con.Phone**을 선택할 수 있다.
+- 공유 텍스트/이미지는 앱 내부 영구 FIFO 대기열에 저장한다.
+- 최대 8개, 총 40 MiB, 각 이미지는 최대 32 MiB, 24시간 TTL이다.
+- BLE/P2P가 아직 준비되지 않았어도 항목은 보존된다.
+- Windows가 실제 클립보드 적용 ACK를 반환한 뒤에만 영구 항목을 삭제한다.
+- Nearby Wi-Fi 권한은 P2P 전용이다. 거부해도 BLE 텍스트/작은 이미지 전송은 계속 동작한다.
+- 사용자가 나중에 P2P 권한을 허용하면 Companion은 즉시 P2P 설정을 다시 읽고 영구 공유 대기열을 재시도한다.
+
+### iOS/iPadOS
+
+- Share Extension에서 텍스트/이미지를 App Group 대기열에 저장한다.
+- 앱과 Share Extension은 `group.universe.dia.conphone`을 공유한다.
+- 최대 8개, 이미지 총 40 MiB, 각 이미지는 최대 32 MiB, 24시간 TTL이다.
+- Share Extension은 네트워크 전송을 직접 하지 않는다. 사용자가 Con.Phone 앱을 열거나 활성화하면 FIFO 순서로 전송한다.
+- Windows 적용 ACK가 확인된 항목만 App Group 대기열에서 삭제한다.
+- 한 항목 전송이 끝나면 다음 영구 Share 항목을 자동으로 이어서 drain한다.
