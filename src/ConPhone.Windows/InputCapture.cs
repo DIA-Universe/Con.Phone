@@ -146,7 +146,7 @@ public sealed class InputCapture : IDisposable
         }
     }
 
-    public void Activate()
+    public void Activate(bool preserveLocalModifierUps = true)
     {
         lock (_gate)
         {
@@ -167,7 +167,8 @@ public sealed class InputCapture : IDisposable
 
                 // Modifier down events were delivered to Windows while input was local. Once remote
                 // mode starts their key-up events must still reach Windows or Ctrl/Alt can appear stuck.
-                if (vk != _toggleHotkey.Key &&
+                if (preserveLocalModifierUps &&
+                    vk != _toggleHotkey.Key &&
                     vk != _nextDeviceHotkey.Key &&
                     IsPhysicalModifier(vk))
                     _localPassthroughUntilUp.Add(vk);
