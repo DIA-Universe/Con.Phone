@@ -968,11 +968,19 @@ public sealed class MainForm : Form
     }
 
     private async Task<bool> ApplyReceivedClipboardAsync(
+        string sourceDeviceId,
         ClipboardContent content)
     {
         for (var attempt = 0; attempt < 6; attempt++)
         {
+            if (!string.Equals(
+                    _ble.ApprovedId,
+                    sourceDeviceId,
+                    StringComparison.Ordinal))
+                return false;
+
             var applied = await ApplyReceivedClipboardOnUiAsync(
+                sourceDeviceId,
                 content).ConfigureAwait(false);
 
             if (applied)
@@ -986,6 +994,7 @@ public sealed class MainForm : Form
     }
 
     private Task<bool> ApplyReceivedClipboardOnUiAsync(
+        string sourceDeviceId,
         ClipboardContent content)
     {
         var completion =
@@ -996,7 +1005,11 @@ public sealed class MainForm : Form
         {
             if (_closed ||
                 IsDisposed ||
-                _clipboard is null)
+                _clipboard is null ||
+                !string.Equals(
+                    _ble.ApprovedId,
+                    sourceDeviceId,
+                    StringComparison.Ordinal))
             {
                 completion.TrySetResult(false);
                 return;
@@ -1015,15 +1028,13 @@ public sealed class MainForm : Form
                     var generation =
                         Interlocked.Increment(ref _latestClipboardGeneration);
 
-                    if (_ble.ApprovedId is { } sourceDeviceId)
-                        _lastSentClipboardGenerationByDevice[sourceDeviceId] =
-                            generation;
+                    _lastSentClipboardGenerationByDevice[sourceDeviceId] =
+                        generation;
 
                     Log(
                         "휴대폰 클립보드를 Windows에 적용했습니다.");
                 }
-                else if (applied &&
-                         _ble.ApprovedId is { } replaySourceId)
+                else if (applied)
                 {
                     // ACK/retry of an already-applied remote value succeeds
                     // without creating a new clipboard generation.
@@ -1032,7 +1043,7 @@ public sealed class MainForm : Form
                             1,
                             Interlocked.Read(
                                 ref _latestClipboardGeneration));
-                    _lastSentClipboardGenerationByDevice[replaySourceId] =
+                    _lastSentClipboardGenerationByDevice[sourceDeviceId] =
                         generation;
                 }
 
