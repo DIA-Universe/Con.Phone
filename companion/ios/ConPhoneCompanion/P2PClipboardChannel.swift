@@ -72,14 +72,28 @@ final class P2PClipboardChannel {
 
     func close() {
         queue.async { [weak self] in
-            self?.ready = false
-            self?.sessionKey = nil
-            self?.pendingWrites.removeAll()
-            self?.connection.cancel()
+            guard let self else { return }
+            self.handshakeGeneration += 1
+            self.ready = false
+            self.sessionKey = nil
+            self.pendingWrites.removeAll()
+            self.connection.cancel()
         }
     }
 
     private func handshake() {
+        handshakeGeneration += 1
+        let generation = handshakeGeneration
+
+        queue.asyncAfter(deadline: .now() + 5) { [weak self] in
+            guard let self,
+                  self.handshakeGeneration == generation,
+                  !self.ready else { return }
+
+            self.onStatus("P2P 인증 시간이 초과되어 연결을 종료합니다.")
+            self.connection.cancel()
+        }
+
         var clientNonce = Data(count: 16)
         clientNonce.withUnsafeMutableBytes { bytes in
             _ = SecRandomCopyBytes(kSecRandomDefault, 16, bytes.baseAddress!)
@@ -129,6 +143,7 @@ final class P2PClipboardChannel {
                         serverNonce
                     )
 
+                    self.handshakeGeneration += 1
                     self.ready = true
                     self.onStatus("Clipboard P2P 고속 채널 연결됨")
                     self.onReady()
