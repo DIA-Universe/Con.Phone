@@ -4,6 +4,7 @@ import CoreBluetooth
 import NetworkExtension
 import ImageIO
 import UIKit
+import UniformTypeIdentifiers
 
 final class ClipboardBridge: NSObject, ObservableObject {
     @Published var status = "대기 중"
@@ -180,15 +181,11 @@ final class ClipboardBridge: NSObject, ObservableObject {
             }
 
             // Windows System.Drawing does not reliably decode WebP.
-            // Decode off the main thread and normalize to PNG.
-            guard let image = UIImage(data: imageData),
-                  let png = image.pngData() else {
-                throw ClipboardProtocol.ProtocolError.invalidContent
-            }
-
-            try ensureSafeImageDimensions(
-                width: Int(image.size.width * image.scale),
-                height: Int(image.size.height * image.scale))
+            // Normalize off the main thread. ImageIO thumbnailing caps decoded
+            // memory while preserving original PNG/JPEG bytes untouched above.
+            let png =
+                try normalizedPNGForWindows(
+                    imageData)
 
             return try ClipboardProtocol.image(
                 .png,
@@ -833,6 +830,52 @@ final class ClipboardBridge: NSObject, ObservableObject {
         }
 
         return nil
+    }
+
+    private func normalizedPNGForWindows(
+        _ data: Data
+    ) throws -> Data {
+        guard let source =
+                CGImageSourceCreateWithData(
+                    data as CFData,
+                    nil) else {
+            throw ClipboardProtocol.ProtocolError.invalidContent
+        }
+
+        let options: [CFString: Any] = [
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceCreateThumbnailWithTransform: true,
+            kCGImageSourceThumbnailMaxPixelSize: 4096
+        ]
+
+        guard let image =
+                CGImageSourceCreateThumbnailAtIndex(
+                    source,
+                    0,
+                    options as CFDictionary) else {
+            throw ClipboardProtocol.ProtocolError.invalidContent
+        }
+
+        let output = NSMutableData()
+        guard let destination =
+                CGImageDestinationCreateWithData(
+                    output,
+                    UTType.png.identifier as CFString,
+                    1,
+                    nil) else {
+            throw ClipboardProtocol.ProtocolError.invalidContent
+        }
+
+        CGImageDestinationAddImage(
+            destination,
+            image,
+            nil)
+
+        guard CGImageDestinationFinalize(destination) else {
+            throw ClipboardProtocol.ProtocolError.invalidContent
+        }
+
+        return output as Data
     }
 
     private func ensureSafeImageDimensions(width: Int, height: Int) throws {
