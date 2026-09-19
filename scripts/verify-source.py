@@ -78,6 +78,13 @@ for path, text in [
 require("StartedWithoutAllAdvertisementData" not in win_direct,
         "Windows P2P uses an invalid GATT-only publisher status value")
 
+# Clipboard OFF must close the Windows P2P listener and allow later restart.
+require("StopListeningAsync" in win_p2p,
+        "Windows P2P server must support listener shutdown/restart")
+coordinator = read("src/ConPhone.Windows/ClipboardSyncCoordinator.cs")
+require("await _p2p.StopListeningAsync()" in coordinator,
+        "Clipboard disable path must close the P2P TCP listener")
+
 # P2P protocol v2 must match on all platforms.
 for path, text in [
     ("Windows P2P", win_p2p),
@@ -215,6 +222,7 @@ print("SOURCE SANITY PASSED")
 print(" - version alignment: 0.3.0")
 print(" - transport: Direct Wi-Fi/P2P -> BLE only")
 print(" - no Railway/internet relay")
+print(" - P2P listener lifecycle guarded")
 print(" - P2P v2 security markers aligned")
 print(" - clipboard caps aligned (1 MiB text / 32 MiB image)")
 print(" - BLE UUIDs aligned across Windows/Android/iOS")
