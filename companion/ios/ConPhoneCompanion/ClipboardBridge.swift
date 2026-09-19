@@ -36,6 +36,7 @@ final class ClipboardBridge: NSObject, ObservableObject {
     private var directHostRefreshAttempt = 0
     private var directConfigReadAttempt = 0
     private var pendingFastLinkConnect = false
+    private var directJoinInFlight = false
 
     private struct DirectConfig {
         let ssid: String
@@ -367,10 +368,14 @@ final class ClipboardBridge: NSObject, ObservableObject {
     }
 
     private func applyFastLinkConfiguration() {
+        guard !directJoinInFlight else { return }
+
         guard let config = directConfig else {
             status = "Windows P2P 고속 링크 정보가 아직 없습니다."
             return
         }
+
+        directJoinInFlight = true
 
         let hotspot = NEHotspotConfiguration(
             ssid: config.ssid,
@@ -383,6 +388,7 @@ final class ClipboardBridge: NSObject, ObservableObject {
         NEHotspotConfigurationManager.shared.apply(hotspot) { [weak self] error in
             DispatchQueue.main.async {
                 guard let self else { return }
+                self.directJoinInFlight = false
 
                 if let error {
                     let nsError = error as NSError
@@ -398,6 +404,7 @@ final class ClipboardBridge: NSObject, ObservableObject {
             }
         }
     }
+
 
     private func refreshDirectHost() {
         guard directHostRefreshAttempt < 8 else {
@@ -717,6 +724,7 @@ extension ClipboardBridge: CBCentralManagerDelegate {
         directLinkCharacteristic = nil
         bleImageLimitBytes = 512 * 1024
         activeTarget = false
+        directJoinInFlight = false
 
         let dataPlaneAlive = p2p?.ready == true
         recoverActiveBleTransfer("Bluetooth 연결 끊김")
@@ -810,6 +818,7 @@ extension ClipboardBridge: CBPeripheralDelegate {
                 }
             } else if characteristic.uuid == directLinkUUID {
                 activeTarget = false
+                directJoinInFlight = false
                 if let config = directConfig {
                     NEHotspotConfigurationManager.shared.removeConfiguration(
                         forSSID: config.ssid)
