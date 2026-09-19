@@ -100,6 +100,7 @@ uuids = [
     "67A7F002-7E5B-4A2E-9B8B-1C9A5B6D1001",
     "67A7F003-7E5B-4A2E-9B8B-1C9A5B6D1001",
     "67A7F004-7E5B-4A2E-9B8B-1C9A5B6D1001",
+    "67A7F005-7E5B-4A2E-9B8B-1C9A5B6D1001",
     "67A7F006-7E5B-4A2E-9B8B-1C9A5B6D1001",
 ]
 for uuid in uuids:
@@ -116,6 +117,14 @@ require("decodeAck" in android_service and "encodeAck" in android_protocol,
         "Android BLE application ACK missing")
 require("decodeAck" in ios_bridge and "encodeAck" in ios_protocol,
         "iOS BLE application ACK missing")
+require("CAPABILITIES_UUID" in android_service and
+        "parseActiveTarget" in android_service and
+        "parseBleImageLimit" in android_service,
+        "Android capabilities/active-target/BLE-limit negotiation missing")
+require("capabilitiesUUID" in ios_bridge and
+        "parseActiveTarget" in ios_bridge and
+        "parseBleImageLimit" in ios_bridge,
+        "iOS capabilities/active-target/BLE-limit negotiation missing")
 
 # Android foreground service / optional P2P permission model.
 require('android:foregroundServiceType="connectedDevice"' in android_manifest,
@@ -124,9 +133,17 @@ require("FOREGROUND_SERVICE_DATA_SYNC" not in android_manifest,
         "Android dataSync FGS permission should not be required")
 require("NEARBY_WIFI_DEVICES" in android_manifest,
         "Android P2P permission declaration missing")
-require("private fun hasBluetoothPermissions()" in read(
-    "companion/android/app/src/main/java/universe/dia/conphone/MainActivity.kt"),
-    "Android Bluetooth permission gate missing")
+require("private fun hasBluetoothPermissions()" in android_main,
+        "Android Bluetooth permission gate missing")
+require("NEARBY_WIFI_DEVICES" not in re.search(
+            r"private fun hasBluetoothPermissions\(\): Boolean =(?P<body>.*?)(?:\n\s*private fun|\Z)",
+            android_main,
+            re.S
+        ).group("body"),
+        "Android BLE transport must not require Nearby Wi-Fi permission")
+require("checkSelfPermission(Manifest.permission.BLUETOOTH_SCAN)" in android_share and
+        "checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT)" in android_share,
+        "Android Share target must be able to dispatch with Bluetooth-only permission")
 
 # iOS Share Extension must share the same App Group.
 app_group = "group.universe.dia.conphone"
@@ -194,6 +211,8 @@ print(" - P2P v2 security markers aligned")
 print(" - clipboard caps aligned (1 MiB text / 32 MiB image)")
 print(" - BLE UUIDs aligned across Windows/Android/iOS")
 print(" - application ACK paths present")
+print(" - capabilities UUID/active-target/BLE-limit negotiation guarded")
+print(" - Android BLE fallback remains independent of P2P permission")
 print(" - Android connectedDevice foreground service")
 print(" - iOS App Group + Share Extension aligned")
 print(" - durable Android/iOS Share queues guarded")
