@@ -100,7 +100,14 @@ public static class ClipboardWireCodec
     public const int DefaultChunkSize = 64 * 1024;
     public const int MaxInFlightTransfers = 8;
 
-    public static IReadOnlyList<byte[]> Encode(ClipboardContent content, int chunkSize = DefaultChunkSize)
+    public static IReadOnlyList<byte[]> Encode(
+        ClipboardContent content,
+        int chunkSize = DefaultChunkSize) =>
+        Enumerate(content, chunkSize).ToArray();
+
+    public static IEnumerable<byte[]> Enumerate(
+        ClipboardContent content,
+        int chunkSize = DefaultChunkSize)
     {
         if (chunkSize is < MinChunkSize or > MaxChunkSize)
             throw new ArgumentOutOfRangeException(nameof(chunkSize));
@@ -109,7 +116,6 @@ public static class ClipboardWireCodec
         var transfer = Guid.NewGuid();
         var hash = SHA256.HashData(content.Data);
         var count = (content.Data.Length + chunkSize - 1) / chunkSize;
-        var frames = new List<byte[]>(count);
 
         for (var index = 0; index < count; index++)
         {
@@ -126,11 +132,9 @@ public static class ClipboardWireCodec
             BinaryPrimitives.WriteInt32LittleEndian(span.Slice(30, 4), content.Data.Length);
             hash.CopyTo(span.Slice(34, 32));
             BinaryPrimitives.WriteInt32LittleEndian(span.Slice(66, 4), length);
-            content.Data.AsSpan(offset, length).CopyTo(span.Slice(70));
-            frames.Add(frame);
+            content.Data.AsSpan(offset, length).CopyTo(span.Slice(HeaderSize));
+            yield return frame;
         }
-
-        return frames;
     }
 
     public static ClipboardChunk Decode(ReadOnlySpan<byte> frame)
