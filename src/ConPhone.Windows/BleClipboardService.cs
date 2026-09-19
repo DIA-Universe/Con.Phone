@@ -410,6 +410,10 @@ public sealed class BleClipboardService : IDisposable
                 var fragmentIndex = 0;
                 foreach (var fragment in BleFragmentCodec.Split(wireFrame, maxGattValue, transferId))
                 {
+                    if (!IsActive(deviceId))
+                        throw new InvalidOperationException(
+                            "활성 휴대폰이 변경되어 이전 기기의 Clipboard BLE 전송을 중단했습니다.");
+
                     if (isImage && pauseBulk is not null)
                     {
                         while (pauseBulk())
