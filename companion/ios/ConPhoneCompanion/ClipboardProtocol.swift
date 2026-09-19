@@ -90,39 +90,94 @@ enum ClipboardProtocol {
         }
     }
 
-    static func encode(_ content: ClipboardContent, chunkSize: Int = 64 * 1024) throws -> [Data] {
-        guard (minChunk...maxChunk).contains(chunkSize) else {
-            throw ProtocolError.invalidFrame
+    final class FrameCursor {
+        private let content: ClipboardContent
+        private let chunkSize: Int
+        private let transferId: Data
+        private let hash: Data
+        private let count: Int
+        private var index = 0
+
+        init(
+            content: ClipboardContent,
+            chunkSize: Int
+        ) throws {
+            guard (ClipboardProtocol.minChunk...ClipboardProtocol.maxChunk)
+                .contains(chunkSize) else {
+                throw ProtocolError.invalidFrame
+            }
+
+            try ClipboardProtocol.validate(content.kind, content.data)
+
+            var transferId = Data(count: 16)
+            let status = transferId.withUnsafeMutableBytes { buffer in
+                SecRandomCopyBytes(
+                    kSecRandomDefault,
+                    16,
+                    buffer.baseAddress!)
+            }
+            guard status == errSecSuccess else {
+                throw ProtocolError.random
+            }
+
+            self.content = content
+            self.chunkSize = chunkSize
+            self.transferId = transferId
+            self.hash = content.hash
+            self.count =
+                (content.data.count + chunkSize - 1) / chunkSize
         }
-        try validate(content.kind, content.data)
 
-        var transferId = Data(count: 16)
-        transferId.withUnsafeMutableBytes { buffer in
-            _ = SecRandomCopyBytes(kSecRandomDefault, 16, buffer.baseAddress!)
-        }
+        func next() -> Data? {
+            guard index < count else { return nil }
 
-        let hash = content.hash
-        let count = (content.data.count + chunkSize - 1) / chunkSize
-        var frames: [Data] = []
-        frames.reserveCapacity(count)
+            let current = index
+            index += 1
 
-        for index in 0..<count {
-            let offset = index * chunkSize
-            let length = min(chunkSize, content.data.count - offset)
+            let offset = current * chunkSize
+            let length = min(
+                chunkSize,
+                content.data.count - offset)
+
             var frame = Data()
-            frame.append(magic)
+            frame.reserveCapacity(ClipboardProtocol.wireHeader + length)
+            frame.append(ClipboardProtocol.magic)
             frame.append(1)
             frame.append(transferId)
             frame.append(content.kind.rawValue)
-            frame.appendInt32LE(Int32(index))
+            frame.appendInt32LE(Int32(current))
             frame.appendInt32LE(Int32(count))
             frame.appendInt32LE(Int32(content.data.count))
             frame.append(hash)
             frame.appendInt32LE(Int32(length))
-            frame.append(content.data.subdata(in: offset..<(offset + length)))
+            frame.append(
+                content.data.subdata(
+                    in: offset..<(offset + length)))
+            return frame
+        }
+    }
+
+    static func makeFrameCursor(
+        _ content: ClipboardContent,
+        chunkSize: Int = 64 * 1024
+    ) throws -> FrameCursor {
+        try FrameCursor(
+            content: content,
+            chunkSize: chunkSize)
+    }
+
+    static func encode(
+        _ content: ClipboardContent,
+        chunkSize: Int = 64 * 1024
+    ) throws -> [Data] {
+        let cursor = try makeFrameCursor(
+            content,
+            chunkSize: chunkSize)
+
+        var frames: [Data] = []
+        while let frame = cursor.next() {
             frames.append(frame)
         }
-
         return frames
     }
 
@@ -216,6 +271,7 @@ enum ClipboardProtocol {
         case invalidFrame
         case tooLarge
         case integrity
+        case random
     }
 }
 
