@@ -1017,6 +1017,7 @@ extension ClipboardBridge: CBPeripheralDelegate {
                 scheduleCapabilitiesRead()
             } else if characteristic.uuid == directLinkUUID {
                 activeTarget = false
+                bleAckQueue.removeAll()
                 directJoinInFlight = false
                 if let config = directConfig {
                     NEHotspotConfigurationManager.shared.removeConfiguration(
@@ -1059,6 +1060,7 @@ extension ClipboardBridge: CBPeripheralDelegate {
                 activeTarget = reportedActive
 
                 if !reportedActive {
+                    bleAckQueue.removeAll()
                     directJoinInFlight = false
                     if let config = directConfig {
                         NEHotspotConfigurationManager.shared.removeConfiguration(
