@@ -646,6 +646,7 @@ public sealed class ClipboardHistoryService : IDisposable
 
             if (entry.Kind == ClipboardEntryKind.Text && entry.Text is not null)
             {
+                Interlocked.Increment(ref _captureGeneration);
                 Clipboard.SetText(
                     entry.Text,
                     TextDataFormat.UnicodeText);
@@ -668,6 +669,7 @@ public sealed class ClipboardHistoryService : IDisposable
                     source.Width,
                     source.Height);
                 using var copy = new Bitmap(source);
+                Interlocked.Increment(ref _captureGeneration);
                 Clipboard.SetImage(copy);
                 ArmSelfClipboardSequence();
                 Status?.Invoke("선택한 이미지를 Windows 클립보드로 복원했습니다.");
@@ -815,22 +817,35 @@ public sealed class ClipboardHistoryService : IDisposable
 
         _imageCaptureQueue.CompleteAdding();
 
+        var workerCompleted = false;
         try
         {
-            if (!_imageCaptureWorker.Wait(750))
+            workerCompleted = _imageCaptureWorker.Wait(750);
+
+            if (!workerCompleted)
+            {
                 _imageCaptureLifetime.Cancel();
+                workerCompleted = _imageCaptureWorker.Wait(750);
+            }
         }
         catch (AggregateException ex)
             when (ex.InnerExceptions.All(
                 inner => inner is OperationCanceledException))
         {
+            workerCompleted = true;
         }
 
-        while (_imageCaptureQueue.TryTake(out var work))
-            work.Image.Dispose();
+        // If a PNG encode is still inside GDI+, do not dispose the queue/token
+        // underneath that worker. The process is closing and the worker owns its
+        // current Bitmap; completed workers can be cleaned up immediately.
+        if (workerCompleted)
+        {
+            while (_imageCaptureQueue.TryTake(out var work))
+                work.Image.Dispose();
 
-        _imageCaptureLifetime.Dispose();
-        _imageCaptureQueue.Dispose();
+            _imageCaptureLifetime.Dispose();
+            _imageCaptureQueue.Dispose();
+        }
     }
 
     private sealed class ClipboardSink : NativeWindow, IDisposable
