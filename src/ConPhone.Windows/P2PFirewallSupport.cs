@@ -7,6 +7,47 @@ public static class P2PFirewallSupport
     public const string RuleName = "Con.Phone P2P Clipboard";
     public const int Port = P2PClipboardServer.DataPort;
 
+    public static async Task<bool> IsConfiguredAsync(CancellationToken token)
+    {
+        var escapedRule = RuleName.Replace("'", "''", StringComparison.Ordinal);
+        var command =
+            "$ErrorActionPreference='Stop';" +
+            $"$name='{escapedRule}';" +
+            $"$rule=Get-NetFirewallRule -DisplayName $name -ErrorAction SilentlyContinue | " +
+            "Where-Object { $_.Enabled -eq 'True' } | Select-Object -First 1;" +
+            "if ($null -eq $rule) { exit 3 };" +
+            "$port=$rule | Get-NetFirewallPortFilter | " +
+            $"Where-Object {{ $_.Protocol -eq 'TCP' -and $_.LocalPort -eq '{Port}' }} | " +
+            "Select-Object -First 1;" +
+            "if ($null -eq $port) { exit 4 }; exit 0";
+
+        var start = new ProcessStartInfo
+        {
+            FileName = "powershell.exe",
+            UseShellExecute = false,
+            CreateNoWindow = true
+        };
+        start.ArgumentList.Add("-NoProfile");
+        start.ArgumentList.Add("-ExecutionPolicy");
+        start.ArgumentList.Add("Bypass");
+        start.ArgumentList.Add("-Command");
+        start.ArgumentList.Add(command);
+
+        try
+        {
+            using var process = Process.Start(start);
+            if (process is null) return false;
+
+            await process.WaitForExitAsync(token).ConfigureAwait(false);
+            return process.ExitCode == 0;
+        }
+        catch (Exception ex) when (
+            ex is InvalidOperationException or System.ComponentModel.Win32Exception)
+        {
+            return false;
+        }
+    }
+
     public static async Task ConfigureAsync(CancellationToken token)
     {
         var exe = Environment.ProcessPath
