@@ -177,7 +177,7 @@ public sealed class ClipboardSyncCoordinator : IAsyncDisposable
 
     private DirectLinkConfig? GetDirectLinkConfig()
     {
-        if (!_enabled()) return null;
+        if (!_enabled() || _disposed) return null;
 
         try
         {
@@ -230,6 +230,10 @@ public sealed class ClipboardSyncCoordinator : IAsyncDisposable
                     await _p2p.SendAsync(id, content, sendToken).ConfigureAwait(false);
                     Status?.Invoke($"Clipboard 전송 완료 · P2P · {Describe(content)}");
                     return true;
+                }
+                catch (OperationCanceledException) when (sendToken.IsCancellationRequested)
+                {
+                    throw;
                 }
                 catch (Exception ex)
                 {
@@ -286,6 +290,10 @@ public sealed class ClipboardSyncCoordinator : IAsyncDisposable
                         Status?.Invoke($"Clipboard 전송 완료 · P2P · {Describe(content)}");
                         return true;
                     }
+                    catch (OperationCanceledException) when (sendToken.IsCancellationRequested)
+                    {
+                        throw;
+                    }
                     catch (Exception ex)
                     {
                         Status?.Invoke($"P2P 이미지 전송 실패, BLE fallback 확인: {ex.Message}");
@@ -303,12 +311,16 @@ public sealed class ClipboardSyncCoordinator : IAsyncDisposable
                     await _ble.SendAsync(
                         id,
                         content,
-                        token,
+                        sendToken,
                         bulkTransfer && _interactiveInput()
                             ? _pointerBusy
                             : null).ConfigureAwait(false);
                     Status?.Invoke($"Clipboard 전송 완료 · BLE · {Describe(content)}");
                     return true;
+                }
+                catch (OperationCanceledException) when (sendToken.IsCancellationRequested)
+                {
+                    throw;
                 }
                 catch (Exception ex)
                 {
@@ -416,11 +428,11 @@ public sealed class ClipboardSyncCoordinator : IAsyncDisposable
         finally
         {
             _lifecycle.Release();
-            _shutdown.Dispose();
 
-            // SemaphoreSlim is intentionally not disposed here. A caller that entered
-            // immediately before shutdown may still be unwinding from WaitAsync/Release.
-            // Both semaphores are private managed objects and are collected with this coordinator.
+            // Do not dispose _shutdown/_send/_lifecycle here. A caller that entered
+            // immediately before shutdown may still be obtaining the shutdown token or
+            // unwinding from WaitAsync/Release. They are private managed objects and are
+            // collected with this coordinator.
         }
     }
 }
