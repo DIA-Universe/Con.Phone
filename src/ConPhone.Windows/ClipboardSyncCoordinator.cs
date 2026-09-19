@@ -21,6 +21,7 @@ public sealed class ClipboardSyncCoordinator : IAsyncDisposable
         Func<string?> approvedDeviceId,
         Func<string, bool> trustedDevice,
         Func<bool> enabled,
+        Func<int> bleImageLimitBytes,
         Func<bool> interactiveInput,
         Func<bool> pointerBusy,
         Func<string> p2pLinkName)
@@ -34,6 +35,7 @@ public sealed class ClipboardSyncCoordinator : IAsyncDisposable
             approvedDeviceId,
             trustedDevice,
             enabled,
+            bleImageLimitBytes,
             GetDirectLinkConfig);
         _p2p = new P2PClipboardServer(approvedDeviceId, enabled);
 
