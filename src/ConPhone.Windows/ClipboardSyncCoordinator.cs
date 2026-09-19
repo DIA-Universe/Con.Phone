@@ -316,6 +316,9 @@ public sealed class ClipboardSyncCoordinator : IAsyncDisposable
                         bulkTransfer && _interactiveInput()
                             ? _pointerBusy
                             : null).ConfigureAwait(false);
+                    if (bulkTransfer && !_p2p.HasClient(id))
+                        _direct.Stop();
+
                     Status?.Invoke($"Clipboard 전송 완료 · BLE · {Describe(content)}");
                     return true;
                 }
