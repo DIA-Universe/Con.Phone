@@ -503,11 +503,11 @@ final class ClipboardBridge: NSObject, ObservableObject {
         guard !capabilitiesPollScheduled else { return }
         capabilitiesPollScheduled = true
 
-        DispatchQueue.main.asyncAfter(deadline: .now() + 5) { [weak self, weak peripheral] in
+        DispatchQueue.main.asyncAfter(deadline: .now() + 5) { [weak self] in
             guard let self else { return }
             self.capabilitiesPollScheduled = false
 
-            guard let peripheral,
+            guard let peripheral = self.peripheral,
                   let characteristic = self.capabilitiesCharacteristic else { return }
 
             peripheral.readValue(for: characteristic)
