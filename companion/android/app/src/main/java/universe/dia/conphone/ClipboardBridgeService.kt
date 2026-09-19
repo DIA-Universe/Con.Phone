@@ -79,6 +79,7 @@ class ClipboardBridgeService : Service() {
     private val bleReassembler = BleReassembler()
     private val bleWireReassembler = ClipboardWireReassembler()
     private val p2pWireReassembler = ClipboardWireReassembler()
+    private val rejectedBleDevices = ConcurrentHashMap<String, Long>()
     private val sharedStore by lazy { AndroidSharedPayloadStore(this) }
     private val loadedPersistentShareIds = HashSet<String>()
     private val applyGate = Any()
@@ -200,6 +201,12 @@ class ClipboardBridgeService : Service() {
             if (checkSelfPermission(Manifest.permission.BLUETOOTH_SCAN) != PackageManager.PERMISSION_GRANTED ||
                 checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT) != PackageManager.PERMISSION_GRANTED) return
 
+            val now = System.currentTimeMillis()
+            rejectedBleDevices.entries.removeIf { it.value <= now }
+            val address = runCatching { result.device.address }.getOrNull()
+            if (address != null && rejectedBleDevices[address]?.let { it > now } == true)
+                return
+
             val adapter = getSystemService(BluetoothManager::class.java).adapter ?: return
             runCatching { adapter.bluetoothLeScanner?.stopScan(this) }
             scanning = false
@@ -268,7 +275,23 @@ class ClipboardBridgeService : Service() {
             }
 
             val service = g.getService(SERVICE_UUID) ?: run {
-                showStatus("PC에 Clipboard 서비스 없음")
+                val address =
+                    if (checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT) ==
+                        PackageManager.PERMISSION_GRANTED)
+                        runCatching { g.device.address }.getOrNull()
+                    else
+                        null
+
+                if (address != null)
+                    rejectedBleDevices[address] =
+                        System.currentTimeMillis() + 30_000L
+
+                if (gatt === g) gatt = null
+                runCatching { g.disconnect() }
+                runCatching { g.close() }
+
+                showStatus("다른 HID 기기를 건너뛰고 Con.Phone PC를 계속 검색합니다.")
+                main.postDelayed({ beginScan() }, 250)
                 return
             }
 
