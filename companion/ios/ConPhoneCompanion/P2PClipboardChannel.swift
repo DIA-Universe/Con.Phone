@@ -14,7 +14,13 @@ final class P2PClipboardChannel {
     private let onReady: () -> Void
     private let onClosed: () -> Void
 
-    private var pendingWrites: [Data] = []
+    private struct PendingTransfer {
+        let cursor: ClipboardProtocol.FrameCursor
+        let completion: () -> Void
+    }
+
+    private var pendingTransfers: [PendingTransfer] = []
+    private var activeTransfer: PendingTransfer?
     private var writing = false
     private var sessionKey: Data?
     private var sendSequence: UInt64 = 0
@@ -82,10 +88,22 @@ final class P2PClipboardChannel {
         connection.start(queue: queue)
     }
 
-    func send(frames: [Data]) {
+    func send(
+        cursor: ClipboardProtocol.FrameCursor,
+        completion: @escaping () -> Void = {}
+    ) {
         queue.async { [weak self] in
             guard let self, self.ready else { return }
-            self.pendingWrites.append(contentsOf: frames)
+
+            guard self.pendingTransfers.count < 8 else {
+                self.onStatus("P2P 전송 대기열이 가득 찼습니다.")
+                return
+            }
+
+            self.pendingTransfers.append(
+                PendingTransfer(
+                    cursor: cursor,
+                    completion: completion))
             self.pumpWrites()
         }
     }
@@ -97,7 +115,8 @@ final class P2PClipboardChannel {
             self.handshakeGeneration += 1
             self.ready = false
             self.sessionKey = nil
-            self.pendingWrites.removeAll()
+            self.pendingTransfers.removeAll()
+            self.activeTransfer = nil
             self.connection.cancel()
         }
     }
@@ -106,7 +125,8 @@ final class P2PClipboardChannel {
         guard !closedNotified else { return }
         closedNotified = true
         sessionKey = nil
-        pendingWrites.removeAll()
+        pendingTransfers.removeAll()
+            activeTransfer = nil
         onClosed()
     }
 
@@ -185,9 +205,24 @@ final class P2PClipboardChannel {
     }
 
     private func pumpWrites() {
-        guard ready, !writing, !pendingWrites.isEmpty else { return }
+        guard ready, !writing else { return }
+
+        if activeTransfer == nil {
+            guard !pendingTransfers.isEmpty else { return }
+            activeTransfer = pendingTransfers.removeFirst()
+        }
+
+        guard let transfer = activeTransfer else { return }
+
+        guard let plaintext = transfer.cursor.next() else {
+            activeTransfer = nil
+            onStatus("Clipboard 전송 완료 · P2P")
+            transfer.completion()
+            pumpWrites()
+            return
+        }
+
         writing = true
-        let plaintext = pendingWrites.removeFirst()
 
         do {
             sendSequence = try nextSequence(sendSequence)
@@ -212,22 +247,22 @@ final class P2PClipboardChannel {
                     self.writing = false
                     if let error {
                         self.ready = false
-                        self.pendingWrites.removeAll()
+                        self.pendingTransfers.removeAll()
+                        self.activeTransfer = nil
                         self.onStatus("P2P Clipboard 전송 실패: \(error.localizedDescription)")
                         self.connection.cancel()
                         return
                     }
 
-                    if self.pendingWrites.isEmpty {
-                        self.onStatus("Clipboard 전송 완료 · P2P")
-                    }
                     self.pumpWrites()
                 }
             })
         } catch {
             writing = false
-            pendingWrites.removeAll()
+            pendingTransfers.removeAll()
+            activeTransfer = nil
             onStatus("P2P Clipboard 암호화 실패: \(error.localizedDescription)")
+            connection.cancel()
         }
     }
 
