@@ -35,7 +35,7 @@ public static class Hid
     // HOGP: report IDs live in each Report Reference descriptor, not in notification payloads.
     // This descriptor intentionally matches the minimal composite layout measured working on Galaxy Android 16.
     public const int KeyboardReportLength = 8;
-    public const int MouseReportLength = 6;
+    public const int MouseReportLength = 7;
     public const int SystemReportLength = 1;
     public const int ConsumerReportLength = 1;
     public const byte SystemLockMask = 0x02; // HID Generic Desktop System Sleep (usage 0x82)
@@ -43,7 +43,8 @@ public static class Hid
         "05010906A1018501050719E029E715002501750195088102950175088101" +
         "95067508150025650507190029658100C0" +
         "05010902A10185020901A10005091901290315002501950375018102950175058101" +
-        "05010930093116018026FF7F75109502810609381581257F750895018106C0C0" +
+        "05010930093116018026FF7F75109502810609381581257F750895018106" +
+        "050C0A38028106C0C0" +
         "05010980A1018503150025017501950319812983810295058101C0" +
         "050C0901A1018504150025017501950609E209E909EA09CD09B509B6810295028101C0");
 
@@ -68,24 +69,50 @@ public static class Hid
             yield break;
         }
         var p = (PointerPacket)packet;
-        int x = p.X, y = p.Y, w = p.Wheel;
-        if (new[] { x, y, w, p.Pan }.Any(v => Math.Abs((long)v) > 32767))
-            throw new ArgumentOutOfRangeException(nameof(packet), "Pointer backlog exceeds safety limit.");
+        int x = p.X, y = p.Y, w = p.Wheel, pan = p.Pan;
+
+        if (new[] { x, y, w, pan }
+            .Any(v => Math.Abs((long)v) > 32767))
+            throw new ArgumentOutOfRangeException(
+                nameof(packet),
+                "Pointer backlog exceeds safety limit.");
+
         do
         {
-            int dx = Math.Clamp(x, short.MinValue + 1, short.MaxValue);
-            int dy = Math.Clamp(y, short.MinValue + 1, short.MaxValue);
+            int dx = Math.Clamp(
+                x,
+                short.MinValue + 1,
+                short.MaxValue);
+            int dy = Math.Clamp(
+                y,
+                short.MinValue + 1,
+                short.MaxValue);
             int dw = Math.Clamp(w, -127, 127);
+            int dp = Math.Clamp(pan, -127, 127);
+
             short sx = (short)dx, sy = (short)dy;
+
             yield return new(false,
             [
                 (byte)(p.Buttons & 0x07),
-                (byte)(sx & 0xFF), (byte)((sx >> 8) & 0xFF),
-                (byte)(sy & 0xFF), (byte)((sy >> 8) & 0xFF),
-                unchecked((byte)(sbyte)dw)
+                (byte)(sx & 0xFF),
+                (byte)((sx >> 8) & 0xFF),
+                (byte)(sy & 0xFF),
+                (byte)((sy >> 8) & 0xFF),
+                unchecked((byte)(sbyte)dw),
+                unchecked((byte)(sbyte)dp)
             ]);
-            x -= dx; y -= dy; w -= dw;
-        } while (x != 0 || y != 0 || w != 0);
+
+            x -= dx;
+            y -= dy;
+            w -= dw;
+            pan -= dp;
+        }
+        while (
+            x != 0 ||
+            y != 0 ||
+            w != 0 ||
+            pan != 0);
     }
 
     public static byte MapModifierUsage(
