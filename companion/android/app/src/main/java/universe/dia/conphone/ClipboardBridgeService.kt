@@ -952,12 +952,7 @@ class ClipboardBridgeService : Service() {
                     // Normalize WebP and other decodable shared images to PNG
                     // before sending them to the PC.
                     val bitmap =
-                        BitmapFactory.decodeByteArray(
-                            bytes,
-                            0,
-                            bytes.size)
-                            ?: error(
-                                "지원하지 않는 이미지 형식입니다.")
+                        decodeImageForPngNormalization(bytes)
 
                     try {
                         val out = ByteArrayOutputStream()
@@ -1422,6 +1417,60 @@ class ClipboardBridgeService : Service() {
         }
     }
 
+    private fun sampleSizeForNormalization(
+        width: Int,
+        height: Int
+    ): Int {
+        const val maxDecodedPixels = 8_000_000L
+        var sample = 1
+
+        while (
+            (width.toLong() / sample) *
+            (height.toLong() / sample) >
+            maxDecodedPixels
+        ) {
+            sample *= 2
+        }
+
+        return sample
+    }
+
+    private fun decodeImageForPngNormalization(
+        bytes: ByteArray
+    ): Bitmap {
+        val bounds = BitmapFactory.Options().apply {
+            inJustDecodeBounds = true
+        }
+        BitmapFactory.decodeByteArray(
+            bytes,
+            0,
+            bytes.size,
+            bounds)
+
+        val width = bounds.outWidth
+        val height = bounds.outHeight
+
+        require(
+            width > 0 &&
+            height > 0 &&
+            width.toLong() * height.toLong() <= 40_000_000L
+        ) {
+            "이미지 해상도가 안전 한도(40MP)를 초과합니다: ${width}x${height}"
+        }
+
+        return BitmapFactory.decodeByteArray(
+            bytes,
+            0,
+            bytes.size,
+            BitmapFactory.Options().apply {
+                inSampleSize =
+                    sampleSizeForNormalization(
+                        width,
+                        height)
+            })
+            ?: error("지원하지 않는 이미지 형식입니다.")
+    }
+
     private fun ensureSafeImageDimensions(bytes: ByteArray) {
         val options = BitmapFactory.Options().apply { inJustDecodeBounds = true }
         BitmapFactory.decodeByteArray(bytes, 0, bytes.size, options)
@@ -1447,8 +1496,18 @@ class ClipboardBridgeService : Service() {
             "이미지 해상도가 안전 한도(40MP)를 초과합니다: ${width}x${height}"
         }
 
+        val sampleSize =
+            sampleSizeForNormalization(
+                width,
+                height)
+
         val bitmap = contentResolver.openInputStream(uri).use { input ->
-            BitmapFactory.decodeStream(input)
+            BitmapFactory.decodeStream(
+                input,
+                null,
+                BitmapFactory.Options().apply {
+                    inSampleSize = sampleSize
+                })
                 ?: error("이미지를 읽을 수 없습니다.")
         }
 
