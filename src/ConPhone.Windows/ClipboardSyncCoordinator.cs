@@ -368,6 +368,9 @@ public sealed class ClipboardSyncCoordinator : IAsyncDisposable
 
     public async ValueTask DisposeAsync()
     {
+        if (_disposed)
+            return;
+
         await _lifecycle.WaitAsync()
             .ConfigureAwait(false);
         try
