@@ -45,6 +45,8 @@ enum ClipboardProtocol {
     static let maxWireFrame = wireHeader + maxChunk
     static let maxInflight = 8
     private static let magic = Data("CPH1".utf8)
+    private static let ackMagic = Data("CPACK1".utf8)
+    static let ackLength = 22
 
     static func text(_ value: String) throws -> ClipboardContent {
         let data = Data(value.utf8)
@@ -93,7 +95,7 @@ enum ClipboardProtocol {
     final class FrameCursor {
         private let content: ClipboardContent
         private let chunkSize: Int
-        private let transferId: Data
+        let transferId: Data
         private let hash: Data
         private let count: Int
         private var index = 0
@@ -226,6 +228,20 @@ enum ClipboardProtocol {
             hash: hash,
             payload: frame.subdata(in: 70..<frame.count)
         )
+    }
+
+    static func encodeAck(_ transferId: Data) -> Data {
+        precondition(transferId.count == 16)
+        return ackMagic + transferId
+    }
+
+    static func decodeAck(_ frame: Data) -> Data? {
+        guard frame.count == ackLength,
+              frame.prefix(6) == ackMagic else {
+            return nil
+        }
+
+        return frame.subdata(in: 6..<22)
     }
 
     static func splitBle(_ message: Data, maxGattValue: Int, transferId: UInt32) throws -> [Data] {
