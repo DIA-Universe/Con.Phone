@@ -115,7 +115,8 @@ class MainActivity : Activity() {
         if (action != ClipboardBridgeService.ACTION_SEND &&
             action != ClipboardBridgeService.ACTION_SEND_SHARED_TEXT &&
             action != ClipboardBridgeService.ACTION_SEND_SHARED_IMAGE &&
-            action != ClipboardBridgeService.ACTION_DRAIN_SHARED)
+            action != ClipboardBridgeService.ACTION_DRAIN_SHARED &&
+            action != ClipboardBridgeService.ACTION_RETRY_P2P)
             return
 
         pendingServiceIntent =
@@ -175,6 +176,11 @@ class MainActivity : Activity() {
                     "P2P 고속 전송 권한이 허용되었습니다.",
                     android.widget.Toast.LENGTH_SHORT
                 ).show()
+
+                startForegroundService(
+                    Intent(this, ClipboardBridgeService::class.java)
+                        .setAction(ClipboardBridgeService.ACTION_RETRY_P2P)
+                )
             } else {
                 android.widget.Toast.makeText(
                     this,
