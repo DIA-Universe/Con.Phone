@@ -20,12 +20,18 @@ public sealed class P2PClipboardServer : IAsyncDisposable
     private readonly CancellationTokenSource _lifetime = new();
     private readonly SemaphoreSlim _connectionSlots = new(4, 4);
     private readonly object _clientGate = new();
+    private readonly object _ackGate = new();
+    private readonly Dictionary<Guid, AckWaiter> _ackWaiters = [];
     private ClientConnection? _client;
     private TcpListener? _listener;
     private Task? _acceptLoop;
 
     public event Action<string, ClipboardContent>? Received;
     public event Action<string>? Status;
+
+    private sealed record AckWaiter(
+        ClientConnection Connection,
+        TaskCompletionSource<bool> Completion);
 
     public P2PClipboardServer(Func<string?> approvedDeviceId, Func<bool> enabled)
     {
@@ -214,7 +220,13 @@ public sealed class P2PClipboardServer : IAsyncDisposable
                 replaced = _client;
                 _client = connection;
             }
-            replaced?.Close();
+            if (replaced is not null)
+            {
+                replaced.Close();
+                FailAckWaiters(
+                    replaced,
+                    new IOException("Clipboard P2P 연결이 새 세션으로 교체되었습니다."));
+            }
 
             Status?.Invoke("Clipboard P2P 보안 채널 연결됨.");
 
@@ -226,10 +238,21 @@ public sealed class P2PClipboardServer : IAsyncDisposable
                     var frame = await connection.ReadEncryptedAsync(token).ConfigureAwait(false);
                     if (frame is null) break;
 
+                    if (ClipboardAckCodec.TryDecode(frame, out var ackTransferId))
+                    {
+                        CompleteAck(connection, ackTransferId);
+                        continue;
+                    }
+
                     var chunk = ClipboardWireCodec.Decode(frame);
                     var content = reassembler.Add(chunk);
                     if (content is not null)
+                    {
                         Received?.Invoke(approved, content);
+                        await connection.WriteEncryptedAsync(
+                            ClipboardAckCodec.Encode(chunk.TransferId),
+                            token).ConfigureAwait(false);
+                    }
                 }
             }
             catch (Exception ex) when (ex is IOException or SocketException or CryptographicException or InvalidDataException)
@@ -239,6 +262,10 @@ public sealed class P2PClipboardServer : IAsyncDisposable
             finally
             {
                 connection.Close();
+                FailAckWaiters(
+                    connection,
+                    new IOException("Clipboard P2P 연결이 종료되었습니다."));
+
                 lock (_clientGate)
                 {
                     if (ReferenceEquals(_client, connection))
@@ -248,7 +275,10 @@ public sealed class P2PClipboardServer : IAsyncDisposable
         }
     }
 
-    public async Task SendAsync(string deviceId, ClipboardContent content, CancellationToken token)
+    public async Task SendAsync(
+        string deviceId,
+        ClipboardContent content,
+        CancellationToken token)
     {
         if (!_enabled())
             throw new InvalidOperationException("Clipboard sync is disabled.");
@@ -262,8 +292,49 @@ public sealed class P2PClipboardServer : IAsyncDisposable
                 : throw new InvalidOperationException("Clipboard P2P 연결이 없습니다.");
         }
 
-        foreach (var frame in ClipboardWireCodec.Enumerate(content))
-            await client.WriteEncryptedAsync(frame, token).ConfigureAwait(false);
+        using var frames = ClipboardWireCodec.Enumerate(content).GetEnumerator();
+        if (!frames.MoveNext())
+            throw new InvalidDataException("Clipboard transfer has no frames.");
+
+        var firstFrame = frames.Current;
+        var transferId = ClipboardWireCodec.Decode(firstFrame).TransferId;
+        var completion = new TaskCompletionSource<bool>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var waiter = new AckWaiter(client, completion);
+
+        lock (_ackGate)
+        {
+            if (_ackWaiters.ContainsKey(transferId))
+                throw new InvalidOperationException(
+                    "Clipboard ACK transfer id collision.");
+
+            _ackWaiters.Add(transferId, waiter);
+        }
+
+        try
+        {
+            await client.WriteEncryptedAsync(
+                firstFrame,
+                token).ConfigureAwait(false);
+
+            while (frames.MoveNext())
+            {
+                await client.WriteEncryptedAsync(
+                    frames.Current,
+                    token).ConfigureAwait(false);
+            }
+
+            await completion.Task.WaitAsync(token).ConfigureAwait(false);
+        }
+        finally
+        {
+            lock (_ackGate)
+            {
+                if (_ackWaiters.TryGetValue(transferId, out var current) &&
+                    ReferenceEquals(current, waiter))
+                    _ackWaiters.Remove(transferId);
+            }
+        }
     }
 
     public void Deactivate()
@@ -275,8 +346,54 @@ public sealed class P2PClipboardServer : IAsyncDisposable
             _client = null;
         }
 
-        client?.Close();
+        if (client is not null)
+        {
+            client.Close();
+            FailAckWaiters(
+                client,
+                new IOException("Clipboard P2P 연결이 비활성화되었습니다."));
+        }
         Status?.Invoke("Clipboard P2P 연결 종료.");
+    }
+
+    private void CompleteAck(
+        ClientConnection connection,
+        Guid transferId)
+    {
+        TaskCompletionSource<bool>? completion = null;
+
+        lock (_ackGate)
+        {
+            if (_ackWaiters.TryGetValue(transferId, out var waiter) &&
+                ReferenceEquals(waiter.Connection, connection))
+            {
+                _ackWaiters.Remove(transferId);
+                completion = waiter.Completion;
+            }
+        }
+
+        completion?.TrySetResult(true);
+    }
+
+    private void FailAckWaiters(
+        ClientConnection connection,
+        Exception error)
+    {
+        List<TaskCompletionSource<bool>> failures = [];
+
+        lock (_ackGate)
+        {
+            foreach (var pair in _ackWaiters
+                         .Where(x => ReferenceEquals(x.Value.Connection, connection))
+                         .ToArray())
+            {
+                _ackWaiters.Remove(pair.Key);
+                failures.Add(pair.Value.Completion);
+            }
+        }
+
+        foreach (var completion in failures)
+            completion.TrySetException(error);
     }
 
     private static async Task<bool> ReadExactAsync(Stream stream, Memory<byte> buffer, CancellationToken token)
@@ -420,7 +537,13 @@ public sealed class P2PClipboardServer : IAsyncDisposable
             client = _client;
             _client = null;
         }
-        client?.Close();
+        if (client is not null)
+        {
+            client.Close();
+            FailAckWaiters(
+                client,
+                new IOException("Clipboard P2P 서버가 종료되었습니다."));
+        }
 
         try { _listener?.Stop(); } catch { }
 
