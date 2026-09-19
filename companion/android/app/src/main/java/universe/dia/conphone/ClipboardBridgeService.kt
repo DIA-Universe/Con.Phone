@@ -484,11 +484,20 @@ class ClipboardBridgeService : Service() {
                         flushPendingContent()
                         drainPersistedShares()
 
-                        if (checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT) == PackageManager.PERMISSION_GRANTED)
+                        val needP2P =
+                            parseP2PRequested(value) ||
+                            pendingNeedsP2P()
+
+                        if (needP2P &&
+                            checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT) == PackageManager.PERMISSION_GRANTED) {
                             directLinkCharacteristic?.let { gatt?.readCharacteristic(it) }
+                        }
                     }
-                } else if (checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT) == PackageManager.PERMISSION_GRANTED) {
-                    // Compatibility with older v2 servers that do not expose byte [8].
+                } else if (
+                    pendingNeedsP2P() &&
+                    checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT) == PackageManager.PERMISSION_GRANTED) {
+                    // Older servers do not expose P2P demand. Only probe DirectLink
+                    // when a queued local payload actually requires the fast path.
                     directLinkCharacteristic?.let { gatt?.readCharacteristic(it) }
                 }
 
@@ -536,6 +545,20 @@ class ClipboardBridgeService : Service() {
             }
         }, 5000)
     }
+
+    private fun parseP2PRequested(value: ByteArray): Boolean =
+        value.size >= 10 &&
+            value[0].toInt() == 2 &&
+            value[9].toInt() == 1
+
+    private fun pendingNeedsP2P(): Boolean =
+        synchronized(pendingLock) {
+            pruneExpiredPendingLocked()
+            pendingQueue.peekFirst()?.let { item ->
+                item.content.kind != ClipboardKind.TEXT &&
+                    item.content.data.size > bleImageLimitBytes
+            } ?: false
+        }
 
     private fun parseActiveTarget(value: ByteArray): Boolean? {
         if (value.size < 9 || value[0].toInt() != 2)
@@ -1184,8 +1207,19 @@ class ClipboardBridgeService : Service() {
 
         main.post {
             beginScan()
-            if (directConfig != null && p2p?.ready != true)
+
+            if (!bleAllowed &&
+                activeTarget &&
+                p2p?.ready != true &&
+                checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT) == PackageManager.PERMISSION_GRANTED) {
+                val direct = directConfig
+                if (direct != null)
+                    requestDirectNetwork()
+                else
+                    directLinkCharacteristic?.let { gatt?.readCharacteristic(it) }
+            } else if (directConfig != null && p2p?.ready != true) {
                 requestDirectNetwork()
+            }
         }
     }
 
