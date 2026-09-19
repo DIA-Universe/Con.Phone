@@ -505,24 +505,29 @@ class ClipboardBridgeService : Service() {
             ?: throw IOException("Windows P2P gateway 주소를 확인하지 못했습니다.")
 
         val socket = network.socketFactory.createSocket()
-        socket.connect(InetSocketAddress(target, 47911), 3000)
-        socket.tcpNoDelay = true
-        socket.soTimeout = 5000
+        try {
+            socket.connect(InetSocketAddress(target, 47911), 3000)
+            socket.tcpNoDelay = true
+            socket.soTimeout = 5000
 
-        val channel = P2PChannel(
-            socket,
-            cred,
-            ::onP2PFrame,
-            ::onP2PClosed
-        )
-        channel.handshake()
+            val channel = P2PChannel(
+                socket,
+                cred,
+                ::onP2PFrame,
+                ::onP2PClosed
+            )
+            channel.handshake()
 
-        // Handshake must be bounded, but the authenticated session is long-lived.
-        socket.soTimeout = 0
-        p2p = channel
-        showStatus("Clipboard P2P 고속 채널 연결됨 · $target")
-        flushPendingContent()
-        executor.execute { channel.readLoop() }
+            // Handshake must be bounded, but the authenticated session is long-lived.
+            socket.soTimeout = 0
+            p2p = channel
+            showStatus("Clipboard P2P 고속 채널 연결됨 · $target")
+            flushPendingContent()
+            executor.execute { channel.readLoop() }
+        } catch (error: Exception) {
+            runCatching { socket.close() }
+            throw error
+        }
     }
 
     private fun requestDirectNetwork() {
@@ -616,11 +621,18 @@ class ClipboardBridgeService : Service() {
     private fun onP2PClosed() {
         p2p = null
         showStatus("P2P 채널 종료 · BLE fallback 유지")
+
         val direct = p2pNetwork
-        if (direct != null)
+        if (activeTarget &&
+            directConfig != null &&
+            direct != null) {
             executor.execute {
                 runCatching { connectDirectChannel(direct) }
+                    .onFailure {
+                        showStatus("P2P 재연결 실패 · BLE 연결 상태를 다시 확인합니다.")
+                    }
             }
+        }
     }
 
     private fun sendSharedText(text: String?) {
