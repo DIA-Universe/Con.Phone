@@ -25,6 +25,7 @@
 10. 작은 PNG 이미지 BLE fallback 확인
 11. 큰 이미지에서 Direct Wi-Fi/P2P 승인 -> TCP/AES-GCM 전송 확인
 12. Android -> PC 현재 클립보드 보내기 확인
+13. 다른 앱에서 공유 -> Con.Phone -> PC 텍스트/이미지 전송 확인
 13. 다른 Android 앱에서 텍스트 공유 -> Con.Phone -> PC 자동 대기/전송 확인
 14. 다른 Android 앱에서 이미지 공유 -> Con.Phone -> PC 자동 대기/전송 확인
 15. 공유 직후 PC 연결이 없어도 연결 후 pending payload가 자동 전송되는지 확인
@@ -38,6 +39,7 @@
 4. "P2P 고속 연결" 버튼 -> iOS Wi-Fi 승인 -> P2P TCP 연결 확인
 5. 큰 이미지 전송 후 대상 앱 붙여넣기 확인
 6. iOS -> PC 사용자 버튼 전송 확인
+7. 다른 앱에서 공유 -> Con.Phone Share Extension -> 앱 활성화 -> PC 자동 전송 확인
 7. 다른 iOS 앱에서 텍스트 공유 -> Con.Phone Share Extension -> 앱 실행 -> PC 자동 전송 확인
 8. 다른 iOS 앱에서 이미지 공유 -> App Group staging -> 앱 실행 -> PC 자동 전송 확인
 9. PC 연결이 120초 안에 준비되지 않으면 App Group payload가 유지되어 다음 실행에 재시도되는지 확인
@@ -49,6 +51,7 @@
 1. 최대 5대 등록
 2. 등록 목록이 앱 재시작 후 유지
 3. 활성 대상 전환 시 HID provider 재시작 없이 즉시 전환
+4. 원격 입력 중 F7 -> 이전 기기 release -> 다음 기기 원격 입력 유지 확인
 4. 이전 대상에 키/마우스가 새어가지 않는지 확인
 5. 비활성 Companion이 P2P 설정을 읽지 못하는지 확인
 6. 비활성 Companion의 clipboard write가 거부되는지 확인
