@@ -364,7 +364,7 @@ public sealed class MainForm : Form
         var flow = TabFlow();
         tab.Controls.Add(flow);
 
-        var connect = Section(220);
+        var connect = AutoSection();
         connect.Controls.Add(SectionTitle("Bluetooth 연결"));
         connect.Controls.Add(Help(
             "HID 프로필에 잠금 및 미디어키 Report가 포함됩니다. 이전 프로필로 페어링했던 기기는 새 기능 테스트 전 한 번 재페어링하는 것을 권장합니다."));
@@ -396,7 +396,7 @@ public sealed class MainForm : Form
             })));
         flow.Controls.Add(connect);
 
-        var devices = Section(285);
+        var devices = AutoSection();
         devices.Controls.Add(SectionTitle("연결된 휴대폰"));
         devices.Controls.Add(Help(
             $"최대 {TrustedDeviceStore.MaxDevices}대까지 등록할 수 있습니다. ▶ 표시가 현재 활성 대상입니다. " +
@@ -409,7 +409,7 @@ public sealed class MainForm : Form
             ActionButton("선택 기기 해제", RevokeSelectedAsync)));
         flow.Controls.Add(devices);
 
-        var quick = Section(150);
+        var quick = AutoSection();
         quick.Controls.Add(SectionTitle("빠른 동작"));
         quick.Controls.Add(_quickHotkeyHelp);
         quick.Controls.Add(Row(
@@ -427,7 +427,7 @@ public sealed class MainForm : Form
         var flow = TabFlow();
         tab.Controls.Add(flow);
 
-        var pointer = Section(235);
+        var pointer = AutoSection();
         pointer.Controls.Add(SectionTitle("마우스 / 스크롤"));
         pointer.Controls.Add(Help(
             "Windows 마우스 설정은 건드리지 않고 휴대폰으로 보내는 상대 좌표만 보정합니다. 100%가 원본 Raw Input입니다."));
@@ -449,7 +449,7 @@ public sealed class MainForm : Form
             })));
         flow.Controls.Add(pointer);
 
-        var keyboard = Section(230);
+        var keyboard = AutoSection();
         keyboard.Controls.Add(SectionTitle("키보드 / 한영키"));
         keyboard.Controls.Add(Help(
             "Galaxy 기본값은 Right Alt입니다. 기기에서 한영 전환이 안 되면 LANG1, Ctrl+Space, Shift+Space 순서로 바꿔 테스트할 수 있습니다."));
@@ -469,7 +469,7 @@ public sealed class MainForm : Form
             })));
         flow.Controls.Add(keyboard);
 
-        var special = Section(190);
+        var special = AutoSection();
         special.Controls.Add(SectionTitle("특수키 / 미디어"));
         special.Controls.Add(Help(
             "표준 HID Consumer Control을 사용합니다. 기기가 MEDIA report를 구독해야 동작합니다."));
@@ -483,7 +483,7 @@ public sealed class MainForm : Form
             ActionButton("볼륨 +", () => SendConsumerActionAsync(ConsumerAction.VolumeUp))));
         flow.Controls.Add(special);
 
-        var hotkeys = Section(355);
+        var hotkeys = AutoSection();
         hotkeys.Controls.Add(SectionTitle("단축키"));
         hotkeys.Controls.Add(Help(
             "드롭다운이 아니라 실제 키보드 조합을 읽습니다. ‘변경’을 누른 뒤 Ctrl·Alt·Shift·Win을 포함한 원하는 조합을 그대로 누르세요."));
@@ -508,7 +508,7 @@ public sealed class MainForm : Form
         var flow = TabFlow();
         tab.Controls.Add(flow);
 
-        var info = Section(180, InfoWeak);
+        var info = AutoSection(InfoWeak);
         info.Controls.Add(SectionTitle("텍스트 · 이미지 기기간 복붙"));
         info.Controls.Add(Help(
             "PC와 휴대폰이 같은 Wi-Fi에 없다고 가정합니다. Windows가 Direct Wi-Fi/P2P 링크를 만들고, 사용할 수 없으면 Bluetooth LE로 fallback합니다.",
@@ -518,7 +518,7 @@ public sealed class MainForm : Form
             Secondary));
         flow.Controls.Add(info);
 
-        var history = Section(420);
+        var history = AutoSection();
         history.Controls.Add(SectionTitle("최근 기록"));
         history.Controls.Add(_clipboardList);
         history.Controls.Add(_clipboardDetail);
@@ -546,7 +546,7 @@ public sealed class MainForm : Form
             })));
         flow.Controls.Add(history);
 
-        var options = Section(350);
+        var options = AutoSection();
         options.Controls.Add(SectionTitle("클립보드 · 동기화 설정"));
         options.Controls.Add(Row(_captureClipboardText, _captureClipboardImages));
         options.Controls.Add(Row(_clipboardSyncEnabled, _clipboardSyncText, _clipboardSyncImages));
@@ -575,14 +575,14 @@ public sealed class MainForm : Form
         var flow = TabFlow();
         tab.Controls.Add(flow);
 
-        var status = Section(205);
+        var status = AutoSection();
         status.Controls.Add(SectionTitle("Bluetooth 진단"));
         status.Controls.Add(_diagnosis);
         status.Controls.Add(ActionButton("Bluetooth 다시 검사", async () =>
             _diagnosis.Text = await BleHidServer.DiagnoseAsync()));
         flow.Controls.Add(status);
 
-        var update = Section(175, InfoWeak);
+        var update = AutoSection(InfoWeak);
         update.Controls.Add(SectionTitle("앱 업데이트"));
         update.Controls.Add(Help(
             $"현재 버전 {LocalUpdateService.CurrentVersion}. private GitHub 인증키를 앱에 저장하지 않고, " +
@@ -601,7 +601,7 @@ public sealed class MainForm : Form
             })));
         flow.Controls.Add(update);
 
-        var logs = Section(365);
+        var logs = AutoSection();
         logs.Controls.Add(SectionTitle("실행 로그"));
         logs.Controls.Add(_events);
         logs.Controls.Add(Row(
@@ -631,6 +631,20 @@ public sealed class MainForm : Form
         WrapContents = false,
         Padding = new Padding(16),
         BackColor = Bg
+    };
+
+    private static FlowLayoutPanel AutoSection(Color? background = null) => new()
+    {
+        AutoSize = true,
+        AutoSizeMode = AutoSizeMode.GrowAndShrink,
+        MinimumSize = new Size(860, 0),
+        MaximumSize = new Size(860, 0),
+        FlowDirection = FlowDirection.TopDown,
+        WrapContents = false,
+        Padding = new Padding(16),
+        Margin = new Padding(0, 0, 0, 14),
+        BackColor = background ?? Surface,
+        BorderStyle = BorderStyle.FixedSingle
     };
 
     private static FlowLayoutPanel Section(int height, Color? background = null) => new()
