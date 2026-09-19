@@ -252,14 +252,21 @@ public sealed class InputCapture : IDisposable
                 HotkeyModifiers modifiers;
                 lock (_gate) modifiers = ModifiersFromDownKeysLocked();
 
-                if (!_remote && Matches(nextDevice, key, modifiers))
+                if (Matches(nextDevice, key, modifiers))
                 {
                     lock (_gate)
                     {
                         _suppressUntilUp.Add(key);
-                        foreach (var down in _downKeys)
-                            if (down != key && IsPhysicalModifier(down))
-                                _localPassthroughUntilUp.Add(down);
+
+                        // While Windows owns input, let already-held physical modifiers
+                        // complete locally. While the phone owns input, the switch flow
+                        // sends explicit release reports to the old target instead.
+                        if (!_remote)
+                        {
+                            foreach (var down in _downKeys)
+                                if (down != key && IsPhysicalModifier(down))
+                                    _localPassthroughUntilUp.Add(down);
+                        }
                     }
                     NextDevice?.Invoke();
                     return 1;
