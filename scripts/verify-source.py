@@ -44,6 +44,8 @@ ios_share = read("companion/ios/ShareExtension/ShareViewController.swift")
 ios_share_store = read("companion/ios/Shared/SharedPayloadStore.swift")
 
 trusted_store = read("src/ConPhone.Windows/TrustedDeviceStore.cs")
+clipboard_history = read("src/ConPhone.Windows/ClipboardHistoryService.cs")
+direct_link = read("src/ConPhone.Windows/DirectClipboardLink.cs")
 update_service = read("src/ConPhone.Windows/LocalUpdateService.cs")
 authenticode = read("src/ConPhone.Windows/AuthenticodeVerifier.cs")
 p2p_security = read("src/ConPhone.Core/P2PSecurity.cs")
@@ -218,6 +220,20 @@ require("DeriveSessionKey" in p2p_security and "SessionLabel" in p2p_security,
 require("P2PSecurity.DeriveSessionKey" in win_p2p,
         "Windows P2P server must use the shared v2 KDF")
 
+# Windows capture and P2P lifecycle hardening.
+require("ClipboardContent.MaxTextBytes" in clipboard_history and
+        "ClipboardContent.MaxImageBytes" in clipboard_history and
+        "EnsureSafeImageDimensions" in clipboard_history,
+        "Windows local clipboard capture must enforce protocol/image safety caps")
+require("private readonly object _gate = new();" in direct_link and
+        "StartUnsafe" in direct_link and
+        "StopUnsafe" in direct_link,
+        "Windows P2P publisher start/stop/rotation must be serialized")
+require("_sendGate.Dispose()" not in win_ble,
+        "BLE clipboard send gate must not be disposed while async sends unwind")
+require("_send.Dispose()" not in win_p2p,
+        "P2P connection send gate must not be disposed during concurrent close")
+
 # Update integrity/signing path.
 require("ChecksumVerified" in update_service, "Windows update checksum verification missing")
 require("Authenticode" in update_service and "AuthenticodeVerifier" in authenticode,
@@ -255,5 +271,7 @@ print(" - Android connectedDevice foreground service")
 print(" - iOS App Group + Share Extension aligned")
 print(" - durable Android/iOS Share queues guarded")
 print(" - active-target isolation + 5-device trust guarded")
+print(" - Windows local clipboard/image safety caps guarded")
+print(" - P2P/BLE async shutdown races guarded")
 print(" - P2P v2 per-session KDF guarded")
 print(" - update checksum/AuthentiCode path guarded")
