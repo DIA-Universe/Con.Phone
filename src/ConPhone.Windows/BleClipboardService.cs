@@ -75,6 +75,7 @@ public sealed class BleClipboardService : IDisposable
     private readonly Func<string, bool> _trustedDevice;
     private readonly Func<bool> _enabled;
     private readonly Func<int> _bleImageLimitBytes;
+    private readonly Func<bool> _p2pRequested;
     private readonly Func<DirectLinkConfig?> _directLinkConfig;
     private readonly SemaphoreSlim _sendGate = new(1, 1);
     private readonly object _ackGate = new();
@@ -98,12 +99,14 @@ public sealed class BleClipboardService : IDisposable
         Func<string, bool> trustedDevice,
         Func<bool> enabled,
         Func<int> bleImageLimitBytes,
+        Func<bool> p2pRequested,
         Func<DirectLinkConfig?> directLinkConfig)
     {
         _approvedDeviceId = approvedDeviceId;
         _trustedDevice = trustedDevice;
         _enabled = enabled;
         _bleImageLimitBytes = bleImageLimitBytes;
+        _p2pRequested = p2pRequested;
         _directLinkConfig = directLinkConfig;
     }
 
@@ -253,22 +256,27 @@ public sealed class BleClipboardService : IDisposable
                 return;
             }
 
-            // protocol v2 (backward-compatible extension):
+            // protocol v2 optional extension:
             // [0]=version, [1]=text, [2]=image, [3]=direct P2P,
             // [4..7]=BLE image fallback limit in bytes, little-endian,
-            // [8]=1 when this trusted peer is the current active target.
+            // [8]=1 when this trusted peer is the current active target,
+            // [9]=1 only when Windows currently requests the Direct P2P fast path.
             var limit = Math.Clamp(
                 _bleImageLimitBytes(),
                 64 * 1024,
                 4 * 1024 * 1024);
 
-            var response = new byte[9] { 2, 1, 1, 1, 0, 0, 0, 0, 0 };
+            var response = new byte[10] { 2, 1, 1, 1, 0, 0, 0, 0, 0, 0 };
             System.Buffers.Binary.BinaryPrimitives.WriteInt32LittleEndian(
                 response.AsSpan(4, 4),
                 limit);
             response[8] = IsActive(args.Session.DeviceId.Id)
                 ? (byte)1
                 : (byte)0;
+            response[9] =
+                response[8] == 1 && _p2pRequested()
+                    ? (byte)1
+                    : (byte)0;
             request.RespondWithValue(response.AsBuffer());
         }
         finally
