@@ -126,7 +126,7 @@ final class P2PClipboardChannel {
         closedNotified = true
         sessionKey = nil
         pendingTransfers.removeAll()
-            activeTransfer = nil
+        activeTransfer = nil
         onClosed()
     }
 
