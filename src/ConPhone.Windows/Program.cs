@@ -154,6 +154,24 @@ internal static class Program
             throw new InvalidOperationException(
                 "Repeated identical clipboard copy duplicated the history row.");
 
+        var remoteMarker =
+            ConPhone.Core.ClipboardContent.FromText(
+                marker + " remote");
+
+        if (!history.ApplyRemote(
+                remoteMarker,
+                out var remoteChanged) ||
+            !remoteChanged)
+            throw new InvalidOperationException(
+                "First remote clipboard apply was not reported as changed.");
+
+        if (!history.ApplyRemote(
+                remoteMarker,
+                out var replayChanged) ||
+            replayChanged)
+            throw new InvalidOperationException(
+                "Remote clipboard replay incorrectly created a new change.");
+
         Clipboard.SetText("temporary replacement", TextDataFormat.UnicodeText);
         if (!history.Restore(entry.Id))
             throw new InvalidOperationException("Clipboard history could not restore the captured item.");
