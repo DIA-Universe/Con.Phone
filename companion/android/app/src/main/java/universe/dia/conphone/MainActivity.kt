@@ -61,6 +61,8 @@ class MainActivity : Activity() {
 
         root.addView(TextView(this).apply {
             text = "\nPC에서 휴대폰 입력으로 전환할 때 최신 클립보드가 자동으로 전송됩니다. " +
+                "Nearby Wi-Fi 권한을 거부해도 BLE 텍스트/작은 이미지는 계속 동작하고, " +
+                "큰 이미지 P2P 고속 전송만 사용할 수 없습니다. " +
                 "이미지 붙여넣기는 대상 Android 앱이 이미지 클립보드 URI를 지원해야 합니다."
             textSize = 14f
         })
@@ -110,8 +112,7 @@ class MainActivity : Activity() {
 
     private fun hasBluetoothPermissions(): Boolean =
         checkSelfPermission(Manifest.permission.BLUETOOTH_SCAN) == PackageManager.PERMISSION_GRANTED &&
-            checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT) == PackageManager.PERMISSION_GRANTED &&
-            hasNearbyWifiPermission()
+            checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT) == PackageManager.PERMISSION_GRANTED
 
     private fun hasNearbyWifiPermission(): Boolean =
         if (android.os.Build.VERSION.SDK_INT >= 33)
