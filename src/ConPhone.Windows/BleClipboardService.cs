@@ -411,6 +411,12 @@ public sealed class BleClipboardService : IDisposable
         }
     }
 
+    public void CancelPendingSends(string reason)
+    {
+        FailAllAcks(
+            new InvalidOperationException(reason));
+    }
+
     public void StopAdvertising()
     {
         if (_provider is null) return;
