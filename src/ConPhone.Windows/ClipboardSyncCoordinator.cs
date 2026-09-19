@@ -12,7 +12,7 @@ public sealed class ClipboardSyncCoordinator : IAsyncDisposable
     private readonly BleClipboardService _ble;
     private readonly P2PClipboardServer _p2p;
     private readonly SemaphoreSlim _send = new(1, 1);
-    private Func<ClipboardContent, Task<bool>>? _receiver;
+    private Func<string, ClipboardContent, Task<bool>>? _receiver;
     private long _targetGeneration;
     private bool _started;
 
@@ -48,7 +48,7 @@ public sealed class ClipboardSyncCoordinator : IAsyncDisposable
     }
 
     public void SetReceiver(
-        Func<ClipboardContent, Task<bool>> receiver)
+        Func<string, ClipboardContent, Task<bool>> receiver)
     {
         ArgumentNullException.ThrowIfNull(receiver);
         _receiver = receiver;
@@ -296,8 +296,24 @@ public sealed class ClipboardSyncCoordinator : IAsyncDisposable
         Status?.Invoke(
             $"Clipboard 수신 · {Describe(content)}");
 
-        return await receiver(content)
+        // Re-check the active target immediately before and after the UI receiver.
+        // A target switch must never let device A's clipboard be attributed to device B.
+        if (!string.Equals(
+                _approvedDeviceId(),
+                deviceId,
+                StringComparison.Ordinal))
+            return false;
+
+        var applied = await receiver(
+                deviceId,
+                content)
             .ConfigureAwait(false);
+
+        return applied &&
+            string.Equals(
+                _approvedDeviceId(),
+                deviceId,
+                StringComparison.Ordinal);
     }
 
     private static string Describe(ClipboardContent content) =>
