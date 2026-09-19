@@ -82,6 +82,13 @@ public sealed class P2PClipboardServer : IAsyncDisposable
                     {
                         await HandleClientAsync(tcp, token).ConfigureAwait(false);
                     }
+                    catch (OperationCanceledException) when (token.IsCancellationRequested)
+                    {
+                    }
+                    catch (Exception ex)
+                    {
+                        Status?.Invoke($"Clipboard P2P 연결 처리 오류: {ex.Message}");
+                    }
                     finally
                     {
                         _connectionSlots.Release();
@@ -423,7 +430,6 @@ public sealed class P2PClipboardServer : IAsyncDisposable
             catch (OperationCanceledException) { }
         }
 
-        _connectionSlots.Dispose();
         _lifetime.Dispose();
     }
 }
