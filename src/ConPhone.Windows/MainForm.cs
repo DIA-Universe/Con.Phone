@@ -206,7 +206,7 @@ public sealed class MainForm : Form
 
     private readonly bool _previewMode;
     private Task? _pump;
-    private long _epoch, _sent, _lastPointerSentTicks;
+    private long _epoch, _sent, _lastPointerSentTicks, _bleNotReadySinceTicks;
     private int _lastObservedPointerButtons, _lastSentPointerButtons;
     private bool _closing, _closed, _exitRequested, _servicesPaused;
     private string _lastError = "None";
@@ -860,17 +860,54 @@ public sealed class MainForm : Form
 
         _ble.Changed += () =>
         {
-            if (_input.IsRemote && !_ble.Ready)
+            if (!_input.IsRemote)
+                return;
+
+            if (_ble.Ready)
             {
-                ImmediateLocal();
-                Post(() => Log("Bluetooth 연결 상태가 바뀌어 노트북 입력으로 복귀했습니다."));
+                Interlocked.Exchange(ref _bleNotReadySinceTicks, 0);
+                return;
             }
+
+            Interlocked.CompareExchange(
+                ref _bleNotReadySinceTicks,
+                System.Diagnostics.Stopwatch.GetTimestamp(),
+                0);
         };
 
         _timer.Tick += (_, _) =>
         {
-            if (_input.IsRemote && !_ble.Ready)
-                ImmediateLocal();
+            if (_input.IsRemote)
+            {
+                if (_ble.Ready)
+                {
+                    Interlocked.Exchange(ref _bleNotReadySinceTicks, 0);
+                }
+                else
+                {
+                    var since = Interlocked.Read(ref _bleNotReadySinceTicks);
+                    if (since == 0)
+                    {
+                        Interlocked.CompareExchange(
+                            ref _bleNotReadySinceTicks,
+                            System.Diagnostics.Stopwatch.GetTimestamp(),
+                            0);
+                    }
+                    else
+                    {
+                        var elapsedMs =
+                            (System.Diagnostics.Stopwatch.GetTimestamp() - since) *
+                            1000.0 /
+                            System.Diagnostics.Stopwatch.Frequency;
+
+                        if (elapsedMs >= 1500)
+                        {
+                            ImmediateLocal();
+                            Log("Bluetooth 입력 준비 상태가 1.5초 이상 끊겨 노트북 입력으로 복귀했습니다.");
+                        }
+                    }
+                }
+            }
 
             var emergency = HotkeyCatalog.Display(_settings.EmergencyHotkey);
             _state.Text = _input.IsRemote
@@ -1391,6 +1428,7 @@ public sealed class MainForm : Form
     {
         _input.Deactivate();
         _ble.SetInteractiveMode(false);
+        Interlocked.Exchange(ref _bleNotReadySinceTicks, 0);
         _pointerScaler.Reset();
         Interlocked.Exchange(ref _lastPointerSentTicks, 0);
         Interlocked.Exchange(ref _lastObservedPointerButtons, 0);
@@ -1450,6 +1488,7 @@ public sealed class MainForm : Form
             return;
 
         _pointerScaler.Reset();
+        Interlocked.Exchange(ref _bleNotReadySinceTicks, 0);
         _ble.SetInteractiveMode(true);
         _input.Activate();
 
