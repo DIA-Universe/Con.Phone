@@ -9,17 +9,31 @@ public static class P2PFirewallSupport
 
     public static async Task<bool> IsConfiguredAsync(CancellationToken token)
     {
+        var exe = Environment.ProcessPath;
+        if (string.IsNullOrWhiteSpace(exe))
+            return false;
+
+        var escapedExe = exe.Replace("'", "''", StringComparison.Ordinal);
         var escapedRule = RuleName.Replace("'", "''", StringComparison.Ordinal);
         var command =
             "$ErrorActionPreference='Stop';" +
             $"$name='{escapedRule}';" +
-            $"$rule=Get-NetFirewallRule -DisplayName $name -ErrorAction SilentlyContinue | " +
-            "Where-Object { $_.Enabled -eq 'True' } | Select-Object -First 1;" +
+            $"$exe='{escapedExe}';" +
+            "$rule=Get-NetFirewallRule -DisplayName $name -ErrorAction SilentlyContinue | " +
+            "Where-Object { $_.Enabled -eq 'True' -and $_.Direction -eq 'Inbound' -and $_.Action -eq 'Allow' } | " +
+            "Select-Object -First 1;" +
             "if ($null -eq $rule) { exit 3 };" +
             "$port=$rule | Get-NetFirewallPortFilter | " +
             $"Where-Object {{ $_.Protocol -eq 'TCP' -and $_.LocalPort -eq '{Port}' }} | " +
             "Select-Object -First 1;" +
-            "if ($null -eq $port) { exit 4 }; exit 0";
+            "if ($null -eq $port) { exit 4 };" +
+            "$app=$rule | Get-NetFirewallApplicationFilter | " +
+            "Where-Object { $_.Program -eq $exe } | Select-Object -First 1;" +
+            "if ($null -eq $app) { exit 5 };" +
+            "$addr=$rule | Get-NetFirewallAddressFilter;" +
+            "if ($null -eq $addr -or ($addr.RemoteAddress -notcontains 'LocalSubnet')) { exit 6 };" +
+            "if ($rule.InterfaceType -ne 'Wireless') { exit 7 };" +
+            "exit 0";
 
         var start = new ProcessStartInfo
         {
@@ -67,7 +81,8 @@ public static class P2PFirewallSupport
             $"& netsh advfirewall firewall delete rule name=\"$name\" | Out-Null;" +
             $"& netsh advfirewall firewall add rule " +
             $"name=\"$name\" dir=in action=allow protocol=TCP localport={Port} " +
-            $"program=\"$exe\" remoteip=localsubnet enable=yes profile=private,public | Out-Null;" +
+            $"program=\"$exe\" remoteip=localsubnet interfacetype=wireless " +
+            $"enable=yes profile=private,public | Out-Null;" +
             $"if ($LASTEXITCODE -ne 0) {{ exit $LASTEXITCODE }}";
 
         var start = new ProcessStartInfo
