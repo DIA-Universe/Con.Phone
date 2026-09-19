@@ -1508,6 +1508,9 @@ public sealed class MainForm : Form
             content is null)
             throw new InvalidOperationException("보낼 클립보드 항목을 선택해 주세요.");
 
+        var targetId = _ble.ApprovedId
+            ?? throw new InvalidOperationException("활성 휴대폰을 먼저 선택해 주세요.");
+
         using var timeout = new CancellationTokenSource(
             content.Kind == ClipboardContentKind.TextUtf8
                 ? TimeSpan.FromSeconds(5)
@@ -1519,7 +1522,7 @@ public sealed class MainForm : Form
                 timeout.Token))
             throw new InvalidOperationException("현재 사용 가능한 Clipboard 전송 경로가 없습니다.");
 
-        if (_ble.ApprovedId is { } targetId)
+        if (string.Equals(targetId, _ble.ApprovedId, StringComparison.Ordinal))
             _lastSentClipboardHashByDevice[targetId] = content.Hash;
     }
 
