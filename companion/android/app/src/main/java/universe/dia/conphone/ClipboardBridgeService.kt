@@ -62,6 +62,7 @@ class ClipboardBridgeService : Service() {
         private const val PENDING_TTL_MS = 60_000L
 
         private val SERVICE_UUID = UUID.fromString("67A7F001-7E5B-4A2E-9B8B-1C9A5B6D1001")
+        private val HID_SERVICE_UUID = UUID.fromString("00001812-0000-1000-8000-00805f9b34fb")
         private val TX_UUID = UUID.fromString("67A7F002-7E5B-4A2E-9B8B-1C9A5B6D1001")
         private val RX_UUID = UUID.fromString("67A7F003-7E5B-4A2E-9B8B-1C9A5B6D1001")
         private val SECRET_UUID = UUID.fromString("67A7F004-7E5B-4A2E-9B8B-1C9A5B6D1001")
@@ -177,16 +178,21 @@ class ClipboardBridgeService : Service() {
             return
         }
 
-        val filter = ScanFilter.Builder()
-            .setServiceUuid(ParcelUuid(SERVICE_UUID))
-            .build()
+        val filters = listOf(
+            ScanFilter.Builder()
+                .setServiceUuid(ParcelUuid(SERVICE_UUID))
+                .build(),
+            ScanFilter.Builder()
+                .setServiceUuid(ParcelUuid(HID_SERVICE_UUID))
+                .build()
+        )
         val settings = ScanSettings.Builder()
             .setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY)
             .build()
 
         scanning = true
-        showStatus("Con.Phone PC 검색 중")
-        scanner.startScan(listOf(filter), settings, scanCallback)
+        showStatus("Con.Phone PC 검색 중 · Clipboard/HID UUID")
+        scanner.startScan(filters, settings, scanCallback)
     }
 
     private val scanCallback = object : ScanCallback() {
