@@ -408,10 +408,14 @@ public sealed class BleClipboardService : IDisposable
             {
                 try
                 {
+                    using var ackTimeout =
+                        new CancellationTokenSource(
+                            TimeSpan.FromSeconds(5));
+
                     await SendAckAsync(
                             id,
                             transferId,
-                            CancellationToken.None)
+                            ackTimeout.Token)
                         .ConfigureAwait(false);
                 }
                 catch (Exception ex)
