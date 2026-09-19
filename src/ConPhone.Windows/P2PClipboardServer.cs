@@ -623,7 +623,9 @@ public sealed class P2PClipboardServer : IAsyncDisposable
         {
             if (Interlocked.Exchange(ref _closed, 1) != 0) return;
             try { _tcp.Close(); } catch { }
-            _send.Dispose();
+
+            // A concurrent WriteEncryptedAsync may still be in its finally block.
+            // Keep the private SemaphoreSlim alive until this connection is collected.
             CryptographicOperations.ZeroMemory(_sessionKey);
         }
     }
