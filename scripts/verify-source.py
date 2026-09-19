@@ -160,6 +160,14 @@ require("capabilitiesUUID" in ios_bridge and
         "parseActiveTarget" in ios_bridge and
         "parseBleImageLimit" in ios_bridge,
         "iOS capabilities/active-target/BLE-limit negotiation missing")
+require("response[9]" in win_ble and "_p2pRequested()" in win_ble,
+        "Windows BLE capabilities must expose explicit P2P-demand state")
+require("parseP2PRequested" in android_service and "pendingNeedsP2P" in android_service,
+        "Android must only probe DirectLink for actual P2P demand")
+require("parseP2PRequested" in ios_bridge and "pendingNeedsP2P" in ios_bridge,
+        "iOS must only probe DirectLink for actual P2P demand")
+require("bulkTransfer && !_p2p.HasClient(id)" in coordinator and "_direct.Stop()" in coordinator,
+        "Speculative Windows P2P must stop after successful BLE fallback")
 
 # Android foreground service / optional P2P permission model.
 require('android:foregroundServiceType="connectedDevice"' in android_manifest,
