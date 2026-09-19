@@ -265,7 +265,7 @@ public sealed class ClipboardSyncCoordinator : IAsyncDisposable
                         : "대용량 Clipboard 전송 · P2P 고속 링크를 우선 확인합니다.");
 
                 var wait = !bleAllowed
-                    ? TimeSpan.FromSeconds(15)
+                    ? TimeSpan.FromSeconds(60)
                     : interactive
                         ? TimeSpan.FromSeconds(2)
                         : TimeSpan.FromSeconds(1);
@@ -333,8 +333,11 @@ public sealed class ClipboardSyncCoordinator : IAsyncDisposable
             }
             else if (!bleAllowed)
             {
+                if (!_p2p.HasClient(id))
+                    _direct.Stop();
+
                 Status?.Invoke(
-                    $"이미지 {content.Data.Length / 1024:N0} KiB는 BLE 제한을 초과했고 P2P 연결도 준비되지 않았습니다.");
+                    $"이미지 {content.Data.Length / 1024:N0} KiB는 BLE 제한을 초과했고 P2P 승인/연결도 시간 안에 완료되지 않았습니다.");
             }
 
             return false;
