@@ -150,12 +150,11 @@ class MainActivity : Activity() {
             Manifest.permission.BLUETOOTH_SCAN,
             Manifest.permission.BLUETOOTH_CONNECT
         )
-        if (android.os.Build.VERSION.SDK_INT >= 33) {
+
+        // P2P permission is deliberately separate. Denying nearby Wi-Fi/location
+        // must never disable BLE clipboard or HID companion connectivity.
+        if (android.os.Build.VERSION.SDK_INT >= 33)
             permissions += Manifest.permission.POST_NOTIFICATIONS
-            permissions += Manifest.permission.NEARBY_WIFI_DEVICES
-        } else {
-            permissions += Manifest.permission.ACCESS_FINE_LOCATION
-        }
 
         requestPermissions(permissions.toTypedArray(), requestCode)
     }
