@@ -1836,31 +1836,21 @@ public sealed class MainForm : Form
         // Cycle in the stable registration order, not the UI order.
         // GetPeersAsync deliberately moves the active peer to the top for display,
         // which otherwise makes F7 bounce between only two devices.
-        var ordered = TrustedDeviceStore.LoadAll()
-            .Where(readyById.ContainsKey)
-            .Select(id => readyById[id])
-            .ToArray();
+        var registrationOrder = TrustedDeviceStore.LoadAll();
+        var nextId = TargetCycle.Next(
+            registrationOrder,
+            readyById.Keys.ToHashSet(StringComparer.Ordinal),
+            _ble.ApprovedId);
 
-        if (ordered.Length == 0)
+        if (nextId is null ||
+            !readyById.TryGetValue(nextId, out var next))
         {
             Log("전환 가능한 등록 기기가 없습니다.");
             return;
         }
 
-        var currentId = _ble.ApprovedId;
-        var currentIndex = Array.FindIndex(
-            ordered,
-            peer => string.Equals(
-                peer.Id,
-                currentId,
-                StringComparison.Ordinal));
-
-        var next = currentIndex >= 0
-            ? ordered[(currentIndex + 1) % ordered.Length]
-            : ordered[0];
-
-        if (ordered.Length == 1 &&
-            string.Equals(next.Id, currentId, StringComparison.Ordinal))
+        if (readyById.Count == 1 &&
+            string.Equals(next.Id, _ble.ApprovedId, StringComparison.Ordinal))
         {
             Log($"등록 기기 1대 · 활성 대상 유지: {next.Name} [{next.Fingerprint}]");
             return;
