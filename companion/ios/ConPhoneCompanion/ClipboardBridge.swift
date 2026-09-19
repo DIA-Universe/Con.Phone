@@ -147,6 +147,9 @@ final class ClipboardBridge: NSObject, ObservableObject {
         } catch {
             SharedPayloadStore.clear(envelope.id)
             status = "공유 내용이 올바르지 않아 대기열에서 제거했습니다: \(error.localizedDescription)"
+            DispatchQueue.main.async { [weak self] in
+                self?.sendPendingShareIfPresent()
+            }
         }
     }
 
