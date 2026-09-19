@@ -11,10 +11,11 @@ public sealed class ClipboardSyncCoordinator : IAsyncDisposable
     private readonly DirectClipboardLink _direct;
     private readonly BleClipboardService _ble;
     private readonly P2PClipboardServer _p2p;
+    private readonly SemaphoreSlim _lifecycle = new(1, 1);
     private readonly SemaphoreSlim _send = new(1, 1);
     private Func<string, ClipboardContent, Task<bool>>? _receiver;
     private long _targetGeneration;
-    private bool _started;
+    private bool _disposed;
 
     public event Action<string>? Status;
 
@@ -63,43 +64,69 @@ public sealed class ClipboardSyncCoordinator : IAsyncDisposable
 
     public async Task StartAsync()
     {
-        if (!_started)
+        ObjectDisposedException.ThrowIf(_disposed, this);
+
+        await _lifecycle.WaitAsync()
+            .ConfigureAwait(false);
+        try
         {
-            _started = true;
-            try
-            {
-                await _p2p.StartAsync().ConfigureAwait(false);
-            }
-            catch (Exception ex)
-            {
-                Status?.Invoke($"Clipboard P2P 서버 시작 실패; BLE fallback 유지: {ex.Message}");
-            }
+            await StartCoreAsync()
+                .ConfigureAwait(false);
+        }
+        finally
+        {
+            _lifecycle.Release();
+        }
+    }
+
+    private async Task StartCoreAsync()
+    {
+        try
+        {
+            await _p2p.StartAsync()
+                .ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            Status?.Invoke(
+                $"Clipboard P2P 서버 시작 실패; BLE fallback 유지: {ex.Message}");
         }
 
         try
         {
-            await _ble.StartAsync().ConfigureAwait(false);
+            await _ble.StartAsync()
+                .ConfigureAwait(false);
         }
         catch (Exception ex)
         {
-            Status?.Invoke($"Clipboard BLE fallback 시작 실패: {ex.Message}");
+            Status?.Invoke(
+                $"Clipboard BLE fallback 시작 실패: {ex.Message}");
         }
-
     }
 
     public async Task EnsureHealthyAsync()
     {
-        if (!_enabled())
+        if (!_enabled() || _disposed)
             return;
 
+        await _lifecycle.WaitAsync()
+            .ConfigureAwait(false);
         try
         {
-            await _p2p.StartAsync().ConfigureAwait(false);
-            await _ble.StartAsync().ConfigureAwait(false);
+            if (!_enabled() || _disposed)
+                return;
+
+            await StartCoreAsync()
+                .ConfigureAwait(false);
         }
         catch (Exception ex)
         {
-            Status?.Invoke($"Clipboard transport 자동 복구 대기: {ex.Message}");
+            Status?.Invoke(
+                $"Clipboard transport 자동 복구 대기: {ex.Message}");
+        }
+        finally
+        {
+            _lifecycle.Release();
         }
     }
 
@@ -115,19 +142,36 @@ public sealed class ClipboardSyncCoordinator : IAsyncDisposable
 
     public async Task SetActiveAsync(bool active)
     {
-        if (active)
-        {
-            await StartAsync().ConfigureAwait(false);
+        if (_disposed)
             return;
-        }
 
-        _ble.CancelPendingSends(
-            "기기간 복붙이 비활성화되어 BLE Clipboard ACK 대기를 취소했습니다.");
-        _ble.StopAdvertising();
-        _direct.Stop();
-        await _p2p.StopListeningAsync()
+        await _lifecycle.WaitAsync()
             .ConfigureAwait(false);
-        Status?.Invoke("기기간 복붙 비활성화 · Bluetooth/P2P listener까지 중지");
+        try
+        {
+            if (_disposed)
+                return;
+
+            if (active)
+            {
+                await StartCoreAsync()
+                    .ConfigureAwait(false);
+                return;
+            }
+
+            _ble.CancelPendingSends(
+                "기기간 복붙이 비활성화되어 BLE Clipboard ACK 대기를 취소했습니다.");
+            _ble.StopAdvertising();
+            _direct.Stop();
+            await _p2p.StopListeningAsync()
+                .ConfigureAwait(false);
+            Status?.Invoke(
+                "기기간 복붙 비활성화 · Bluetooth/P2P listener까지 중지");
+        }
+        finally
+        {
+            _lifecycle.Release();
+        }
     }
 
     private DirectLinkConfig? GetDirectLinkConfig()
@@ -324,9 +368,28 @@ public sealed class ClipboardSyncCoordinator : IAsyncDisposable
 
     public async ValueTask DisposeAsync()
     {
-        await _p2p.DisposeAsync().ConfigureAwait(false);
-        _ble.Dispose();
-        _direct.Dispose();
-        _send.Dispose();
+        await _lifecycle.WaitAsync()
+            .ConfigureAwait(false);
+        try
+        {
+            if (_disposed)
+                return;
+
+            _disposed = true;
+            _ble.CancelPendingSends(
+                "Clipboard coordinator가 종료되었습니다.");
+            _ble.StopAdvertising();
+            _direct.Stop();
+            await _p2p.DisposeAsync()
+                .ConfigureAwait(false);
+            _ble.Dispose();
+            _direct.Dispose();
+            _send.Dispose();
+        }
+        finally
+        {
+            _lifecycle.Release();
+            _lifecycle.Dispose();
+        }
     }
 }
