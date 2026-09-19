@@ -125,8 +125,9 @@ public sealed class ClipboardSyncCoordinator : IAsyncDisposable
             "기기간 복붙이 비활성화되어 BLE Clipboard ACK 대기를 취소했습니다.");
         _ble.StopAdvertising();
         _direct.Stop();
-        _p2p.Deactivate();
-        Status?.Invoke("기기간 복붙 비활성화 · Bluetooth/P2P 연결 중지");
+        await _p2p.StopListeningAsync()
+            .ConfigureAwait(false);
+        Status?.Invoke("기기간 복붙 비활성화 · Bluetooth/P2P listener까지 중지");
     }
 
     private DirectLinkConfig? GetDirectLinkConfig()
