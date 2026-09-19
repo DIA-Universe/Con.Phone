@@ -656,6 +656,21 @@ final class ClipboardBridge: NSObject, ObservableObject {
         }
     }
 
+    private func parseP2PRequested(_ value: Data) -> Bool {
+        value.count >= 10 &&
+            value[0] == 2 &&
+            value[9] == 1
+    }
+
+    private func pendingNeedsP2P() -> Bool {
+        guard let content = pendingContent else {
+            return false
+        }
+
+        return content.kind != .text &&
+            content.data.count > bleImageLimitBytes
+    }
+
     private func parseActiveTarget(_ value: Data) -> Bool? {
         guard value.count >= 9, value[0] == 2 else {
             return nil
@@ -1341,12 +1356,15 @@ extension ClipboardBridge: CBPeripheralDelegate {
                     }
                     flushPendingContent()
 
-                    if let directLinkCharacteristic {
+                    if (parseP2PRequested(value) || pendingNeedsP2P(),
+                       let directLinkCharacteristic {
                         peripheral.readValue(for: directLinkCharacteristic)
                     }
                 }
-            } else if let directLinkCharacteristic {
-                // Backward compatibility with older v2 servers.
+            } else if pendingNeedsP2P(),
+                      let directLinkCharacteristic {
+                // Older servers do not expose the demand byte. Probe only when
+                // this phone has a queued payload that requires P2P.
                 peripheral.readValue(for: directLinkCharacteristic)
             }
 
