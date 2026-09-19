@@ -722,8 +722,24 @@ final class ClipboardBridge: NSObject, ObservableObject {
 
     private func scan() {
         guard central.state == .poweredOn else { return }
-        status = "Con.Phone PC 검색 중"
+
         central.stopScan()
+
+        // The PC may already be connected to iOS as a BLE HID keyboard even
+        // when the custom Clipboard service UUID did not fit in advertisement data.
+        // Reuse that system-connected peripheral before starting a fresh scan.
+        let connected = central.retrieveConnectedPeripherals(
+            withServices: [serviceUUID, hidServiceUUID])
+
+        if let existing = connected.first {
+            peripheral = existing
+            existing.delegate = self
+            status = "연결된 Con.Phone PC 확인 중"
+            central.connect(existing)
+            return
+        }
+
+        status = "Con.Phone PC 검색 중 · Clipboard/HID UUID"
         central.scanForPeripherals(
             withServices: [serviceUUID, hidServiceUUID],
             options: [CBCentralManagerScanOptionAllowDuplicatesKey: false]
