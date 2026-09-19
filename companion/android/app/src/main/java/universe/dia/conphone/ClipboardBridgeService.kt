@@ -577,6 +577,12 @@ class ClipboardBridgeService : Service() {
                 bleWireReassembler.add(chunk)
                     ?: return
 
+            if (!activeTarget) {
+                showStatus(
+                    "비활성 기기로 늦게 도착한 BLE Clipboard를 적용하지 않았습니다.")
+                return
+            }
+
             if (applyRemoteClipboardBlocking(content))
                 enqueueBleAck(chunk.transferId)
             else
@@ -753,6 +759,12 @@ class ClipboardBridgeService : Service() {
             val content =
                 p2pWireReassembler.add(chunk)
                     ?: return@runCatching null
+
+            if (!activeTarget) {
+                showStatus(
+                    "비활성 기기로 늦게 도착한 P2P Clipboard를 적용하지 않았습니다.")
+                return@runCatching null
+            }
 
             if (!applyRemoteClipboardBlocking(content)) {
                 showStatus(
