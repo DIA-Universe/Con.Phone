@@ -123,6 +123,16 @@ for uuid in uuids:
     ]:
         require(uuid.lower() in text.lower(), f"{path}: missing UUID {uuid}")
 
+# Companion discovery must survive Clipboard UUID advertisement truncation.
+require("00001812-0000-1000-8000-00805f9b34fb" in android_service,
+        "Android HID-service discovery fallback missing")
+require('CBUUID(string: "1812")' in ios_bridge,
+        "iOS HID-service discovery fallback missing")
+require("rejectedBleDevices" in android_service,
+        "Android unrelated-HID rejection cache missing")
+require("rejectedPeripheralUntil" in ios_bridge,
+        "iOS unrelated-HID rejection cache missing")
+
 # Application ACK must exist on every platform.
 require("ClipboardAckCodec" in win_ble, "Windows BLE application ACK missing")
 require("decodeAck" in android_service and "encodeAck" in android_protocol,
@@ -226,6 +236,7 @@ print(" - P2P listener lifecycle guarded")
 print(" - P2P v2 security markers aligned")
 print(" - clipboard caps aligned (1 MiB text / 32 MiB image)")
 print(" - BLE UUIDs aligned across Windows/Android/iOS")
+print(" - Clipboard/HID discovery fallback + unrelated-HID rejection guarded")
 print(" - application ACK paths present")
 print(" - capabilities UUID/active-target/BLE-limit negotiation guarded")
 print(" - Android BLE fallback remains independent of P2P permission")
