@@ -1594,9 +1594,7 @@ public sealed class MainForm : Form
 
     private async Task SelectNextTrustedTargetAsync()
     {
-        if (_input.IsRemote)
-            throw new InvalidOperationException(
-                "기기 전환은 노트북 입력 상태에서만 사용할 수 있습니다.");
+        var wasRemote = _input.IsRemote;
 
         var peers = await _ble.GetPeersAsync();
         var ready = peers
@@ -1629,14 +1627,34 @@ public sealed class MainForm : Form
             return;
         }
 
+        if (wasRemote)
+        {
+            // Stop capture and explicitly release old-target state before changing
+            // the active GATT client. This prevents stuck modifiers/buttons.
+            ImmediateLocal();
+            await ReleaseAsync();
+        }
+
         await _ble.SelectTargetAsync(next.Id);
         _clipboardSync?.TargetChanged();
         LoadActiveDeviceProfileToUi();
         ApplyInputSettings(save: false);
         await RefreshPeersAsync(true);
 
+        if (wasRemote && _ble.Ready)
+        {
+            _pointerScaler.Reset();
+            _ble.SetInteractiveMode(true);
+            _input.Activate();
+
+            _ = SyncLatestClipboardToPhoneSafeAsync(
+                Volatile.Read(ref _epoch),
+                _ble.ApprovedId);
+        }
+
         Log(
             $"다음 기기로 전환 · {next.Name} [{next.Fingerprint}] · " +
+            $"입력:{(wasRemote ? "휴대폰 유지" : "노트북")} · " +
             $"등록 {_ble.TrustedDeviceCount}/{TrustedDeviceStore.MaxDevices}");
     }
 
