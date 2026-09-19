@@ -875,8 +875,17 @@ public sealed class MainForm : Form
 
         _peerTimer.Tick += (_, _) =>
         {
-            if (_ble.Advertisement is "Started" or "StartedWithoutAllAdvertisementData")
-                Dispatch(() => RefreshPeersAsync(true));
+            Dispatch(async () =>
+            {
+                if (_ble.DesiredRunning)
+                    await _ble.EnsureAdvertisingAsync();
+
+                if (_settings.ClipboardSyncEnabled && _clipboardSync is not null)
+                    await _clipboardSync.EnsureHealthyAsync();
+
+                if (_ble.Advertisement is "Started" or "StartedWithoutAllAdvertisementData")
+                    await RefreshPeersAsync(true);
+            });
         };
         _peerTimer.Start();
 
