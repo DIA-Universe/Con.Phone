@@ -45,15 +45,29 @@ final class P2PClipboardChannel {
     }
 
     func start() {
+        connectionGeneration += 1
+        let generation = connectionGeneration
+
+        queue.asyncAfter(deadline: .now() + 8) { [weak self] in
+            guard let self,
+                  self.connectionGeneration == generation,
+                  !self.ready else { return }
+
+            self.onStatus("P2P 연결/인증 시간이 초과되어 연결을 종료합니다.")
+            self.connection.cancel()
+        }
+
         connection.stateUpdateHandler = { [weak self] state in
             guard let self else { return }
             switch state {
             case .ready:
                 self.handshake()
             case .failed(let error):
+                self.connectionGeneration += 1
                 self.ready = false
                 self.onStatus("P2P TCP 연결 실패: \(error.localizedDescription)")
             case .cancelled:
+                self.connectionGeneration += 1
                 self.ready = false
             default:
                 break
@@ -73,6 +87,7 @@ final class P2PClipboardChannel {
     func close() {
         queue.async { [weak self] in
             guard let self else { return }
+            self.connectionGeneration += 1
             self.handshakeGeneration += 1
             self.ready = false
             self.sessionKey = nil
@@ -130,7 +145,7 @@ final class P2PClipboardChannel {
                     let expected = self.hmac(
                         Data("CPREADY2".utf8) + clientNonce + serverNonce
                     )
-                    guard serverMac == expected else {
+                    guard self.constantTimeEqual(serverMac, expected) else {
                         self.onStatus("P2P 인증 실패")
                         self.connection.cancel()
                         return
@@ -143,6 +158,7 @@ final class P2PClipboardChannel {
                         serverNonce
                     )
 
+                    self.connectionGeneration += 1
                     self.handshakeGeneration += 1
                     self.ready = true
                     self.onStatus("Clipboard P2P 고속 채널 연결됨")
@@ -301,6 +317,16 @@ final class P2PClipboardChannel {
     private func nextSequence(_ current: UInt64) throws -> UInt64 {
         guard current < UInt64.max else { throw ChannelError.sequence }
         return current + 1
+    }
+
+    private func constantTimeEqual(_ lhs: Data, _ rhs: Data) -> Bool {
+        guard lhs.count == rhs.count else { return false }
+
+        var difference: UInt8 = 0
+        for index in lhs.indices {
+            difference |= lhs[index] ^ rhs[index]
+        }
+        return difference == 0
     }
 
     private func hmac(_ data: Data) -> Data {
