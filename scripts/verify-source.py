@@ -29,6 +29,9 @@ android_manifest = read("companion/android/app/src/main/AndroidManifest.xml")
 android_service = read("companion/android/app/src/main/java/universe/dia/conphone/ClipboardBridgeService.kt")
 android_protocol = read("companion/android/app/src/main/java/universe/dia/conphone/Protocol.kt")
 android_gradle = read("companion/android/app/build.gradle.kts")
+android_main = read("companion/android/app/src/main/java/universe/dia/conphone/MainActivity.kt")
+android_share = read("companion/android/app/src/main/java/universe/dia/conphone/ShareActivity.kt")
+android_share_store = read("companion/android/app/src/main/java/universe/dia/conphone/AndroidSharedPayloadStore.kt")
 
 ios_bridge = read("companion/ios/ConPhoneCompanion/ClipboardBridge.swift")
 ios_protocol = read("companion/ios/ConPhoneCompanion/ClipboardProtocol.swift")
@@ -36,6 +39,13 @@ ios_p2p = read("companion/ios/ConPhoneCompanion/P2PClipboardChannel.swift")
 ios_project = read("companion/ios/project.yml")
 ios_app_entitlements = read("companion/ios/ConPhoneCompanion/ConPhoneCompanion.entitlements")
 ios_share_entitlements = read("companion/ios/ShareExtension/ConPhoneShare.entitlements")
+ios_share = read("companion/ios/ShareExtension/ShareViewController.swift")
+ios_share_store = read("companion/ios/Shared/SharedPayloadStore.swift")
+
+trusted_store = read("src/ConPhone.Windows/TrustedDeviceStore.cs")
+update_service = read("src/ConPhone.Windows/LocalUpdateService.cs")
+authenticode = read("src/ConPhone.Windows/AuthenticodeVerifier.cs")
+p2p_security = read("src/ConPhone.Core/P2PSecurity.cs")
 
 # Product version alignment.
 require("<Version>0.3.0</Version>" in win_project, "Windows version must be 0.3.0")
@@ -126,6 +136,40 @@ require("ConPhoneShare:" in ios_project, "iOS Share Extension target missing")
 require("com.apple.developer.networking.HotspotConfiguration" in ios_app_entitlements,
         "iOS Hotspot Configuration entitlement missing")
 
+# Durable phone -> PC Share queues must exist and only drain through the Companion transport.
+require("AndroidSharedPayloadStore" in android_share, "Android Share target must use the durable payload store")
+require("ACTION_DRAIN_SHARED" in android_service, "Android durable Share queue drain action missing")
+require("ACTION_RETRY_P2P" in android_service and "ACTION_RETRY_P2P" in android_main,
+        "Android P2P permission retry path missing")
+require("MAX_ITEMS = 8" in android_share_store, "Android durable Share queue item cap must be 8")
+require("MAX_TOTAL_BYTES = 40L * 1024 * 1024" in android_share_store,
+        "Android durable Share queue total cap must be 40 MiB")
+
+require("ShareViewController" in ios_share, "iOS Share Extension controller missing")
+require("maxQueuedItems = 8" in ios_share_store, "iOS durable Share queue item cap must be 8")
+require("maxQueuedImageBytes = 40 * 1024 * 1024" in ios_share_store,
+        "iOS durable Share queue image cap must be 40 MiB")
+require("sendPendingShareIfPresent" in ios_bridge,
+        "iOS durable Share queue drain path missing")
+
+# Multi-device and active-target isolation.
+require("MaxDevices = 5" in trusted_store, "Trusted device cap must remain 5")
+require("IsActive(" in win_ble and "IsTrusted(" in win_ble,
+        "Windows BLE clipboard trust/active-target separation missing")
+require("activeTarget" in android_service, "Android active-target gate missing")
+require("activeTarget" in ios_bridge, "iOS active-target gate missing")
+
+# P2P v2 must use a per-session derived key, not the long-term pairing secret directly.
+require("DeriveSessionKey" in p2p_security and "SessionLabel" in p2p_security,
+        "Core P2P v2 session-key derivation missing")
+require("P2PSecurity.DeriveSessionKey" in win_p2p,
+        "Windows P2P server must use the shared v2 KDF")
+
+# Update integrity/signing path.
+require("ChecksumVerified" in update_service, "Windows update checksum verification missing")
+require("Authenticode" in update_service and "AuthenticodeVerifier" in authenticode,
+        "Windows update Authenticode verification path missing")
+
 # Product intentionally has no file/folder clipboard transfer.
 for path, text in [
     ("Core clipboard", core),
@@ -152,3 +196,7 @@ print(" - BLE UUIDs aligned across Windows/Android/iOS")
 print(" - application ACK paths present")
 print(" - Android connectedDevice foreground service")
 print(" - iOS App Group + Share Extension aligned")
+print(" - durable Android/iOS Share queues guarded")
+print(" - active-target isolation + 5-device trust guarded")
+print(" - P2P v2 per-session KDF guarded")
+print(" - update checksum/AuthentiCode path guarded")
