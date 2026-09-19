@@ -221,12 +221,8 @@ public sealed class DirectClipboardLink : IDisposable
 
         try
         {
-            if (publisher.Status is
-                WiFiDirectAdvertisementPublisherStatus.Started or
-                WiFiDirectAdvertisementPublisherStatus.StartedWithoutAllAdvertisementData)
-            {
+            if (publisher.Status == WiFiDirectAdvertisementPublisherStatus.Started)
                 publisher.Stop();
-            }
         }
         catch (Exception ex)
         {
