@@ -65,6 +65,15 @@ enum SharedPayloadStore {
         let destination = directory.appendingPathComponent(fileName)
         try FileManager.default.copyItem(at: source, to: destination)
 
+        let copiedValues = try destination.resourceValues(
+            forKeys: [.fileSizeKey])
+        guard let copiedSize = copiedValues.fileSize,
+              copiedSize > 0,
+              copiedSize <= maxImageBytes else {
+            try? FileManager.default.removeItem(at: destination)
+            throw StoreError.tooLarge
+        }
+
         let envelope = SharedPayloadEnvelope(
             id: UUID(),
             kind: .image,
