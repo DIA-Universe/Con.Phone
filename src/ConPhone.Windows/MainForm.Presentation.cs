@@ -9,6 +9,20 @@ public sealed partial class MainForm
     private readonly Label _feedback = new();
     private readonly List<Button> _clipboardSelectionButtons = [];
 
+    private void AddDisclosure(Control parent, string title, Control content)
+    {
+        content.Visible = false;
+        var toggle = ActionButton(title + " ▾", () => Task.CompletedTask);
+        toggle.Click += (_, _) =>
+        {
+            content.Visible = !content.Visible;
+            toggle.Text = title + (content.Visible ? " ▴" : " ▾");
+            if (parent is FlowLayoutPanel flow) ResizeSections(flow);
+        };
+        parent.Controls.Add(toggle);
+        parent.Controls.Add(content);
+    }
+
     private Button ClipboardSelectionButton(string text, Func<Task> action, bool primary = false)
     {
         var button = ActionButton(text, action, primary);
@@ -38,7 +52,11 @@ public sealed partial class MainForm
             {
                 if (child is ListBox or TextBox) child.Width = inner;
                 else if (child is Label label) label.MaximumSize = new Size(inner, 0);
-                else if (child is FlowLayoutPanel row) row.MaximumSize = new Size(inner, 0);
+                else if (child is FlowLayoutPanel row)
+                {
+                    row.MinimumSize = new Size(Math.Min(row.MinimumSize.Width, inner), 0);
+                    row.MaximumSize = new Size(inner, 0);
+                }
             }
         }
         flow.ResumeLayout();

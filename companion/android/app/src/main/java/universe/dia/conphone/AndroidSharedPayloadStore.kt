@@ -180,7 +180,7 @@ class AndroidSharedPayloadStore(private val context: Context) {
 
     private fun ensureCapacityLocked(queue: List<Meta>, newBytes: Long) {
         require(queue.size < MAX_ITEMS) {
-            "PC 전송 대기열이 가득 찼습니다. Con.Phone 앱을 열어 먼저 전송해 주세요."
+            "PC 전송 대기열이 가득 찼습니다. LINKO 앱을 열어 먼저 전송해 주세요."
         }
 
         val current = queue.sumOf { it.size }

@@ -1,107 +1,32 @@
-# Con.Phone
+# LINKO
 
-**노트북의 키보드·마우스 → 내장 Bluetooth → 갤럭시(Android) / iPhone.**
+PC의 키보드와 마우스를 Bluetooth로 휴대폰에서 사용하세요.
 
-추가 동글이나 USB 연결 없이 사용하는 Windows용 무선 입력 프로그램입니다. 키보드·마우스는 표준 BLE HID로 동작합니다. 텍스트/이미지 기기간 복붙을 사용할 때만 Android/iOS용 Con.Phone Companion을 함께 사용합니다.
+**Windows / Android 0.4.0** · [최신 다운로드](https://github.com/DIA-Universe/Con.Phone/releases)
 
-> **0.3.0 기능 브랜치입니다. 자동 빌드/테스트와 실기기 검증은 별개입니다.** 최신 0.3.0은 Direct Wi‑Fi/P2P, BLE fallback, 다중기기, Android/iOS Companion 기능을 포함하지만 실제 Galaxy/iPhone 릴리스 검증이 끝나기 전에는 호환성을 보장하지 않습니다.
+## 시작하기
 
-## 다운로드 / 실행
+1. Windows에서 `LINKO.exe`를 실행합니다.
+2. 휴대폰 Bluetooth 설정에서 이 PC를 연결합니다. 표시되는 이름은 Windows PC 이름일 수 있습니다.
+3. LINKO에서 기기를 선택하고 **이 기기 사용**을 누릅니다.
+4. **F8**로 휴대폰을 조작하고 **F9**로 PC로 돌아옵니다.
 
-저장소의 **Actions → Windows build and core tests → 성공한 실행 → Artifacts → ConPhone-win-x64-single-exe**에서 내려받아 압축을 푼 뒤 `ConPhone.exe`를 실행합니다. .NET 런타임을 포함하는 x64 배포본입니다. 코드 서명은 되어 있지 않습니다. 조직 보안 정책을 우회하거나 백신을 끄지 마세요.
+## iPhone · iPad
 
-**이름 주의:** GitHub 저장소/제품 이름은 Con.Phone이지만, Windows에서는 `CON` 및 `CON.*`가 예약되어 있습니다. 로컬 폴더와 실행 파일은 반드시 `ConPhone`처럼 점을 뺀 이름을 사용합니다. 저장소 이름 자체를 바꿀 필요는 없습니다.
+앱 설치 없이 키보드·마우스만 사용합니다. iPhone은 **설정 → 손쉬운 사용 → 터치 → AssistiveTouch**를 켜고 **기기 → Bluetooth 기기**에서 연결하세요. iPad는 **설정 → Bluetooth**에서 연결합니다. PC 입력 설정에 **Apple 권장값**이 있습니다.
 
-## 갤럭시에서 첫 시험
+실제 iPhone/iPad와 Windows 어댑터 조합의 동작은 아직 검증하지 못했습니다. [Apple 연결 안내](https://support.apple.com/en-gb/111775)를 참고하세요.
 
-1. Windows와 갤럭시의 Bluetooth를 켭니다. 케이블이나 추가 동글은 사용하지 않습니다.
-2. 앱의 **Bluetooth 검사**에서 `Peripheral 역할: True`인지 확인합니다. False이면 이 내장 어댑터/드라이버 조합에서 현재 방식은 동작하지 않습니다.
-3. **휴대폰 검색 허용**을 누르고 갤럭시의 Bluetooth 설정에서 이 PC를 검색합니다. 이름은 Windows가 제공하므로 반드시 `Con.Phone`으로 표시되는 것은 아닙니다. 양쪽 페어링 요청과 코드/기기 이름을 직접 확인하세요.
-4. 앱이 HID 연결 목록을 자동 갱신합니다. 최대 5대까지 **등록**할 수 있고, 그중 ▶ 표시가 현재 활성 대상입니다. 키보드·마우스가 모두 True여야 원격 입력 대상으로 사용할 수 있습니다.
-5. 갤럭시에서 Samsung Notes 등 비민감한 시험 입력 화면을 열고, 누른 키·마우스 버튼을 모두 놓은 다음 **F8**을 눌러 전환합니다. **F9**는 즉시 노트북 복귀입니다.
-6. 갤럭시 설정의 물리 키보드 메뉴에서 한국어 배열/언어 전환 설정을 확인합니다. 메뉴 위치는 One UI 버전에 따라 다릅니다. `안녕하세요`, `SAP CO 2026`, 받침 수정과 드래그·휠을 시험합니다.
-7. 실패하면 **진단 저장**으로 JSON을 저장합니다. 입력 내용, 키코드, 페어링 코드, 기기 이름·주소는 내보내지 않습니다.
+## Android 클립보드
 
-**Bluetooth 검색 신호 시작 → OS 페어링 → HID 구독 → 기기 등록/활성화 → 입력 반영**은 각각 다른 단계입니다. 검색 신호가 시작됐다는 이유만으로 입력 가능하다고 표시하지 않습니다.
+`LINKO-0.4.0.apk`를 설치하고 PC의 **클립보드 → 기기간 복붙 사용**을 켜세요. 휴대폰에서 복사한 내용은 LINKO를 열거나 **공유 → LINKO**로 보냅니다. 받은 이미지는 **이미지 복사 / 이미지 공유**로 사용할 수 있습니다. 기존 Con.Phone 앱에 덮어 설치할 수 있습니다.
 
-## iPhone
+## 설정과 도움말
 
-같은 BLE HID 구현을 사용합니다. 별도 iPhone 제어 API나 가짜 연결 화면을 넣지 않았습니다. 포인터를 사용하려면 iPhone에서 `설정 → 손쉬운 사용 → 터치 → AssistiveTouch`를 확인해야 합니다. iPhone 기기가 없어 실제 발견·페어링·한글·드래그·스크롤은 검증하지 않았습니다. 프로필 선택은 안내/진단 분류이며 호환성 보증이 아닙니다.
+감도·한영키·단축키는 **입력 설정**, 연결 상세 정보와 로그는 **도움말**에 있습니다. 파일 전송과 화면 미러링은 포함하지 않습니다. Windows Bluetooth LE Peripheral 지원이 필요합니다.
 
-## 현재 구현
+## 개발 / 검증
 
-- Windows LE Peripheral 지원/무선 상태 진단, HID 서비스 0x1812 광고.
-- 키보드·상대 마우스 HID Report Map, Report Reference, Boot Protocol, Control Point, LED 출력 처리.
-- 암호화된 특성 접근, OS 페어링 확인, 최대 5대 신뢰 기기 기억, 현재 활성 1대에만 입력·P2P 클립보드 전송.
-- 별도 스레드 입력 수집, 변경 가능한 전환/복귀/잠금 단축키, 한영키 Right Alt/LANG1/Ctrl+Space/Shift+Space, 기기별 Mac Ctrl↔Command 프로필.
-- 순서를 보존하는 제한된 전송 큐, 버튼/키 경계를 넘지 않는 마우스 이동 병합, BLE 연결 interval 기반 pointer pacing.
-- 키 해제 보고서, 오류·구독 변경·절전·잠금 시 로컬 복귀 및 자동 원격 재개 방지.
-- Galaxy WIN+L 잠금, HID Consumer Control 미디어키, 트레이 상태, 입력 내용을 제외한 진단 저장, 자체 동작 테스트, single-EXE 배포 경로.
+.NET 10, JDK 17, Android SDK 35를 사용합니다. `scripts/test-now.ps1 -Target all`은 EXE/APK 버전 일치를 검사한 뒤 로컬에서 빌드합니다. GitHub Actions를 실행할 필요가 없습니다.
 
-## 중요 제약
-
-- Windows 11 x64 + 내장 Bluetooth LE Peripheral 지원을 우선 대상으로 합니다. Windows 10 API를 사용하지만 모든 OS/칩셋 지원을 보장하지 않습니다.
-- Windows가 GAP/DIS 등 일부 서비스를 관리하므로 이 프로그램은 이를 재정의하지 않습니다. 휴대폰의 HID 탐색 정책 때문에 PC가 목록에 안 보이거나 페어링 후 구독이 안 될 수 있습니다. 이는 **실기기 검증이 필요한 기술 위험**입니다.
-- F8/F9는 앱 실행 중 예약 키입니다. 휴대폰에 그대로 전달하지 않습니다. 펜/태블릿 등 절대 좌표 장치는 이 버전에서 지원하지 않습니다.
-- 보안 데스크톱, 관리자 앱, UAC, Ctrl+Alt+Delete는 일반 앱이 완전히 제어할 수 없습니다. 관리자 권한으로 강제 실행하거나 보안 기능을 끄지 않습니다.
-- 연결이 이미 끊긴 뒤에는 휴대폰에 키 해제 신호를 보낼 수 없습니다. 로컬 입력부터 복구하며, 휴대폰에 눌림이 남으면 Bluetooth 연결을 해제해야 합니다.
-- 파일/폴더 전송과 화면 미러링은 포함하지 않습니다. 텍스트/이미지 복붙은 같은 Wi-Fi를 전제로 하지 않으며, Windows가 만드는 Direct Wi-Fi/P2P 암호화 채널을 우선하고 사용할 수 없으면 BLE로 fallback합니다.
-
-## 텍스트 · 이미지 복붙
-
-클립보드 동기화는 HID와 분리되어 있습니다.
-
-- Windows → 휴대폰: Windows에서 복사 후 휴대폰 입력으로 전환하면 최신 텍스트/이미지를 Companion으로 동기화합니다.
-- 휴대폰 → Windows: Companion의 **현재 텍스트/이미지를 PC로 보내기**를 사용할 수 있습니다. Android는 다른 앱의 **공유 → Con.Phone**, iOS는 **Share Extension → Con.Phone 앱 실행** 경로도 제공합니다.
-- 전송 우선순위: Direct Wi-Fi/P2P 암호화 채널 → BLE fallback.
-- Windows의 BLE 이미지 한도 설정은 Companion에 전달되어 PC→폰/폰→PC 양쪽에 동일하게 적용됩니다.
-- 같은 Wi-Fi 탐색/UDP broadcast에 의존하지 않습니다.
-- 파일/폴더는 전송하지 않습니다.
-- 기본 F7은 다음 등록 기기로 전환하며, 휴대폰 입력 중에도 이전 기기 release 후 다음 활성 기기로 직접 handoff합니다.
-
-Android 프로젝트는 companion/android, iOS 프로젝트 소스는 companion/ios에 있습니다. 세부 프로토콜·보안·제약은 docs/CLIPBOARD_SYNC.md를 참고하세요.
-
-## 0.3.0 바로 테스트
-
-같은 Wi-Fi를 사용하지 않는 상태를 기준으로 테스트합니다.
-
-Windows PowerShell에서 저장소 루트 기준:
-
-```powershell
-powershell -ExecutionPolicy Bypass -File .\scripts\test-now.ps1 -Target windows
-```
-
-이 명령은 Core 테스트, Windows 빌드, 실제 Windows 클립보드 roundtrip, UI 4탭 snapshot, single-file `ConPhone.exe`, SHA-256 생성을 한 번에 수행합니다.
-
-성공 시:
-
-- Windows EXE: `artifacts/test-now/windows/win-x64/ConPhone.exe`
-- SHA-256: 같은 폴더의 `ConPhone.exe.sha256`
-- UI snapshot: `artifacts/test-now/windows/ui`
-
-JDK 17과 Android SDK 35가 준비돼 있고 `JAVA_HOME`, `ANDROID_HOME`이 설정돼 있으면 (Gradle 8.11.1은 저장소의 Wrapper가 다운로드합니다):
-
-```powershell
-powershell -ExecutionPolicy Bypass -File .\scripts\test-now.ps1 -Target all
-```
-
-Android debug APK도 `artifacts/test-now/ConPhone-Companion-0.3.0-debug.apk`로 복사합니다.
-
-Android만 검증하려면 `-Target android`를 사용합니다. 단위 테스트도 실행하며 실패하면 즉시 중단합니다. Windows 작업 경로에 한글이 있으면 `%LOCALAPPDATA%/ConPhoneBuild` 아래의 영문 임시 경로로 소스를 복사해 빌드하고 APK와 테스트 결과를 가져옵니다. 직접 Gradle을 실행할 때는 영문 경로에서 `companion/android/gradlew.bat testDebugUnitTest assembleDebug`를 실행하세요. 상세 검증 범위와 Actions 제한 해제 절차는 `docs/BUILD_VERIFICATION.md`를 참고하세요.
-
-실기기에서는 Windows Mobile Hotspot을 끄고, 휴대폰의 기존 Con.Phone Bluetooth 등록을 삭제한 뒤 0.3.0 HID 프로필로 한 번 다시 페어링하는 것을 권장합니다. 자세한 항목은 `docs/RELEASE_TEST_0.3.0.md`를 따릅니다.
-
-## 개발
-
-.NET 10 SDK와 Windows 개발 환경이 필요합니다. Windows에서 clone할 때 대상 디렉터리를 명시합니다.
-
-```powershell
-git clone https://github.com/DIA-Universe/Con.Phone.git ConPhone
-cd ConPhone
-dotnet run --project tests/ConPhone.Tests -c Release
-dotnet build src/ConPhone.Windows -c Release
-dotnet run --project src/ConPhone.Windows
-dotnet publish src/ConPhone.Windows -c Release -r win-x64 --self-contained true -o artifacts/ConPhone-win-x64
-```
-
-기술 구조는 `docs/ARCHITECTURE.md`, 클립보드 설계는 `docs/CLIPBOARD_SYNC.md`, 0.3.0 실기기 릴리스 시험표는 `docs/RELEASE_TEST_0.3.0.md`를 확인하세요.
+검증 범위와 아직 확인하지 못한 항목은 [0.4.0 검토 기록](docs/LINKO-0.4.0.md)에 정리했습니다. 저장소 주소와 기존 설치 데이터 식별자는 호환성을 위해 유지합니다.

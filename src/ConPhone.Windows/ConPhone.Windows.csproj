@@ -5,10 +5,14 @@
     <SupportedOSPlatformVersion>10.0.19041.0</SupportedOSPlatformVersion>
     <UseWindowsForms>true</UseWindowsForms>
     <EnableWindowsTargeting>true</EnableWindowsTargeting>
-    <AssemblyName>ConPhone</AssemblyName>
+    <AssemblyName>LINKO</AssemblyName>
+    <Product>LINKO</Product>
+    <Title>LINKO</Title>
+    <ApplicationIcon>Assets/linko.ico</ApplicationIcon>
     <RootNamespace>ConPhone.Windows</RootNamespace>
     <ApplicationManifest>app.manifest</ApplicationManifest>
-    <Version>0.3.6</Version>
+    <Version>0.4.0</Version>
   </PropertyGroup>
   <ItemGroup><ProjectReference Include="../ConPhone.Core/ConPhone.Core.csproj" /></ItemGroup>
+  <ItemGroup><EmbeddedResource Include="Assets/linko.ico" LogicalName="LINKO.Icon" /></ItemGroup>
 </Project>

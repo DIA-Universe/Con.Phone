@@ -81,7 +81,7 @@ class UpdateActivity : Activity() {
                   const response = await fetch(url.href, {credentials:'same-origin'});
                   if (!response.ok) throw new Error('릴리스 조회 실패: ' + response.status);
                   const doc = new DOMParser().parseFromString(await response.text(), 'text/html');
-                  const asset = Array.from(doc.querySelectorAll('a[href]')).find(a => /ConPhone-Companion-[0-9.]+-debug[.]apk${'$'}/.test(a.getAttribute('href')));
+                  const asset = Array.from(doc.querySelectorAll('a[href]')).find(a => /(?:LINKO-[0-9.]+|ConPhone-Companion-[0-9.]+-debug)[.]apk${'$'}/.test(a.getAttribute('href')));
                   if (!asset) throw new Error('최신 릴리스에 APK가 없습니다.');
                   window.__conphoneUpdate = {url:new URL(asset.getAttribute('href'),location.href).href};
                 } catch(e) { window.__conphoneUpdate = {error:String(e.message || e)}; }
@@ -112,8 +112,8 @@ class UpdateActivity : Activity() {
         val uri = Uri.parse(assetUrl)
         if (uri.scheme != "https" || uri.host != "github.com" ||
             uri.path?.startsWith("/DIA-Universe/Con.Phone/releases/download/") != true ||
-            uri.lastPathSegment?.matches(Regex("ConPhone-Companion-[0-9.]+-debug\\.apk")) != true) {
-            status.text = "올바른 Con.Phone APK 주소가 아닙니다."; return
+            uri.lastPathSegment?.matches(Regex("(?:LINKO-[0-9.]+|ConPhone-Companion-[0-9.]+-debug)\\.apk")) != true) {
+            status.text = "올바른 LINKO APK 주소가 아닙니다."; return
         }
         if (downloading) return
         downloading = true

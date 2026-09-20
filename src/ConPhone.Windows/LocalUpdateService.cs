@@ -23,7 +23,7 @@ public static class LocalUpdateService
         if (string.IsNullOrWhiteSpace(path) ||
             !File.Exists(path) ||
             !path.EndsWith(".exe", StringComparison.OrdinalIgnoreCase))
-            throw new InvalidOperationException("ConPhone.exe 업데이트 파일을 선택해 주세요.");
+            throw new InvalidOperationException("LINKO.exe 업데이트 파일을 선택해 주세요.");
 
         var info = FileVersionInfo.GetVersionInfo(path);
         var versionText = info.FileVersion ?? info.ProductVersion;
@@ -39,7 +39,7 @@ public static class LocalUpdateService
         var checksumPath = path + ".sha256";
         if (!File.Exists(checksumPath))
             throw new InvalidOperationException(
-                "업데이트 SHA-256 검증 파일이 없습니다. ConPhone.exe.sha256을 같은 폴더에 두세요.");
+                "업데이트 SHA-256 검증 파일이 없습니다. LINKO.exe.sha256을 같은 폴더에 두세요.");
 
         var expected = File.ReadAllText(checksumPath)
             .Trim()
@@ -75,7 +75,7 @@ public static class LocalUpdateService
 
         if (currentSigner is not null && !currentSignatureValid)
             throw new InvalidOperationException(
-                "현재 Con.Phone의 Authenticode 서명이 유효하지 않습니다. 업데이트를 중단합니다.");
+                "현재 LINKO의 Authenticode 서명이 유효하지 않습니다. 업데이트를 중단합니다.");
 
         var signatureVerified =
             currentSignatureValid &&
@@ -93,7 +93,7 @@ public static class LocalUpdateService
 
         if (currentSigner is not null && !signatureVerified)
             throw new InvalidOperationException(
-                "현재 Con.Phone과 업데이트 파일의 유효한 Authenticode 서명자가 다릅니다. 업데이트를 중단합니다.");
+                "현재 LINKO과 업데이트 파일의 유효한 Authenticode 서명자가 다릅니다. 업데이트를 중단합니다.");
 
         return new UpdateCandidate(
             path,
@@ -107,7 +107,7 @@ public static class LocalUpdateService
     public static string Stage(UpdateCandidate candidate)
     {
         var current = Environment.ProcessPath
-            ?? throw new InvalidOperationException("현재 Con.Phone 실행 파일 경로를 확인할 수 없습니다.");
+            ?? throw new InvalidOperationException("현재 LINKO 실행 파일 경로를 확인할 수 없습니다.");
 
         if (Path.GetFullPath(candidate.Path)
             .Equals(Path.GetFullPath(current), StringComparison.OrdinalIgnoreCase))
@@ -155,7 +155,7 @@ public static class LocalUpdateService
         string expectedSha256)
     {
         var target = Environment.ProcessPath
-            ?? throw new InvalidOperationException("현재 Con.Phone 실행 파일 경로를 확인할 수 없습니다.");
+            ?? throw new InvalidOperationException("현재 LINKO 실행 파일 경로를 확인할 수 없습니다.");
 
         var start = new ProcessStartInfo
         {

@@ -19,7 +19,7 @@ class MainActivity : Activity() {
     private val statusHandler = android.os.Handler(android.os.Looper.getMainLooper())
     private val statusPoll = object : Runnable {
         override fun run() {
-            statusText.text = ClipboardBridgeService.latestStatus
+            statusText.text = FriendlyStatus.summary(ClipboardBridgeService.latestStatus)
             statusHandler.postDelayed(this, 500)
         }
     }
@@ -31,7 +31,7 @@ class MainActivity : Activity() {
     private var pendingServiceIntent: Intent? = null
 
     private lateinit var statusText: TextView
-    private val blue = Color.rgb(37, 99, 235)
+    private val blue = Color.rgb(8, 127, 140)
     private val ink = Color.rgb(26, 28, 32)
     private fun dp(value: Int) = (value * resources.displayMetrics.density).toInt()
 
@@ -56,7 +56,7 @@ class MainActivity : Activity() {
         }
         root.addView(card, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = dp(16) })
         card.addView(text(title, 19f, true))
-        card.addView(text(description))
+        if (description.isNotBlank()) card.addView(text(description))
         return card
     }
 
@@ -66,7 +66,7 @@ class MainActivity : Activity() {
             isAllCaps = false
             textSize = 15f
             minHeight = dp(52)
-            backgroundTintList = ColorStateList.valueOf(if (primary) blue else Color.rgb(237, 242, 250))
+            background = GradientDrawable().apply { setColor(if (primary) blue else Color.rgb(230, 245, 242)); cornerRadius = dp(12).toFloat() }
             setTextColor(if (primary) Color.WHITE else blue)
             setOnClickListener { action() }
         }, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(6) })
@@ -90,45 +90,70 @@ class MainActivity : Activity() {
                 insets
             }
         }
-        root.addView(text("Con.Phone", 30f, true))
-        root.addView(text("복사한 내용을 PC와 휴대폰에서 함께.", 16f).apply {
-            setPadding(0, 0, 0, dp(24))
+        val brand = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = android.view.Gravity.CENTER_VERTICAL }
+        brand.addView(android.widget.ImageView(this).apply {
+            setImageDrawable(packageManager.getApplicationIcon(packageName))
+            contentDescription = "LINKO 로고"
+        }, LinearLayout.LayoutParams(dp(64), dp(64)).apply { marginEnd = dp(14) })
+        brand.addView(LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            addView(text("LINKO", 30f, true))
+            addView(text("복사한 내용을 이어주다", 14f))
         })
-
-        val connect = card(root, "1. PC와 연결하기", "PC에서 Con.Phone을 실행하고 Bluetooth로 페어링해 주세요.")
-        statusText = text(if (hasBluetoothPermissions()) "Bluetooth 권한이 준비됐어요. PC 연결을 시작하세요." else "처음 연결할 때 주변 기기 권한을 허용해 주세요.", 14f)
-        connect.addView(statusText)
-        button(connect, "PC 연결 시작", true) { ensurePermissionsAndStart() }
-        button(connect, "페어링된 PC 직접 선택") { choosePairedPc() }
-
-        val send = card(root, "2. 복사한 내용 보내기", "복사한 뒤 이 화면으로 돌아오면 자동으로 PC에 보냅니다. 다른 앱에서는 공유 → Con.Phone도 사용할 수 있어요.")
-        button(send, "PC로 보내기", true) {
-            sendFocusedClipboard(true)
+        root.addView(brand)
+        val home = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        val settings = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; visibility = android.view.View.GONE }
+        val navigation = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; setPadding(0, dp(16), 0, dp(18)) }
+        val homeTab = Button(this).apply { text = "홈"; isAllCaps = false }
+        val settingsTab = Button(this).apply { text = "설정"; isAllCaps = false }
+        fun selectSettings(selected: Boolean) {
+            home.visibility = if (selected) android.view.View.GONE else android.view.View.VISIBLE
+            settings.visibility = if (selected) android.view.View.VISIBLE else android.view.View.GONE
+            homeTab.isSelected = !selected; settingsTab.isSelected = selected
+            homeTab.setTextColor(if (selected) ink else blue)
+            settingsTab.setTextColor(if (selected) blue else ink)
+            homeTab.backgroundTintList = ColorStateList.valueOf(if (selected) Color.WHITE else Color.rgb(230, 245, 242))
+            settingsTab.backgroundTintList = ColorStateList.valueOf(if (selected) Color.rgb(230, 245, 242) else Color.WHITE)
         }
-        send.addView(text("다른 앱에서는 공유 → Con.Phone을 선택해도 보낼 수 있어요.", 14f))
+        homeTab.setOnClickListener { selectSettings(false) }
+        settingsTab.setOnClickListener { selectSettings(true) }
+        navigation.addView(homeTab, LinearLayout.LayoutParams(0, dp(52), 1f).apply { marginEnd = dp(8) })
+        navigation.addView(settingsTab, LinearLayout.LayoutParams(0, dp(52), 1f))
+        root.addView(navigation); root.addView(home); root.addView(settings)
+        selectSettings(false)
 
-        val received = card(root, "PC에서 받은 이미지", "카카오톡에서 이미지 붙여넣기가 안 되면 ‘받은 이미지 공유’에서 카카오톡을 선택하세요.")
-        button(received, "받은 이미지 다시 복사") { receivedImage(false) }
-        button(received, "받은 이미지 공유", true) { receivedImage(true) }
+        val connect = card(home, "PC 연결", "PC에서 LINKO를 실행해 주세요.")
+        statusText = text(FriendlyStatus.summary(ClipboardBridgeService.latestStatus), 14f)
+        connect.addView(statusText)
+        button(connect, "PC 연결", true) { ensurePermissionsAndStart() }
 
-        val options = card(root, "연결 설정", "같은 Wi-Fi에 연결할 필요는 없어요. 큰 이미지를 빠르게 보내려면 추가 권한을 허용해 주세요.")
+        val send = card(home, "클립보드", "휴대폰에서 복사한 뒤 이 화면을 열면 PC로 보냅니다.")
+        button(send, "PC로 보내기", true) { sendFocusedClipboard(true) }
+        val received = card(home, "받은 이미지", "PC에서 받은 이미지를 다른 앱에 사용하세요.")
+        button(received, "이미지 복사") { receivedImage(false) }
+        button(received, "이미지 공유") { receivedImage(true) }
+        home.addView(text("다른 앱에서는 공유 → LINKO로 보낼 수 있어요.", 13f))
+
+        val options = card(settings, "연결 관리", "")
+        button(options, "연결할 PC 선택") { choosePairedPc() }
         button(options, "빠른 이미지 전송 설정") {
             if (hasNearbyWifiPermission()) {
-                android.widget.Toast.makeText(this, "빠른 전송 권한이 허용되어 있어요.", android.widget.Toast.LENGTH_SHORT).show()
+                android.widget.Toast.makeText(this, "빠른 전송을 사용할 수 있어요.", android.widget.Toast.LENGTH_SHORT).show()
             } else requestP2PPermission()
         }
         button(options, "연결 중지") {
             stopService(Intent(this, ClipboardBridgeService::class.java))
-            statusText.text = "연결 서비스를 중지했어요. 다시 연결하려면 위 버튼을 누르세요."
+            statusText.text = "연결을 중지했어요."
         }
-        root.addView(text("PC → 휴대폰: PC의 클립보드 동기화를 켜면 복사할 때 자동 전송합니다. Android 정책상 다른 앱을 사용하는 동안에는 폰의 클립보드를 자동으로 읽을 수 없어요. 이미지 붙여넣기는 사용하는 앱에 따라 지원 여부가 달라요.", 13f))
         @Suppress("DEPRECATION")
         val installedVersion = packageManager.getPackageInfo(packageName, 0).versionName ?: "알 수 없음"
-        val updates = card(root, "앱 업데이트", "현재 버전 $installedVersion · 최신 시험판도 확인할 수 있어요.")
-        button(updates, "최신 업데이트 확인 · APK 다운로드", true) {
-            startActivity(Intent(this, UpdateActivity::class.java))
+        val updates = card(settings, "LINKO $installedVersion", "")
+        button(updates, "업데이트 확인") { startActivity(Intent(this, UpdateActivity::class.java)) }
+        val help = card(settings, "도움말", "이미지 붙여넣기가 안 되면 홈에서 이미지 공유를 사용하세요.")
+        button(help, "연결 상세 정보") {
+            android.app.AlertDialog.Builder(this).setTitle("연결 상세 정보")
+                .setMessage(ClipboardBridgeService.latestStatus).setPositiveButton("닫기", null).show()
         }
-        updates.addView(text("앱에서 최신 APK를 찾아 내려받고 서명을 확인합니다. 비공개 저장소이므로 처음에는 GitHub 로그인이 필요할 수 있어요.", 13f))
         setContentView(scroll)
         // Explain permissions before requesting them; explicit share intents still start immediately.
         if (pendingServiceIntent != null) ensurePermissionsAndStart()
@@ -147,7 +172,7 @@ class MainActivity : Activity() {
             return
         }
         runCatching {
-            val clip = android.content.ClipData.newUri(contentResolver, "Con.Phone image", uri)
+            val clip = android.content.ClipData.newUri(contentResolver, "LINKO image", uri)
             if (share) {
                 startActivity(Intent.createChooser(Intent(Intent.ACTION_SEND).apply {
                     type = "image/png"
@@ -181,7 +206,7 @@ class MainActivity : Activity() {
                 ?: return
             if (clip.itemCount == 0) return
             // Our own incoming clipboard must not echo back to the PC.
-            if (!manual && clip.description.label?.toString()?.startsWith("Con.Phone") == true) return
+            if (!manual && clip.description.label?.toString()?.let { it.startsWith("LINKO") || it.startsWith("Con.Phone") } == true) return
             val item = clip.getItemAt(0)
             val text = item.text?.toString()
             val key = if (!text.isNullOrEmpty()) "text:$text" else "uri:${item.uri}"
@@ -208,7 +233,7 @@ class MainActivity : Activity() {
             return
         }
         android.app.AlertDialog.Builder(this)
-            .setTitle("Con.Phone을 실행한 PC 선택")
+            .setTitle("LINKO을 실행한 PC 선택")
             .setItems(devices.map { "${it.name ?: "이름 없는 기기"} · ${it.address.takeLast(5)}" }.toTypedArray()) { _, index ->
                 startForegroundService(Intent(this, ClipboardBridgeService::class.java)
                     .setAction(ClipboardBridgeService.ACTION_CONNECT_DEVICE)
@@ -224,7 +249,7 @@ class MainActivity : Activity() {
             return
         }
 
-        statusText.text = "PC 연결을 요청했어요. 실제 연결 상태는 Con.Phone 알림에서 확인하세요."
+        statusText.text = "PC 연결을 요청했어요. 실제 연결 상태는 LINKO 알림에서 확인하세요."
         startForegroundService(
             Intent(this, ClipboardBridgeService::class.java)
                 .setAction(ClipboardBridgeService.ACTION_START)

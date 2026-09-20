@@ -1,4 +1,4 @@
-﻿param(
+param(
     [ValidateSet("all", "windows", "android")]
     [string]$Target = "all"
 )
@@ -17,12 +17,10 @@ function Require-Command([string]$Name, [string]$Hint) {
 }
 
 $version = ([xml](Get-Content (Join-Path $repo "src/ConPhone.Windows/ConPhone.Windows.csproj") -Raw)).Project.PropertyGroup.Version
-if ($Target -in @('all', 'android')) {
-    $androidGradleText = Get-Content (Join-Path $repo 'companion/android/app/build.gradle.kts') -Raw
-    $version = [regex]::Match($androidGradleText, 'versionName\s*=\s*"([^"]+)"').Groups[1].Value
-    if ([string]::IsNullOrWhiteSpace($version)) { throw 'Android versionName not found.' }
-}
-Write-Host "Con.Phone $version TEST NOW" -ForegroundColor Cyan
+$androidGradleText = Get-Content (Join-Path $repo 'companion/android/app/build.gradle.kts') -Raw
+$androidVersion = [regex]::Match($androidGradleText, 'versionName\s*=\s*"([^"]+)"').Groups[1].Value
+if ($version -ne $androidVersion) { throw "EXE/APK version mismatch: $version / $androidVersion" }
+Write-Host "LINKO $version TEST NOW" -ForegroundColor Cyan
 Write-Host "Repo: $repo"
 
 if ($Target -in @("all", "windows")) {
@@ -33,7 +31,7 @@ if ($Target -in @("all", "windows")) {
     $verifyArgs = @{ Configuration = "Release"; OutputRoot = (Join-Path $artifacts "windows") }
     & (Join-Path $PSScriptRoot "verify-windows.ps1") @verifyArgs
 
-    $exe = Join-Path $artifacts "windows/win-x64/ConPhone.exe"
+    $exe = Join-Path $artifacts "windows/win-x64/LINKO.exe"
     if (!(Test-Path $exe -PathType Leaf)) {
         throw "Windows 테스트 EXE가 생성되지 않았습니다."
     }
@@ -73,7 +71,7 @@ if ($Target -in @("all", "android")) {
     $reports = Join-Path $artifacts 'android-test-results'
     New-Item -ItemType Directory -Path $reports -Force | Out-Null
     Copy-Item (Join-Path $project 'app/build/test-results/testDebugUnitTest/*.xml') $reports -Force
-    $apkOut = Join-Path $artifacts "ConPhone-Companion-$version-debug.apk"
+    $apkOut = Join-Path $artifacts "LINKO-$version.apk"
     Copy-Item -LiteralPath $apk -Destination $apkOut -Force
     $hash = (Get-FileHash -LiteralPath $apkOut -Algorithm SHA256).Hash
     Set-Content -LiteralPath "$apkOut.sha256" -Value "$hash  $(Split-Path -Leaf $apkOut)" -NoNewline
@@ -83,11 +81,11 @@ Write-Host ""
 Write-Host "== 실기기 최소 테스트 순서 ==" -ForegroundColor Cyan
 Write-Host "1. Windows Mobile Hotspot을 끕니다."
 Write-Host "2. 기존 Bluetooth 페어링을 유지합니다. HID 구독이 없을 때만 다시 페어링합니다."
-Write-Host "3. Windows ConPhone.exe와 Android Companion $version 을 실행합니다."
+Write-Host "3. Windows LINKO.exe와 Android LINKO $version 을 실행합니다."
 Write-Host "4. 같은 Wi-Fi에는 연결하지 않은 상태에서 테스트합니다."
 Write-Host "5. 마우스 60초 이동/드래그/휠, 한영키, WIN+L, 미디어키를 확인합니다."
 Write-Host "6. 기기간 복붙을 켠 뒤 PC 텍스트 복사 -> 폰 붙여넣기를 확인합니다 (입력 전환 불필요)."
 Write-Host "7. 큰 이미지는 Direct Wi-Fi/P2P 승인을 거쳐 전송되는지 확인합니다."
-Write-Host "8. 폰에서 복사 -> Companion 열기 또는 공유 -> Con.Phone -> PC 붙여넣기를 확인합니다."
+Write-Host "8. 폰에서 복사 -> Companion 열기 또는 공유 -> LINKO -> PC 붙여넣기를 확인합니다."
 Write-Host ""
 Write-Host "자세한 체크리스트: docs/RELEASE_TEST_0.3.0.md"

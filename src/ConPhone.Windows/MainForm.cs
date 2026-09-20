@@ -6,16 +6,16 @@ namespace ConPhone.Windows;
 
 public sealed partial class MainForm : Form
 {
-    private static readonly Color Bg = ColorTranslator.FromHtml("#F3F5F9");
+    private static readonly Color Bg = ColorTranslator.FromHtml("#F4F7F7");
     private static readonly Color Surface = Color.White;
     private static readonly Color Border = ColorTranslator.FromHtml("#DCDEE3");
     private static readonly Color TextColor = ColorTranslator.FromHtml("#1A1C20");
     private static readonly Color Secondary = ColorTranslator.FromHtml("#555D6D");
     private static readonly Color Tertiary = ColorTranslator.FromHtml("#868B94");
-    private static readonly Color Brand = ColorTranslator.FromHtml("#2563EB");
-    private static readonly Color BrandPressed = ColorTranslator.FromHtml("#1D4ED8");
-    private static readonly Color BrandWeak = ColorTranslator.FromHtml("#EAF1FF");
-    private static readonly Color InfoWeak = ColorTranslator.FromHtml("#EFF6FF");
+    private static readonly Color Brand = ColorTranslator.FromHtml("#087F8C");
+    private static readonly Color BrandPressed = ColorTranslator.FromHtml("#103B46");
+    private static readonly Color BrandWeak = ColorTranslator.FromHtml("#E6F5F2");
+    private static readonly Color InfoWeak = ColorTranslator.FromHtml("#EDF7F5");
 
     private readonly BleHidServer _ble = new();
     private readonly InputCapture _input = new();
@@ -204,8 +204,8 @@ public sealed partial class MainForm : Form
 
     private readonly NotifyIcon _tray = new()
     {
-        Text = "Con.Phone · 노트북 입력",
-        Icon = SystemIcons.Application,
+        Text = "LINKO · 노트북 입력",
+        Icon = BrandIcon.Load(),
         Visible = true
     };
 
@@ -225,7 +225,8 @@ public sealed partial class MainForm : Form
         _previewMode = previewMode;
         _activeHangulMode = _settings.HangulKeyMode;
         _activeModifierProfile = _settings.ModifierProfile;
-        Text = $"Con.Phone {LocalUpdateService.CurrentVersion.ToString(3)} · Bluetooth 입력 허브";
+        Text = $"LINKO {LocalUpdateService.CurrentVersion.ToString(3)}";
+        Icon = BrandIcon.Load();
         Width = 1060;
         Height = 860;
         MinimumSize = new Size(900, 720);
@@ -245,7 +246,7 @@ public sealed partial class MainForm : Form
         _modifierProfile.Items.AddRange(
         [
             "표준 Windows/Android",
-            "Mac/iPad · Ctrl ↔ Command"
+            "Apple · Ctrl ↔ Command"
         ]);
 
         LoadSettingsToUi();
@@ -320,14 +321,16 @@ public sealed partial class MainForm : Form
         var header = new Panel { Dock = DockStyle.Fill, Margin = Padding.Empty };
         header.Controls.Add(new Label
         {
-            Text = "Con.Phone", AutoSize = true, Location = new Point(0, 0),
+            Text = "LINKO", AutoSize = true, Location = new Point(66, 0),
             Font = new Font("Segoe UI", 23, FontStyle.Bold), ForeColor = TextColor
         });
         header.Controls.Add(new Label
         {
             Text = "키보드, 마우스, 클립보드. 내 PC와 휴대폰을 하나처럼.",
-            AutoSize = true, Location = new Point(2, 44), ForeColor = Secondary
+            AutoSize = true, Location = new Point(68, 44), ForeColor = Secondary
         });
+        header.Controls.Add(new PictureBox { Image = Icon!.ToBitmap(), SizeMode = PictureBoxSizeMode.Zoom,
+            Location = new Point(0, 2), Size = new Size(52, 52), AccessibleName = "LINKO 로고" });
         root.Controls.Add(header, 0, 0);
         var status = new Panel { Dock = DockStyle.Fill, BackColor = BrandWeak, Margin = new Padding(0, 0, 0, 8) };
         _state.Dock = DockStyle.Fill;
@@ -402,7 +405,7 @@ public sealed partial class MainForm : Form
 
     private TabPage BuildConnectionTab()
     {
-        var tab = NewTab("휴대폰 연결");
+        var tab = NewTab("기기 연결");
         var flow = TabFlow();
         tab.Controls.Add(flow);
 
@@ -411,7 +414,7 @@ public sealed partial class MainForm : Form
         connect.Controls.Add(Help(
             "PC와 휴대폰의 Bluetooth를 켠 뒤, 휴대폰 Bluetooth 설정에서 이 PC를 선택하세요."));
         connect.Controls.Add(Help(
-            "처음 연결하나요? 아래 ‘휴대폰 연결 시작’을 누르고 양쪽 화면의 페어링 요청을 확인하세요.",
+            "키보드·마우스는 앱 없이 사용할 수 있어요. iPhone의 마우스 설정은 아래 연결 안내를 확인하세요.",
             Secondary));
         connect.Controls.Add(Row(
             ActionButton("Bluetooth 설정 열기", () => OpenBluetoothSettingsAsync()),
@@ -455,6 +458,11 @@ public sealed partial class MainForm : Form
         tip.Controls.Add(Help("아래 ‘휴대폰으로 전환’을 누르면 입력이 휴대폰으로 이동합니다. 언제든 PC 복귀 단축키로 돌아오세요."));
         tip.Controls.Add(ActionButton("휴대폰 잠그고 PC로 돌아오기", LockPhoneAndReturnAsync, critical: true));
         flow.Controls.Add(tip);
+        var apple = AutoSection();
+        apple.Controls.Add(SectionTitle("iPhone · iPad는 앱 없이"));
+        apple.Controls.Add(Help("Bluetooth로 이 PC를 연결하면 키보드와 마우스를 사용할 수 있어요. iPhone은 설정 → 손쉬운 사용 → 터치 → AssistiveTouch를 켜고, 기기 → Bluetooth 기기에서 연결하세요."));
+        apple.Controls.Add(Help("iPad는 설정 → Bluetooth에서 연결하세요. 입력 설정의 Apple 권장값을 사용할 수 있어요. iOS는 키보드·마우스만 지원합니다."));
+        flow.Controls.Add(apple);
 
         return tab;
     }
@@ -490,7 +498,7 @@ public sealed partial class MainForm : Form
         var keyboard = AutoSection();
         keyboard.Controls.Add(SectionTitle("키보드 / 한영키"));
         keyboard.Controls.Add(Help(
-            "Galaxy 기본값은 Right Alt입니다. 기기에서 한영 전환이 안 되면 LANG1, Ctrl+Space, Shift+Space 순서로 바꿔 테스트할 수 있습니다."));
+            "기기에 맞는 권장값을 선택하세요. 한영 전환이 안 되면 전송 방식을 바꿀 수 있어요."));
         keyboard.Controls.Add(LabeledRow("한영키 전송 방식", _hangulMode));
         keyboard.Controls.Add(LabeledRow("키보드 배열", _modifierProfile));
         keyboard.Controls.Add(Row(
@@ -502,9 +510,17 @@ public sealed partial class MainForm : Form
             ActionButton("Galaxy 권장값", () =>
             {
                 _hangulMode.SelectedIndex = 0;
+                _modifierProfile.SelectedIndex = 0;
                 ApplyInputSettings(save: true);
                 return Task.CompletedTask;
             })));
+        keyboard.Controls.Add(ActionButton("Apple 권장값", () =>
+        {
+            _hangulMode.SelectedIndex = 2;
+            _modifierProfile.SelectedIndex = 1;
+            ApplyInputSettings(save: true);
+            return Task.CompletedTask;
+        }));
         flow.Controls.Add(keyboard);
 
         var special = AutoSection();
@@ -549,11 +565,12 @@ public sealed partial class MainForm : Form
         var info = AutoSection(InfoWeak);
         info.Controls.Add(SectionTitle("복사한 내용을 휴대폰에서도"));
         info.Controls.Add(Help(
-            "기기간 복붙을 켜면 PC에서 복사할 때 자동으로 보냅니다. 폰에서 복사한 내용은 Companion을 열거나 공유 → Con.Phone으로 보내세요.",
+            "Android에 LINKO를 설치하면 복사한 내용을 주고받을 수 있어요.",
             TextColor));
         info.Controls.Add(Help(
-            "휴대폰에 Con.Phone Companion이 필요해요. 같은 Wi-Fi에 연결하지 않아도 사용할 수 있습니다.",
+            "iPhone · iPad는 앱 없는 키보드·마우스 연결만 제공합니다.",
             Secondary));
+        info.Controls.Add(_clipboardSyncEnabled);
         info.Controls.Add(_clipboardConnection);
         flow.Controls.Add(info);
 
@@ -588,20 +605,20 @@ public sealed partial class MainForm : Form
         var options = AutoSection();
         options.Controls.Add(SectionTitle("자동 전송 및 기록 설정"));
         options.Controls.Add(Row(_captureClipboardText, _captureClipboardImages));
-        options.Controls.Add(Row(_clipboardSyncEnabled, _clipboardSyncText, _clipboardSyncImages));
+        options.Controls.Add(Row(_clipboardSyncText, _clipboardSyncImages));
         options.Controls.Add(LabeledRow("최대 저장 개수", _clipboardLimit));
-        options.Controls.Add(LabeledRow("Bluetooth 이미지 한도 (KB)", _clipboardBleImageLimit));
-        options.Controls.Add(LabeledRow("빠른 연결 이름", _p2pLinkName));
+        var advanced = AutoSection();
+        advanced.Controls.Add(LabeledRow("Bluetooth 이미지 한도 (KB)", _clipboardBleImageLimit));
+        advanced.Controls.Add(LabeledRow("빠른 연결 이름", _p2pLinkName));
+        advanced.Controls.Add(ActionButton("빠른 연결 문제 해결", ConfigureP2PFirewallAsync));
+        AddDisclosure(options, "고급 연결 설정", advanced);
         options.Controls.Add(Row(
             ActionButton("클립보드 설정 저장", () =>
             {
                 ApplyClipboardSettings(save: true);
                 return Task.CompletedTask;
-            }, primary: true),
-            ActionButton("빠른 연결 문제 해결", ConfigureP2PFirewallAsync)));
-        options.Controls.Add(Help(
-            "P2P 연결은 TCP 47911을 사용합니다. 연결이 계속 실패할 때만 방화벽 허용 버튼을 누르세요. UAC 승인이 필요합니다.",
-            Secondary));
+            }, primary: true)));
+
 
         flow.Controls.Add(options);
 
@@ -610,7 +627,7 @@ public sealed partial class MainForm : Form
 
     private TabPage BuildDiagnosticsTab()
     {
-        var tab = NewTab("도움말 · 진단");
+        var tab = NewTab("도움말");
         var flow = TabFlow();
         tab.Controls.Add(flow);
 
@@ -619,12 +636,12 @@ public sealed partial class MainForm : Form
         status.Controls.Add(_diagnosis);
         status.Controls.Add(ActionButton("Bluetooth 다시 검사", async () =>
             _diagnosis.Text = await BleHidServer.DiagnoseAsync()));
-        flow.Controls.Add(status);
+        AddDisclosure(flow, "Bluetooth 진단 보기", status);
 
         var update = AutoSection(InfoWeak);
         update.Controls.Add(SectionTitle("앱 업데이트"));
         update.Controls.Add(Help(
-            $"현재 버전 {LocalUpdateService.CurrentVersion.ToString(3)} · 새로 받은 ConPhone.exe를 선택하면 앱을 업데이트합니다.",
+            $"현재 버전 {LocalUpdateService.CurrentVersion.ToString(3)} · 새로 받은 LINKO.exe를 선택하면 앱을 업데이트합니다.",
             TextColor));
         update.Controls.Add(Row(
             ActionButton("업데이트 EXE 적용", ApplyLocalUpdateAsync, primary: true),
@@ -649,7 +666,7 @@ public sealed partial class MainForm : Form
                 _events.Clear();
                 return Task.CompletedTask;
             })));
-        flow.Controls.Add(logs);
+        AddDisclosure(flow, "상세 로그 보기", logs);
 
         return tab;
     }
@@ -939,7 +956,7 @@ public sealed partial class MainForm : Form
                 ? "동기화 꺼짐 · 아래 기기간 복붙을 켜 주세요."
                 : _clipboardSync?.ActiveTargetConnected == true
                     ? "휴대폰 클립보드 채널 연결됨 · 복사한 내용을 자동으로 보냅니다."
-                    : "휴대폰 앱 연결 대기 · Companion의 ‘PC 연결 시작’을 누르고 PC에서 기기를 등록해 주세요.";
+                    : "휴대폰 앱 연결 대기 · LINKO의 ‘PC 연결’을 누르고 PC에서 기기를 등록해 주세요.";
             if (_input.IsRemote)
             {
                 if (_ble.Ready)
@@ -982,8 +999,8 @@ public sealed partial class MainForm : Form
             _toggleButton.Enabled = _input.IsRemote || _ble.Ready;
 
             _tray.Text = _input.IsRemote
-                ? $"Con.Phone · 휴대폰 입력 / {emergency} 복귀"
-                : "Con.Phone · 노트북 입력";
+                ? $"LINKO · 휴대폰 입력 / {emergency} 복귀"
+                : "LINKO · 노트북 입력";
         };
         _timer.Start();
 
@@ -1243,10 +1260,8 @@ public sealed partial class MainForm : Form
         _emergencyHotkeyBox.Text = HotkeyCatalog.Display(_settings.EmergencyHotkey);
         _lockHotkeyBox.Text = HotkeyCatalog.Display(_settings.LockAndReturnHotkey);
         _quickHotkeyHelp.Text =
-            $"다음 기기 {HotkeyCatalog.Display(_settings.NextDeviceHotkey)} · " +
-            $"전환 {HotkeyCatalog.Display(_settings.ToggleHotkey)} · " +
-            $"복귀 {HotkeyCatalog.Display(_settings.EmergencyHotkey)} · " +
-            $"잠금+복귀 {HotkeyCatalog.Display(_settings.LockAndReturnHotkey)}";
+            $"휴대폰으로 전환 {HotkeyCatalog.Display(_settings.ToggleHotkey)}    ·    " +
+            $"이 PC로 복귀 {HotkeyCatalog.Display(_settings.EmergencyHotkey)}";
     }
 
     private void LoadSettingsToUi()
@@ -1636,7 +1651,10 @@ public sealed partial class MainForm : Form
             _events.Clear();
 
         _events.AppendText($"{DateTime.Now:HH:mm:ss}  {text}\r\n");
-        _feedback.Text = text;
+        _feedback.Text = text.Contains("실패") || text.Contains("오류") || text.Contains("시간 초과")
+            ? "작업을 완료하지 못했어요. 도움말의 상세 로그를 확인해 주세요."
+            : text.Contains("완료") ? "완료했어요."
+            : "연결 후 전환 버튼이나 단축키를 사용하세요.";
     }
 
     private void ImmediateLocal()
@@ -1808,7 +1826,7 @@ public sealed partial class MainForm : Form
                     _clipboardFailureCount++;
                     _clipboardRetryAfter = DateTimeOffset.UtcNow.AddSeconds(5 * _clipboardFailureCount);
                     if (_clipboardFailureCount >= 3)
-                        Log("클립보드 전송 3회 실패 · 자동 재시도를 멈췄습니다. Companion 연결 후 다시 복사하거나 ‘휴대폰으로 보내기’를 누르세요.");
+                        Log("클립보드 전송 3회 실패 · 자동 재시도를 멈췄습니다. LINKO 앱 연결 후 다시 복사하거나 ‘휴대폰으로 보내기’를 누르세요.");
                 }
             }
         }
@@ -2222,8 +2240,8 @@ public sealed partial class MainForm : Form
     {
         using var dialog = new OpenFileDialog
         {
-            Filter = "Con.Phone 실행 파일 (ConPhone*.exe)|ConPhone*.exe|실행 파일 (*.exe)|*.exe",
-            Title = "적용할 Con.Phone 업데이트 파일 선택"
+            Filter = "LINKO 실행 파일 (LINKO*.exe)|LINKO*.exe|실행 파일 (*.exe)|*.exe",
+            Title = "적용할 LINKO 업데이트 파일 선택"
         };
 
         if (dialog.ShowDialog(this) != DialogResult.OK)
@@ -2236,7 +2254,7 @@ public sealed partial class MainForm : Form
         {
             if (MessageBox.Show(
                     this,
-                    "현재 Con.Phone 또는 선택한 업데이트가 아직 Authenticode 코드서명되지 않아 " +
+                    "현재 LINKO 또는 선택한 업데이트가 아직 Authenticode 코드서명되지 않아 " +
                     "동일 서명자 검증을 완료할 수 없습니다.\r\n" +
                     "SHA-256 파일 일치만 확인된 상태입니다. 신뢰하는 배포 파일일 때만 계속하세요.",
                     "업데이트 서명 확인",
@@ -2257,7 +2275,7 @@ public sealed partial class MainForm : Form
         }
         else if (MessageBox.Show(
                      this,
-                     $"Con.Phone {current} → {candidate.Version}으로 업데이트할까요?\r\n" +
+                     $"LINKO {current} → {candidate.Version}으로 업데이트할까요?\r\n" +
                      "앱을 종료한 뒤 자동으로 교체하고 다시 실행합니다.",
                      "업데이트",
                      MessageBoxButtons.YesNo,
@@ -2394,7 +2412,7 @@ public sealed partial class MainForm : Form
             Hide();
             _tray.ShowBalloonTip(
                 2200,
-                "Con.Phone 계속 실행 중",
+                "LINKO 계속 실행 중",
                 "Bluetooth 연결 유지를 위해 트레이에서 계속 실행합니다. 완전 종료는 트레이 메뉴를 사용하세요.",
                 ToolTipIcon.Info);
             return;

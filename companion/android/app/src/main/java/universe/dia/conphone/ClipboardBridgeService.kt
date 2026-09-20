@@ -268,7 +268,7 @@ class ClipboardBridgeService : Service() {
             .build()
 
         scanning = true
-        showStatus("Con.Phone PC 검색 중 · Clipboard/HID UUID")
+        showStatus("LINKO PC 검색 중 · Clipboard/HID UUID")
         scanner.startScan(filters, settings, scanCallback)
         main.postDelayed({
             if (scanning && gatt == null && !destroyed) {
@@ -409,7 +409,7 @@ class ClipboardBridgeService : Service() {
                 runCatching { g.disconnect() }
                 runCatching { g.close() }
 
-                showStatus("다른 HID 기기를 건너뛰고 Con.Phone PC를 계속 검색합니다.")
+                showStatus("다른 HID 기기를 건너뛰고 LINKO PC를 계속 검색합니다.")
                 main.postDelayed({ beginScan() }, 250)
                 return
             }
@@ -1925,7 +1925,7 @@ class ClipboardBridgeService : Service() {
                         content.data.toString(Charsets.UTF_8)
                     clipboard.setPrimaryClip(
                         ClipData.newPlainText(
-                            "Con.Phone",
+                            "LINKO",
                             text))
                     toast(
                         "PC 텍스트를 클립보드에 받았습니다.")
@@ -1965,12 +1965,12 @@ class ClipboardBridgeService : Service() {
                     val clip =
                         ClipData.newUri(
                             contentResolver,
-                            "Con.Phone image",
+                            "LINKO image",
                             imageUri)
                     clipboard.setPrimaryClip(clip)
                     ClipboardImageProvider.remember(this, imageUri)
                     toast(
-                        "PC 이미지 수신 완료 · 붙여넣기 또는 Con.Phone의 ‘받은 이미지 공유’를 사용하세요.")
+                        "PC 이미지 수신 완료 · 붙여넣기 또는 LINKO의 ‘받은 이미지 공유’를 사용하세요.")
                 }
             }
 
@@ -1991,9 +1991,9 @@ class ClipboardBridgeService : Service() {
         latestStatus = text + pendingSummary()
         val manager = getSystemService(NotificationManager::class.java)
         val notification = Notification.Builder(this, CHANNEL)
-            .setSmallIcon(android.R.drawable.stat_sys_data_bluetooth)
-            .setContentTitle("Con.Phone Companion")
-            .setContentText(text + pendingSummary())
+            .setSmallIcon(R.drawable.ic_linko_notification)
+            .setContentTitle("LINKO")
+            .setContentText(FriendlyStatus.summary(text))
             .setOngoing(true)
             .build()
         startForeground(NOTIFICATION_ID, notification)
@@ -2003,7 +2003,7 @@ class ClipboardBridgeService : Service() {
     private fun createNotificationChannel() {
         val manager = getSystemService(NotificationManager::class.java)
         manager.createNotificationChannel(
-            NotificationChannel(CHANNEL, "Con.Phone 연결", NotificationManager.IMPORTANCE_LOW)
+            NotificationChannel(CHANNEL, "LINKO 연결", NotificationManager.IMPORTANCE_LOW)
         )
     }
 

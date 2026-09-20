@@ -19,7 +19,9 @@
 
     <application
         android:allowBackup="false"
-        android:label="Con.Phone Companion"
+        android:label="LINKO"
+        android:icon="@mipmap/ic_launcher"
+        android:roundIcon="@mipmap/ic_launcher"
         android:supportsRtl="true"
         android:theme="@android:style/Theme.Material.Light.NoActionBar">
         <activity android:name=".UpdateActivity" android:exported="false" />

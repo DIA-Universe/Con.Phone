@@ -1,4 +1,4 @@
-﻿param(
+param(
     [string]$Configuration = "Release",
     [string]$OutputRoot = ""
 )
@@ -73,11 +73,11 @@ $publishArgs = @(
 & dotnet @publishArgs
 Assert-NativeSuccess "Single-file publish"
 
-$exe = Join-Path $publish "ConPhone.exe"
-if (!(Test-Path $exe -PathType Leaf)) { throw "ConPhone.exe was not produced." }
-if ((Get-Item -LiteralPath $exe).Length -eq 0) { throw "ConPhone.exe is empty." }
+$exe = Join-Path $publish "LINKO.exe"
+if (!(Test-Path $exe -PathType Leaf)) { throw "LINKO.exe was not produced." }
+if ((Get-Item -LiteralPath $exe).Length -eq 0) { throw "LINKO.exe is empty." }
 $files = @(Get-ChildItem $publish -File)
-$unexpected = @($files | Where-Object Name -ne "ConPhone.exe")
+$unexpected = @($files | Where-Object Name -ne "LINKO.exe")
 if ($unexpected.Count -gt 0) { throw "Single-file publish produced unexpected files: $($unexpected.Name -join ', ')" }
 
 Write-Host "== Published EXE format and execution ==" -ForegroundColor Cyan
@@ -102,7 +102,7 @@ try {
 
 $hash = (Get-FileHash $exe -Algorithm SHA256).Hash
 $hashFile = "$exe.sha256"
-Set-Content -Path $hashFile -Value "$hash  ConPhone.exe" -NoNewline
+Set-Content -Path $hashFile -Value "$hash  LINKO.exe" -NoNewline
 
 Write-Host ""
 Write-Host "LOCAL VERIFY PASSED" -ForegroundColor Green
