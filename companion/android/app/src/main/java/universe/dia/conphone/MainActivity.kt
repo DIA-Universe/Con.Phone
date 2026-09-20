@@ -107,6 +107,10 @@ class MainActivity : Activity() {
         }
         send.addView(text("다른 앱에서는 공유 → Con.Phone을 선택해도 보낼 수 있어요.", 14f))
 
+        val received = card(root, "PC에서 받은 이미지", "카카오톡에서 이미지 붙여넣기가 안 되면 ‘받은 이미지 공유’에서 카카오톡을 선택하세요.")
+        button(received, "받은 이미지 다시 복사") { receivedImage(false) }
+        button(received, "받은 이미지 공유", true) { receivedImage(true) }
+
         val options = card(root, "연결 설정", "같은 Wi-Fi에 연결할 필요는 없어요. 큰 이미지를 빠르게 보내려면 추가 권한을 허용해 주세요.")
         button(options, "빠른 이미지 전송 설정") {
             if (hasNearbyWifiPermission()) {
@@ -122,11 +126,9 @@ class MainActivity : Activity() {
         val installedVersion = packageManager.getPackageInfo(packageName, 0).versionName ?: "알 수 없음"
         val updates = card(root, "앱 업데이트", "현재 버전 $installedVersion · 최신 시험판도 확인할 수 있어요.")
         button(updates, "최신 업데이트 확인 · APK 다운로드", true) {
-            runCatching {
-                startActivity(Intent(Intent.ACTION_VIEW, android.net.Uri.parse("https://github.com/DIA-Universe/Con.Phone/releases")))
-            }.onFailure { statusText.text = "브라우저를 열 수 없습니다. GitHub의 Con.Phone Releases에서 다운로드해 주세요." }
+            startActivity(Intent(this, UpdateActivity::class.java))
         }
-        updates.addView(text("브라우저에서 최신 버전의 Assets → APK를 선택하세요. 비공개 저장소라 접근 권한이 있는 GitHub 계정 로그인이 필요합니다.", 13f))
+        updates.addView(text("앱에서 최신 APK를 찾아 내려받고 서명을 확인합니다. 비공개 저장소이므로 처음에는 GitHub 로그인이 필요할 수 있어요.", 13f))
         setContentView(scroll)
         // Explain permissions before requesting them; explicit share intents still start immediately.
         if (pendingServiceIntent != null) ensurePermissionsAndStart()
@@ -136,6 +138,28 @@ class MainActivity : Activity() {
         super.onResume()
         statusHandler.post(statusPoll)
         getSystemService(android.content.ClipboardManager::class.java).addPrimaryClipChangedListener(clipListener)
+    }
+
+    private fun receivedImage(share: Boolean) {
+        val uri = ClipboardImageProvider.latestImage(this)
+        if (uri == null) {
+            android.widget.Toast.makeText(this, "먼저 PC에서 이미지를 복사해 받아 주세요.", android.widget.Toast.LENGTH_LONG).show()
+            return
+        }
+        runCatching {
+            val clip = android.content.ClipData.newUri(contentResolver, "Con.Phone image", uri)
+            if (share) {
+                startActivity(Intent.createChooser(Intent(Intent.ACTION_SEND).apply {
+                    type = "image/png"
+                    putExtra(Intent.EXTRA_STREAM, uri)
+                    clipData = clip
+                    addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                }, "받은 이미지 공유"))
+            } else {
+                getSystemService(android.content.ClipboardManager::class.java).setPrimaryClip(clip)
+                android.widget.Toast.makeText(this, "이미지를 다시 복사했습니다.", android.widget.Toast.LENGTH_SHORT).show()
+            }
+        }.onFailure { statusText.text = "이미지 열기 실패: ${it.message}" }
     }
 
     override fun onPause() {

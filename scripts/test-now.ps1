@@ -17,6 +17,11 @@ function Require-Command([string]$Name, [string]$Hint) {
 }
 
 $version = ([xml](Get-Content (Join-Path $repo "src/ConPhone.Windows/ConPhone.Windows.csproj") -Raw)).Project.PropertyGroup.Version
+if ($Target -in @('all', 'android')) {
+    $androidGradleText = Get-Content (Join-Path $repo 'companion/android/app/build.gradle.kts') -Raw
+    $version = [regex]::Match($androidGradleText, 'versionName\s*=\s*"([^"]+)"').Groups[1].Value
+    if ([string]::IsNullOrWhiteSpace($version)) { throw 'Android versionName not found.' }
+}
 Write-Host "Con.Phone $version TEST NOW" -ForegroundColor Cyan
 Write-Host "Repo: $repo"
 

@@ -1937,10 +1937,9 @@ class ClipboardBridgeService : Service() {
                 else -> {
                     ensureSafeImageDimensions(content.data)
 
-                    val target =
-                        File(
-                            cacheDir,
-                            ClipboardImageProvider.FILE_NAME)
+                    // An immutable .png URI prevents keyboards/chat apps from
+                    // caching an older image behind the same /latest URI.
+                    val (target, imageUri) = ClipboardImageProvider.newImage(this)
 
                     if (content.kind == ClipboardKind.PNG) {
                         // Windows clipboard images are already normalized to PNG.
@@ -1970,10 +1969,11 @@ class ClipboardBridgeService : Service() {
                         ClipData.newUri(
                             contentResolver,
                             "Con.Phone image",
-                            ClipboardImageProvider.URI)
+                            imageUri)
                     clipboard.setPrimaryClip(clip)
+                    ClipboardImageProvider.remember(this, imageUri)
                     toast(
-                        "PC 이미지를 클립보드에 받았습니다.")
+                        "PC 이미지 수신 완료 · 붙여넣기 또는 Con.Phone의 ‘받은 이미지 공유’를 사용하세요.")
                 }
             }
 
