@@ -3,16 +3,20 @@ on:
   push:
     branches:
       - main
+      - feature/clipboard-text-image-sync
     paths:
       - 'companion/android/**'
+      - 'scripts/verify-source.py'
       - '.github/workflows/android.yml'
   pull_request:
     types:
       - opened
       - reopened
+      - synchronize
       - ready_for_review
     paths:
       - 'companion/android/**'
+      - 'scripts/verify-source.py'
       - '.github/workflows/android.yml'
   workflow_dispatch:
 
