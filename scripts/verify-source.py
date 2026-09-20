@@ -34,6 +34,7 @@ android_main = read("companion/android/app/src/main/java/universe/dia/conphone/M
 android_share = read("companion/android/app/src/main/java/universe/dia/conphone/ShareActivity.kt")
 android_share_store = read("companion/android/app/src/main/java/universe/dia/conphone/AndroidSharedPayloadStore.kt")
 android_protocol_test = read("companion/android/app/src/test/java/universe/dia/conphone/ProtocolTest.kt")
+android_p2p_security = read("companion/android/app/src/main/java/universe/dia/conphone/P2PSecurity.kt")
 android_workflow = read(".github/workflows/android.yml")
 
 ios_bridge = read("companion/ios/ConPhoneCompanion/ClipboardBridge.swift")
@@ -45,6 +46,7 @@ ios_share_entitlements = read("companion/ios/ShareExtension/ConPhoneShare.entitl
 ios_share = read("companion/ios/ShareExtension/ShareViewController.swift")
 ios_share_store = read("companion/ios/Shared/SharedPayloadStore.swift")
 ios_protocol_test = read("companion/ios/Tests/ClipboardProtocolTests.swift")
+ios_p2p_security = read("companion/ios/ConPhoneCompanion/P2PSecurity.swift")
 ios_workflow = read(".github/workflows/ios.yml")
 
 trusted_store = read("src/ConPhone.Windows/TrustedDeviceStore.cs")
@@ -114,6 +116,25 @@ for path, text in [
             f"{path}: P2P v2 ready missing")
     require("ConPhone-Clipboard-P2P-v2" in text or "P2PSecurity.AadPrefix" in text,
             f"{path}: P2P v2 AAD missing")
+
+# P2P v2 KDF must be centralized and pinned to the same Windows vector on mobile.
+require("deriveSessionKey" in android_p2p_security and
+        "ConPhone-P2P-Session-v2" in android_p2p_security,
+        "Android P2P v2 KDF helper missing")
+require("P2PSecurity.deriveSessionKey" in android_service,
+        "Android P2P channel must use centralized KDF")
+require("p2pSessionKeyMatchesWindowsVector" in android_protocol_test and
+        "16BE739CCB5056785C93854CFD3C384105BE7F799292A5BEBA8FFE2BE73248D0" in android_protocol_test,
+        "Android P2P KDF vector test missing")
+
+require("deriveSessionKey" in ios_p2p_security and
+        "ConPhone-P2P-Session-v2" in ios_p2p_security,
+        "iOS P2P v2 KDF helper missing")
+require("P2PSecurity.deriveSessionKey" in ios_p2p,
+        "iOS P2P channel must use centralized KDF")
+require("testP2PSessionKeyMatchesWindowsVector" in ios_protocol_test and
+        "16BE739CCB5056785C93854CFD3C384105BE7F799292A5BEBA8FFE2BE73248D0" in ios_protocol_test,
+        "iOS P2P KDF vector test missing")
 
 # Clipboard safety constants aligned.
 require("MaxTextBytes = 1024 * 1024" in core, "Core text max must be 1 MiB")
