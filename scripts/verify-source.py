@@ -33,6 +33,7 @@ android_gradle = read("companion/android/app/build.gradle.kts")
 android_main = read("companion/android/app/src/main/java/universe/dia/conphone/MainActivity.kt")
 android_share = read("companion/android/app/src/main/java/universe/dia/conphone/ShareActivity.kt")
 android_share_store = read("companion/android/app/src/main/java/universe/dia/conphone/AndroidSharedPayloadStore.kt")
+android_protocol_test = read("companion/android/app/src/test/java/universe/dia/conphone/ProtocolTest.kt")
 
 ios_bridge = read("companion/ios/ConPhoneCompanion/ClipboardBridge.swift")
 ios_protocol = read("companion/ios/ConPhoneCompanion/ClipboardProtocol.swift")
@@ -190,6 +191,18 @@ if bluetooth_gate is not None:
 require("checkSelfPermission(Manifest.permission.BLUETOOTH_SCAN)" in android_share and
         "checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT)" in android_share,
         "Android Share target must be able to dispatch with Bluetooth-only permission")
+
+# Android protocol must have executable JVM unit coverage.
+require('testImplementation("junit:junit:4.13.2")' in android_gradle,
+        "Android protocol JUnit dependency missing")
+for marker in [
+    "textRoundTripOutOfOrder",
+    "completedTransferReplayRejected",
+    "conflictingDuplicateChunkRejected",
+    "bleFragmentRoundTripOutOfOrder",
+]:
+    require(marker in android_protocol_test,
+            f"Android protocol test missing: {marker}")
 
 # iOS Share Extension must share the same App Group.
 app_group = "group.universe.dia.conphone"
