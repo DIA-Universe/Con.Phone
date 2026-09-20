@@ -110,6 +110,8 @@ internal static class Program
         var syncEvents = 0;
         var remoteSyncEvents = 0;
         var remoteText = marker + " remote";
+        var selfTestStatus = new List<string>();
+        history.Status += status => selfTestStatus.Add(status);
 
         history.ContentCaptured += content =>
         {
@@ -219,7 +221,10 @@ internal static class Program
 
         if (Volatile.Read(ref remoteSyncEvents) < 1)
             throw new InvalidOperationException(
-                "A real re-copy after self-write suppression was incorrectly hidden.");
+                "A real re-copy after self-write suppression was incorrectly hidden. " +
+                $"Clipboard still matches: {Clipboard.GetText(TextDataFormat.UnicodeText) == remoteText}; " +
+                $"Events: local={syncEvents}, remote={remoteSyncEvents}; " +
+                string.Join(" | ", selfTestStatus));
 
         Clipboard.SetText("temporary replacement", TextDataFormat.UnicodeText);
         if (!history.Restore(entry.Id))

@@ -69,7 +69,7 @@ Expected artifacts: `ConPhone-win-x64-single-exe`, `ConPhone-win-x64-sha256`, `C
 
 iOS was not run locally: this host is Windows. The workflow runs XcodeGen, simulator unit tests and a simulator Debug build, and checks `ConPhoneShare.appex` is embedded. A simulator `.app` is not an installable iPhone IPA. Device installation needs Apple signing/provisioning.
 
-One published-EXE self-test run failed with `A real re-copy after self-write suppression was incorrectly hidden.` Five subsequent standalone runs and a complete rerun passed. The intermittent failure's cause is not established; do not treat the successful reruns as proof it is fixed. Keep this as a reliability follow-up alongside device testing.
+Two Windows self-test runs (published EXE and dotnet run) failed intermittently with `A real re-copy after self-write suppression was incorrectly hidden.` Five subsequent published-EXE runs, eight diagnostic dotnet runs and complete reruns passed. Failure diagnostics now include event counts and whether the clipboard still matches, without logging clipboard text. The intermittent failure's cause is not established; do not treat the successful reruns as proof it is fixed. Keep this as a reliability follow-up alongside device testing.
 
 ## Minimum device test
 
