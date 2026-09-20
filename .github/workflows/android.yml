@@ -42,6 +42,8 @@ jobs:
       - uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.11.1'
+      - name: Android protocol unit tests
+        run: gradle --no-daemon -p companion/android :app:testDebugUnitTest
       - name: Build debug APK
         run: gradle --no-daemon -p companion/android :app:assembleDebug
       - name: Upload debug APK
