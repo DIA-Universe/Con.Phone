@@ -44,6 +44,8 @@ ios_app_entitlements = read("companion/ios/ConPhoneCompanion/ConPhoneCompanion.e
 ios_share_entitlements = read("companion/ios/ShareExtension/ConPhoneShare.entitlements")
 ios_share = read("companion/ios/ShareExtension/ShareViewController.swift")
 ios_share_store = read("companion/ios/Shared/SharedPayloadStore.swift")
+ios_protocol_test = read("companion/ios/Tests/ClipboardProtocolTests.swift")
+ios_workflow = read(".github/workflows/ios.yml")
 
 trusted_store = read("src/ConPhone.Windows/TrustedDeviceStore.cs")
 clipboard_history = read("src/ConPhone.Windows/ClipboardHistoryService.cs")
@@ -247,6 +249,22 @@ require("saveImage(uri, intent.type)" in android_share,
         "Android Share target must preserve image MIME in the durable queue")
 require("NEARBY_WIFI_DEVICES" not in android_share,
         "Android Share target must not require Nearby Wi-Fi permission for BLE fallback")
+
+# iOS protocol must have executable XCTest coverage.
+require("ConPhoneProtocolTests:" in ios_project,
+        "iOS protocol unit-test target missing")
+for marker in [
+    "testTextRoundTripOutOfOrder",
+    "testCompletedTransferReplayRejected",
+    "testConflictingDuplicateChunkRejected",
+    "testBleFragmentRoundTripOutOfOrder",
+]:
+    require(marker in ios_protocol_test,
+            f"iOS protocol test missing: {marker}")
+require("iOS protocol unit tests" in ios_workflow and
+        "xcodebuild" in ios_workflow and
+        " test" in ios_workflow,
+        "iOS workflow must execute protocol unit tests")
 
 # Multi-device and active-target isolation.
 require("MaxDevices = 5" in trusted_store, "Trusted device cap must remain 5")
