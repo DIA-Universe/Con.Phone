@@ -33,8 +33,8 @@ final class ClipboardProtocolTests: XCTestCase {
     }
 
     func testAckRoundTrip() throws {
-        let id = Data((0..<16).map(UInt8.init))
-        let ack = try ClipboardProtocol.encodeAck(id)
+        let id = Data((0..<16).map { UInt8($0) })
+        let ack = ClipboardProtocol.encodeAck(id)
         XCTAssertEqual(ack.count, ClipboardProtocol.ackLength)
         XCTAssertEqual(ClipboardProtocol.decodeAck(ack), id)
 
