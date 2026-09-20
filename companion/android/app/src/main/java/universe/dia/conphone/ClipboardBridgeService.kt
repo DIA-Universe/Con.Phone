@@ -753,44 +753,41 @@ class ClipboardBridgeService : Service() {
         return DirectConfig(ssid, passphrase, hostAddress)
     }
 
+    private val reliableReceiver = ReliableBleReceiver()
+
     private fun handleCharacteristicChanged(
         characteristic: BluetoothGattCharacteristic,
         value: ByteArray
     ) {
         if (characteristic.uuid != TX_UUID) return
-
         runCatching {
-            val message =
-                bleReassembler.add(
-                    ClipboardProtocol.decodeBle(value))
-                    ?: return
-
-            val ackId = ClipboardProtocol.decodeAck(message)
-            if (ackId != null) {
-                completeActiveBleTransferAck(ackId)
-                return
+            if (value.size >= 10 && value[0] == 0xC7.toByte() && value[1] == 2.toByte()) {
+                if (!activeTarget || credential == null) return
+                val result = reliableReceiver.receive(value) { processClipboardNotification(it) }
+                // Receipt is sent only after validation/reassembly/application succeeded.
+                bleAckQueue.add(result.receipt)
+                result.applicationAck?.let { enqueueBleAck(it) }
+                writeNextBle()
+            } else {
+                processClipboardNotification(value)?.let { enqueueBleAck(it) }
             }
-
-            val chunk = ClipboardProtocol.decode(message)
-            val content =
-                bleWireReassembler.add(chunk)
-                    ?: return
-
-            if (!activeTarget) {
-                showStatus(
-                    "비활성 기기로 늦게 도착한 BLE Clipboard를 적용하지 않았습니다.")
-                return
-            }
-
-            if (applyRemoteClipboardBlocking(content))
-                enqueueBleAck(chunk.transferId)
-            else
-                showStatus(
-                    "BLE Clipboard 적용 실패 · ACK를 보내지 않아 PC 재시도를 유도합니다.")
         }.onFailure {
-            showStatus(
-                "BLE Clipboard 수신 거부: ${it.message}")
+            showStatus("BLE Clipboard 수신 거부: ${it.message}")
         }
+    }
+
+    private fun processClipboardNotification(value: ByteArray): ByteArray? {
+        val message = bleReassembler.add(ClipboardProtocol.decodeBle(value)) ?: return null
+        val ackId = ClipboardProtocol.decodeAck(message)
+        if (ackId != null) {
+            completeActiveBleTransferAck(ackId)
+            return null
+        }
+        val chunk = ClipboardProtocol.decode(message)
+        val content = bleWireReassembler.add(chunk) ?: return null
+        check(activeTarget) { "비활성 기기에 Clipboard를 적용하지 않았습니다." }
+        check(applyRemoteClipboardBlocking(content)) { "휴대폰 Clipboard 이미지 적용 실패" }
+        return chunk.transferId
     }
 
     private fun enqueueBleAck(transferId: ByteArray) {

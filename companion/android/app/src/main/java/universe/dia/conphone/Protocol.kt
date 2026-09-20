@@ -225,7 +225,7 @@ class ClipboardWireReassembler {
         val total: Int,
         val hash: ByteArray,
         val parts: MutableMap<Int, ByteArray> = mutableMapOf(),
-        val created: Long = System.currentTimeMillis(),
+        var created: Long = System.currentTimeMillis(),
         var bytes: Int = 0
     )
 
@@ -253,6 +253,7 @@ class ClipboardWireReassembler {
             }
         }!!
 
+        state.created = System.currentTimeMillis()
         val existingChunk = state.parts[chunk.index]
         if (existingChunk != null) {
             require(existingChunk.contentEquals(chunk.payload)) {
@@ -295,7 +296,7 @@ class BleReassembler {
     private data class Pending(
         val count: Int,
         val parts: MutableMap<Int, ByteArray> = mutableMapOf(),
-        val created: Long = System.currentTimeMillis(),
+        var created: Long = System.currentTimeMillis(),
         var bytes: Int = 0
     )
 
@@ -323,6 +324,7 @@ class BleReassembler {
             }
         }!!
 
+        state.created = now
         val existing = state.parts[fragment.index]
         if (existing != null) {
             require(existing.contentEquals(fragment.payload)) {

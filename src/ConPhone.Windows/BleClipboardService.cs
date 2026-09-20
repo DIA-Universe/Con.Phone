@@ -64,6 +64,7 @@ public static class ClipboardPairingSecretStore
 
 public sealed class BleClipboardService : IDisposable
 {
+    private readonly ReliableBleSender _reliableSender = new();
     public static readonly Guid ServiceUuid = Guid.Parse("67A7F001-7E5B-4A2E-9B8B-1C9A5B6D1001");
     public static readonly Guid TxUuid = Guid.Parse("67A7F002-7E5B-4A2E-9B8B-1C9A5B6D1001");
     public static readonly Guid RxUuid = Guid.Parse("67A7F003-7E5B-4A2E-9B8B-1C9A5B6D1001");
@@ -362,7 +363,11 @@ public sealed class BleClipboardService : IDisposable
             {
                 var bytes = request.Value.ToArray();
 
-                if (ClipboardAckCodec.TryDecode(bytes, out var ackTransferId))
+                if (_reliableSender.Accept(id, bytes))
+                {
+                    valid = true;
+                }
+                else if (ClipboardAckCodec.TryDecode(bytes, out var ackTransferId))
                 {
                     CompleteAck(id, ackTransferId);
                     valid = true;
@@ -596,6 +601,17 @@ public sealed class BleClipboardService : IDisposable
 
             try
             {
+                byte[]? finalFragment = null;
+                async Task NotifyAsync(byte[] packet, CancellationToken cancellation)
+                {
+                    if (!IsActive(deviceId)) throw new InvalidOperationException("활성 기기가 변경되었습니다.");
+                    using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellation);
+                    timeout.CancelAfter(TimeSpan.FromSeconds(5));
+                    var result = await _tx.NotifyValueAsync(packet.AsBuffer(), client).AsTask(timeout.Token).ConfigureAwait(false);
+                    if (result.Status != GattCommunicationStatus.Success)
+                        throw new InvalidOperationException($"Clipboard BLE 전송 실패: {result.Status}");
+                }
+
                 async Task SendWireFrameAsync(byte[] wireFrame)
                 {
                     var transportTransferId =
@@ -620,16 +636,12 @@ public sealed class BleClipboardService : IDisposable
                                     token).ConfigureAwait(false);
                         }
 
-                        using var notificationTimeout = CancellationTokenSource.CreateLinkedTokenSource(token);
-                        notificationTimeout.CancelAfter(TimeSpan.FromSeconds(5));
-                        var result = await _tx.NotifyValueAsync(
-                                fragment.AsBuffer(),
-                                client)
-                            .AsTask(notificationTimeout.Token).ConfigureAwait(false);
-
-                        if (result.Status != GattCommunicationStatus.Success)
-                            throw new InvalidOperationException(
-                                $"Clipboard BLE 전송 실패: {result.Status}");
+                        if (isImage)
+                        {
+                            await _reliableSender.SendAsync(deviceId, fragment, NotifyAsync, token).ConfigureAwait(false);
+                            finalFragment = fragment;
+                        }
+                        else await NotifyAsync(fragment, token).ConfigureAwait(false);
 
                         fragmentIndex++;
                         if (bulkTransfer && fragmentIndex % 4 == 0)
@@ -637,6 +649,8 @@ public sealed class BleClipboardService : IDisposable
                                 2,
                                 token).ConfigureAwait(false);
                     }
+                    if (isImage)
+                        Status?.Invoke($"이미지 BLE 조각 {fragmentIndex}개 · 휴대폰 수신 확인 완료");
                 }
 
                 await SendWireFrameAsync(firstWireFrame)
@@ -649,7 +663,20 @@ public sealed class BleClipboardService : IDisposable
                 }
 
                 Status?.Invoke($"Clipboard BLE 데이터 전송 완료 · {content.Data.Length:N0} bytes · 휴대폰 적용 확인 대기");
-                await ack.Task.WaitAsync(TimeSpan.FromSeconds(8), token).ConfigureAwait(false);
+                for (var attempt = 0; ; attempt++)
+                {
+                    try
+                    {
+                        await ack.Task.WaitAsync(TimeSpan.FromSeconds(8), token).ConfigureAwait(false);
+                        break;
+                    }
+                    catch (TimeoutException) when (isImage && finalFragment is not null && attempt < 2)
+                    {
+                        // The image may already be applied: replay only the final fragment
+                        // to request its cached application ACK, without applying twice.
+                        await _reliableSender.SendAsync(deviceId, finalFragment, NotifyAsync, token).ConfigureAwait(false);
+                    }
+                }
             }
             finally
             {

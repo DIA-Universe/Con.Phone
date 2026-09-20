@@ -356,4 +356,42 @@ var largeRoutes = ClipboardTransportPolicy.Candidates(
 Check("large image skips ble when no fast local path", largeRoutes.Count == 0);
 
 
+// Fault injection on the actual reliable sender: lose data, then lose its receipt.
+var reliable = new ReliableBleSender();
+var reliablePacket = BleFragmentCodec.Split(pngBytes, 182, 123).First();
+var transmissions = 0;
+await reliable.SendAsync("phone", reliablePacket, (packet, ct) =>
+{
+    transmissions++;
+    Check("reliable packet uses v2", packet[1] == 2);
+    if (transmissions == 2)
+        reliable.Accept("other-phone", packet.Take(8).ToArray());
+    if (transmissions == 3)
+        reliable.Accept("phone", packet.Take(8).ToArray());
+    return Task.CompletedTask;
+}, CancellationToken.None, TimeSpan.FromMilliseconds(10));
+Check("lost notification and receipt recover; wrong peer ignored", transmissions == 3);
+var exhausted = 0;
+try
+{
+    await reliable.SendAsync("phone", reliablePacket, (_, _) =>
+    {
+        exhausted++;
+        return Task.CompletedTask;
+    }, CancellationToken.None, TimeSpan.FromMilliseconds(5));
+    Check("missing receipts must fail", false);
+}
+catch (TimeoutException) { Check("retry budget bounded", exhausted == 4); }
+using (var cancelled = new CancellationTokenSource())
+{
+    cancelled.Cancel();
+    try
+    {
+        await reliable.SendAsync("phone", reliablePacket, (_, _) => throw new Exception("must not transmit"), cancelled.Token);
+        Check("cancel must stop", false);
+    }
+    catch (OperationCanceledException) { Check("cancel stops transmission", true); }
+}
+Check("unrelated ACK left for application decoder", !reliable.Accept("phone", new byte[22]));
+
 Console.WriteLine($"{passed} checks passed. No Windows/Bluetooth/phone hardware has been tested by these checks.");
