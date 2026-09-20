@@ -34,6 +34,7 @@ android_main = read("companion/android/app/src/main/java/universe/dia/conphone/M
 android_share = read("companion/android/app/src/main/java/universe/dia/conphone/ShareActivity.kt")
 android_share_store = read("companion/android/app/src/main/java/universe/dia/conphone/AndroidSharedPayloadStore.kt")
 android_protocol_test = read("companion/android/app/src/test/java/universe/dia/conphone/ProtocolTest.kt")
+android_workflow = read(".github/workflows/android.yml")
 
 ios_bridge = read("companion/ios/ConPhoneCompanion/ClipboardBridge.swift")
 ios_protocol = read("companion/ios/ConPhoneCompanion/ClipboardProtocol.swift")
@@ -203,6 +204,9 @@ for marker in [
 ]:
     require(marker in android_protocol_test,
             f"Android protocol test missing: {marker}")
+
+require(":app:testDebugUnitTest" in android_workflow,
+        "Android workflow must execute protocol unit tests before APK build")
 
 # iOS Share Extension must share the same App Group.
 app_group = "group.universe.dia.conphone"
