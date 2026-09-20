@@ -1929,12 +1929,11 @@ class ClipboardBridgeService : Service() {
             )
             require(MessageDigest.isEqual(serverMac, expected)) { "P2P authentication failed." }
 
-            sessionKey = hmac(
+            sessionKey = P2PSecurity.deriveSessionKey(
                 credential.secret,
-                "ConPhone-P2P-Session-v2".toByteArray(Charsets.US_ASCII) +
-                    credential.deviceHash +
-                    clientNonce +
-                    serverNonce
+                credential.deviceHash,
+                clientNonce,
+                serverNonce
             )
         }
 
