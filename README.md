@@ -61,6 +61,34 @@
 
 Android 프로젝트는 companion/android, iOS 프로젝트 소스는 companion/ios에 있습니다. 세부 프로토콜·보안·제약은 docs/CLIPBOARD_SYNC.md를 참고하세요.
 
+## 0.3.0 바로 테스트
+
+같은 Wi-Fi를 사용하지 않는 상태를 기준으로 테스트합니다.
+
+Windows PowerShell에서 저장소 루트 기준:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\test-now.ps1 -Target windows
+```
+
+이 명령은 Core 테스트, Windows 빌드, 실제 Windows 클립보드 roundtrip, UI 4탭 snapshot, single-file `ConPhone.exe`, SHA-256 생성을 한 번에 수행합니다.
+
+성공 시:
+
+- Windows EXE: `artifacts/test-now/windows/win-x64/ConPhone.exe`
+- SHA-256: 같은 폴더의 `ConPhone.exe.sha256`
+- UI snapshot: `artifacts/test-now/windows/ui`
+
+Android Studio 또는 Gradle이 준비돼 있으면:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\test-now.ps1 -Target all
+```
+
+Android debug APK도 `artifacts/test-now/ConPhone-Companion-0.3.0-debug.apk`로 복사합니다.
+
+실기기에서는 Windows Mobile Hotspot을 끄고, 휴대폰의 기존 Con.Phone Bluetooth 등록을 삭제한 뒤 0.3.0 HID 프로필로 한 번 다시 페어링하는 것을 권장합니다. 자세한 항목은 `docs/RELEASE_TEST_0.3.0.md`를 따릅니다.
+
 ## 개발
 
 .NET 10 SDK와 Windows 개발 환경이 필요합니다. Windows에서 clone할 때 대상 디렉터리를 명시합니다.
