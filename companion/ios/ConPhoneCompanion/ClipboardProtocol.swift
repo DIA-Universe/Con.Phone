@@ -1,7 +1,7 @@
 import Foundation
 import CryptoKit
 
-enum ClipboardKind: UInt8 {
+enum ClipboardKind: UInt8, Equatable {
     case text = 1
     case png = 2
     case jpeg = 3
