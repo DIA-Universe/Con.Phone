@@ -94,6 +94,25 @@ Check(
     "extreme pointer overflow segment preserved",
     (await box.TakeAsync(default)).Packet == new PointerPacket(0, 1));
 // Parse HID short items independently and calculate input/output bit counts per report ID.
+var moving = new Envelope(7, new PointerPacket(0, 2, 3));
+box.TryAdd(new(7, new PointerPacket(0, 8, -3)));
+box.TryAdd(new(7, new KeyboardPacket(new byte[8])));
+Check("pacing includes newly arrived motion", box.CoalescePendingMotion(moving).Packet == new PointerPacket(0, 10, 0));
+Check("pacing preserves keyboard barrier", (await box.TakeAsync(default)).Packet is KeyboardPacket);
+box.TryAdd(new(7, new PointerPacket(1, 8)));
+Check("pacing preserves click barrier", box.CoalescePendingMotion(moving) == moving && box.Count == 1);
+box.Clear();
+box.TryAdd(new(8, new PointerPacket(0, 8)));
+Check("pacing preserves target boundary", box.CoalescePendingMotion(moving) == moving && box.Count == 1);
+box.Clear();
+box.TryAdd(new(7, new PointerPacket(0, 8, Wheel: 1)));
+Check("pacing preserves scroll barrier", box.CoalescePendingMotion(moving) == moving && box.Count == 1);
+box.Clear();
+box.TryAdd(new(7, new PointerPacket(0, -32767)));
+box.TryAdd(new(7, new PointerPacket(0, -1)));
+Check("negative delta cannot merge outside HID range", box.Count == 2);
+Check("negative extreme still encodes", Hid.Encode((await box.TakeAsync(default)).Packet).Count() == 1);
+box.Clear();
 var map = Hid.ReportMap;
 int reportId = 0, reportSize = 0, reportCount = 0, depth = 0;
 var bits = new Dictionary<(int, int), int>();

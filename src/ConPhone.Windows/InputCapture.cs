@@ -201,7 +201,7 @@ public sealed class InputCapture : IDisposable
         try
         {
             var k = Marshal.PtrToStructure<KeyData>(data);
-            if ((k.Flags & 0x10) != 0) return CallNextHookEx(0, code, message, data); // injected
+            bool injected = (k.Flags & 0x10) != 0;
 
             int key = (int)k.Vk;
             bool up = (k.Flags & 0x80) != 0;
@@ -290,11 +290,19 @@ public sealed class InputCapture : IDisposable
                                     _localPassthroughUntilUp.Add(down);
                         }
                     }
-                    Toggle?.Invoke();
+                    // Returning to the PC must not wait for the UI/action queue or Bluetooth.
+                    if (_remote)
+                    {
+                        Deactivate();
+                        Emergency?.Invoke();
+                    }
+                    else Toggle?.Invoke();
                     return 1;
                 }
 
-                if (_remote && Matches(emergency, key, modifiers))
+                // Emergency must work even while Ctrl/Shift is held (or a key-up was missed).
+                if (_remote && key == emergency.Key &&
+                    (modifiers & emergency.Modifiers) == emergency.Modifiers)
                 {
                     lock (_gate) _suppressUntilUp.Add(key);
                     Deactivate();
@@ -313,6 +321,9 @@ public sealed class InputCapture : IDisposable
 
             lock (_gate)
             {
+                // Keyboard utilities may synthesize shortcut keys. Honor those above,
+                // but never forward synthetic text/input back to the phone.
+                if (injected) return CallNextHookEx(0, code, message, data);
                 if (!_remote) return CallNextHookEx(0, code, message, data);
 
                 if (TryConsumerAction(key, out var consumerAction))

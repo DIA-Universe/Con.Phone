@@ -26,6 +26,9 @@ public sealed partial class MainForm : Form
     private ModifierProfile _activeModifierProfile;
     private readonly CancellationTokenSource _lifetime = new();
     private readonly SemaphoreSlim _actions = new(1, 1);
+    private int _healthCheckRunning, _clipboardSendRunning;
+    private long _lastPointerDispatchTicks;
+    private readonly Label _clipboardConnection = new() { AutoSize = true, MaximumSize = new Size(780, 0) };
 
     private readonly Label _state = new()
     {
@@ -542,11 +545,12 @@ public sealed partial class MainForm : Form
         var info = AutoSection(InfoWeak);
         info.Controls.Add(SectionTitle("복사한 내용을 휴대폰에서도"));
         info.Controls.Add(Help(
-            "텍스트나 이미지를 복사한 뒤 휴대폰으로 전환하세요. 선택한 기록을 직접 보낼 수도 있어요.",
+            "기기간 복붙을 켜면 PC에서 복사할 때 자동으로 보냅니다. 폰에서 복사한 내용은 Companion을 열거나 공유 → Con.Phone으로 보내세요.",
             TextColor));
         info.Controls.Add(Help(
             "휴대폰에 Con.Phone Companion이 필요해요. 같은 Wi-Fi에 연결하지 않아도 사용할 수 있습니다.",
             Secondary));
+        info.Controls.Add(_clipboardConnection);
         flow.Controls.Add(info);
 
         var history = AutoSection();
@@ -852,6 +856,7 @@ public sealed partial class MainForm : Form
 
     private void ConfigureRuntimeEvents()
     {
+        _clipboardSyncEnabled.CheckedChanged += (_, _) => ApplyClipboardSettings(save: true);
         _input.Packet += packet =>
         {
             var outgoing = packet is PointerPacket pointer
@@ -926,6 +931,11 @@ public sealed partial class MainForm : Form
 
         _timer.Tick += (_, _) =>
         {
+            _clipboardConnection.Text = !_settings.ClipboardSyncEnabled
+                ? "동기화 꺼짐 · 아래 기기간 복붙을 켜 주세요."
+                : _clipboardSync?.ActiveTargetConnected == true
+                    ? "휴대폰 클립보드 채널 연결됨 · 복사한 내용을 자동으로 보냅니다."
+                    : "휴대폰 앱 연결 대기 · Companion의 ‘PC 연결 시작’을 누르고 PC에서 기기를 등록해 주세요.";
             if (_input.IsRemote)
             {
                 if (_ble.Ready)
@@ -975,16 +985,10 @@ public sealed partial class MainForm : Form
 
         _healthTimer.Tick += (_, _) =>
         {
-            Dispatch(async () =>
-            {
-                if (!_servicesPaused && _ble.DesiredRunning)
-                    await _ble.EnsureAdvertisingAsync();
-
-                if (!_servicesPaused &&
-                    _settings.ClipboardSyncEnabled &&
-                    _clipboardSync is not null)
-                    await _clipboardSync.EnsureHealthyAsync();
-            });
+            _ = SyncLatestClipboardToPhoneSafeAsync(Volatile.Read(ref _epoch), _ble.ApprovedId);
+            // Maintenance must not hold the user-action gate while awaiting WinRT.
+            if (Interlocked.Exchange(ref _healthCheckRunning, 1) != 0) return;
+            _ = CheckTransportHealthAsync();
         };
         _healthTimer.Start();
 
@@ -1015,6 +1019,26 @@ public sealed partial class MainForm : Form
             Log("Bluetooth HID 검색 신호를 시작했습니다.");
             Log("HID 프로필이 바뀌었습니다. LOCK/MEDIA가 0이면 휴대폰에서 기존 PC 등록을 삭제하고 한 번 다시 페어링해 주세요.");
         });
+    }
+
+    private async Task CheckTransportHealthAsync()
+    {
+        try
+        {
+            if (!_closing)
+            {
+                if (!_servicesPaused && _ble.DesiredRunning)
+                    await _ble.EnsureAdvertisingAsync();
+
+                if (!_servicesPaused &&
+                    _settings.ClipboardSyncEnabled &&
+                    _clipboardSync is not null)
+                    await _clipboardSync.EnsureHealthyAsync();
+            }
+        }
+        catch (Exception ex) { Log($"연결 상태 확인 재시도: {ex.Message}"); }
+        finally { Volatile.Write(ref _healthCheckRunning, 0); }
+
     }
 
     private async Task<bool> ApplyReceivedClipboardAsync(
@@ -1151,13 +1175,11 @@ public sealed partial class MainForm : Form
                 Interlocked.Increment(ref _latestClipboardGeneration);
 
                 Log(content.Kind == ClipboardContentKind.TextUtf8
-                    ? "텍스트 복사 감지 · 휴대폰 전환 시 동기화 대기"
-                    : $"이미지 복사 감지 · {content.Data.Length / 1024.0:N1} KiB · 휴대폰 전환 시 동기화 대기");
+                    ? "텍스트 복사 감지 · 연결된 휴대폰에 동기화 대기"
+                    : $"이미지 복사 감지 · {content.Data.Length / 1024.0:N1} KiB · 연결된 휴대폰에 동기화 대기");
 
-                // Image PNG encoding/history storage runs off the STA thread.
-                // If input already switched to the phone while that work was running,
-                // send the completed newest clipboard generation now.
-                if (_input.IsRemote)
+                // Copying is independent of who currently owns keyboard/mouse input.
+                if (_settings.ClipboardSyncEnabled)
                 {
                     _ = SyncLatestClipboardToPhoneSafeAsync(
                         Volatile.Read(ref _epoch),
@@ -1285,6 +1307,7 @@ public sealed partial class MainForm : Form
         _input.ConfigureKeyboard(
             _activeHangulMode,
             _activeModifierProfile);
+        RegisterEmergencyFallback();
 
         _mouseSpeedValue.Text = $"{_mouseSpeed.Value}%";
         _scrollSpeedValue.Text = $"{_scrollSpeed.Value}%";
@@ -1623,6 +1646,7 @@ public sealed partial class MainForm : Form
         Interlocked.Exchange(ref _bleNotReadySinceTicks, 0);
         _pointerScaler.Reset();
         Interlocked.Exchange(ref _lastPointerSentTicks, 0);
+        Interlocked.Exchange(ref _lastPointerDispatchTicks, 0);
         Interlocked.Exchange(ref _lastObservedPointerButtons, 0);
         Interlocked.Exchange(ref _lastSentPointerButtons, 0);
         Interlocked.Increment(ref _epoch);
@@ -1698,6 +1722,7 @@ public sealed partial class MainForm : Form
         long epoch,
         string? targetId)
     {
+        if (_closing || _servicesPaused || Interlocked.CompareExchange(ref _clipboardSendRunning, 1, 0) != 0) return;
         try
         {
             await SyncLatestClipboardToPhoneAsync();
@@ -1715,6 +1740,7 @@ public sealed partial class MainForm : Form
             _lastError = $"ClipboardSend:{ex.GetType().Name}:0x{ex.HResult:X8}";
             Post(() => Log($"클립보드 동기화 실패 · HID 입력은 유지합니다. ({ex.Message})"));
         }
+        finally { Volatile.Write(ref _clipboardSendRunning, 0); }
     }
 
     private static TimeSpan ClipboardSendTimeout(
@@ -1727,6 +1753,7 @@ public sealed partial class MainForm : Form
     {
         if (!_settings.ClipboardSyncEnabled ||
             _clipboardSync is null ||
+            !_clipboardSync.ActiveTargetConnected ||
             _latestLocalClipboard is null)
             return;
 
@@ -2060,7 +2087,7 @@ public sealed partial class MainForm : Form
         if (urgent || (pointer.X == 0 && pointer.Y == 0))
             return;
 
-        var last = Interlocked.Read(ref _lastPointerSentTicks);
+        var last = Interlocked.Read(ref _lastPointerDispatchTicks);
         if (last == 0) return;
 
         var elapsedMs =
@@ -2083,13 +2110,20 @@ public sealed partial class MainForm : Form
             {
                 var envelope = await _outbox.TakeAsync(_lifetime.Token);
                 var pointer = envelope.Packet as PointerPacket;
+                if (pointer is not null)
+                {
+                    await PacePointerAsync(pointer, _lifetime.Token).ConfigureAwait(false);
+                    envelope = _outbox.CoalescePendingMotion(envelope);
+                    pointer = (PointerPacket)envelope.Packet;
+                }
 
                 foreach (var report in Hid.Encode(envelope.Packet))
                 {
+                    if (envelope.Epoch != Volatile.Read(ref _epoch) || !_input.IsRemote) break;
+                    // Cadence is start-to-start: awaiting Notify already consumes radio time.
                     if (pointer is not null)
-                        await PacePointerAsync(
-                            pointer,
-                            _lifetime.Token).ConfigureAwait(false);
+                        Interlocked.Exchange(ref _lastPointerDispatchTicks,
+                            System.Diagnostics.Stopwatch.GetTimestamp());
 
                     using var timeout = CancellationTokenSource.CreateLinkedTokenSource(_lifetime.Token);
                     timeout.CancelAfter(750);

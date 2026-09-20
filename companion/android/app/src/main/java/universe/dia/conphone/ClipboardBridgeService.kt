@@ -43,6 +43,8 @@ import javax.crypto.spec.SecretKeySpec
 
 class ClipboardBridgeService : Service() {
     companion object {
+        @Volatile var latestStatus = "연결 서비스를 시작해 주세요."
+            private set
         const val ACTION_START = "universe.dia.conphone.START"
         const val ACTION_SEND = "universe.dia.conphone.SEND"
         const val ACTION_SEND_SHARED_TEXT = "universe.dia.conphone.SEND_SHARED_TEXT"
@@ -69,6 +71,69 @@ class ClipboardBridgeService : Service() {
         private val CAPABILITIES_UUID = UUID.fromString("67A7F005-7E5B-4A2E-9B8B-1C9A5B6D1001")
         private val DIRECT_LINK_UUID = UUID.fromString("67A7F006-7E5B-4A2E-9B8B-1C9A5B6D1001")
         private val CCCD_UUID = UUID.fromString("00002902-0000-1000-8000-00805f9b34fb")
+    }
+
+    @Volatile private var destroyed = false
+    private var handshakeComplete = false
+    private var recoveringGatt: BluetoothGatt? = null
+    private var writeGeneration = 0L
+    private var discoveringGatt: BluetoothGatt? = null
+    private var readingGatt: BluetoothGatt? = null
+    private var readGeneration = 0L
+    private val pendingReads = java.util.ArrayDeque<Pair<BluetoothGatt, BluetoothGattCharacteristic>>()
+
+    private fun readCharacteristic(g: BluetoothGatt, c: BluetoothGattCharacteristic) {
+        main.post {
+            if (destroyed || gatt !== g) return@post
+            if (pendingReads.none { it.first === g && it.second.uuid == c.uuid })
+                pendingReads.add(g to c)
+            drainReads()
+        }
+    }
+
+    private fun drainReads() {
+        if (destroyed || recoveringGatt != null || readingGatt != null || bleWriting) return
+        val item = pendingReads.poll() ?: run { writeNextBle(); return }
+        val (g, c) = item
+        if (gatt !== g) { drainReads(); return }
+        readingGatt = g
+        val generation = ++readGeneration
+        if (!g.readCharacteristic(c)) {
+            readingGatt = null
+            restartGatt(g, "Bluetooth 읽기 요청 실패 · 재연결")
+            return
+        }
+        main.postDelayed({
+            if (gatt === g && readingGatt === g && readGeneration == generation)
+                restartGatt(g, "Bluetooth 응답 시간 초과 · 재연결")
+        }, 10_000)
+    }
+
+    private fun readCompleted(g: BluetoothGatt) {
+        if (readingGatt === g) {
+            readingGatt = null
+            ++readGeneration
+            main.post { drainReads() }
+        }
+    }
+
+    private fun restartGatt(g: BluetoothGatt, message: String) {
+        if (destroyed || gatt !== g) return
+        recoveringGatt = g
+        showStatus(message)
+        readingGatt = null
+        pendingReads.clear()
+        ++readGeneration
+        runCatching { g.disconnect() }
+        main.postDelayed({
+            if (gatt === g) gattCallback.onConnectionStateChange(g, 0, BluetoothProfile.STATE_DISCONNECTED)
+        }, 1500)
+    }
+
+    private fun discoverGatt(g: BluetoothGatt) {
+        if (destroyed || gatt !== g || discoveringGatt === g) return
+        discoveringGatt = g
+        if (!g.discoverServices()) restartGatt(g, "PC 서비스 검색 시작 실패 · 재연결")
     }
 
     private val main = Handler(Looper.getMainLooper())
@@ -156,6 +221,7 @@ class ClipboardBridgeService : Service() {
     override fun onBind(intent: Intent?) = null
 
     private fun beginScan() {
+        if (destroyed) return
         if (checkSelfPermission(Manifest.permission.BLUETOOTH_SCAN) != PackageManager.PERMISSION_GRANTED ||
             checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT) != PackageManager.PERMISSION_GRANTED) {
             showStatus("Bluetooth 권한 필요")
@@ -198,6 +264,7 @@ class ClipboardBridgeService : Service() {
 
     private val scanCallback = object : ScanCallback() {
         override fun onScanResult(callbackType: Int, result: ScanResult) {
+            if (destroyed || !scanning || gatt != null) return
             if (checkSelfPermission(Manifest.permission.BLUETOOTH_SCAN) != PackageManager.PERMISSION_GRANTED ||
                 checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT) != PackageManager.PERMISSION_GRANTED) return
 
@@ -212,12 +279,21 @@ class ClipboardBridgeService : Service() {
             scanning = false
 
             showStatus("PC BLE 연결 중")
+            handshakeComplete = false
+            recoveringGatt = null
             gatt = result.device.connectGatt(
                 this@ClipboardBridgeService,
-                true,
+                false,
                 gattCallback,
-                BluetoothDevice.TRANSPORT_LE
+                BluetoothDevice.TRANSPORT_LE,
+                BluetoothDevice.PHY_LE_1M_MASK,
+                main
             )
+            val connecting = gatt
+            main.postDelayed({
+                if (connecting != null && gatt === connecting && !handshakeComplete)
+                    restartGatt(connecting, "PC 연결 준비 시간 초과 · PC에서 클립보드 동기화/기기 등록을 확인하세요")
+            }, 25_000)
         }
 
         override fun onScanFailed(errorCode: Int) {
@@ -229,13 +305,24 @@ class ClipboardBridgeService : Service() {
 
     private val gattCallback = object : BluetoothGattCallback() {
         override fun onConnectionStateChange(g: BluetoothGatt, status: Int, newState: Int) {
-            if (newState == BluetoothProfile.STATE_CONNECTED) {
+            if (destroyed || gatt !== g) { runCatching { g.close() }; return }
+            if (newState == BluetoothProfile.STATE_CONNECTED && status == BluetoothGatt.GATT_SUCCESS) {
                 showStatus("BLE 연결됨 · 서비스 확인")
                 if (checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT) == PackageManager.PERMISSION_GRANTED) {
-                    g.requestMtu(517)
-                    g.discoverServices()
+                    g.requestConnectionPriority(BluetoothGatt.CONNECTION_PRIORITY_HIGH)
+                    mtu = 23
+                    discoveringGatt = null
+                    if (!g.requestMtu(517)) discoverGatt(g)
+                    main.postDelayed({ discoverGatt(g) }, 2000)
                 }
-            } else if (newState == BluetoothProfile.STATE_DISCONNECTED) {
+            } else if (newState == BluetoothProfile.STATE_DISCONNECTED || status != BluetoothGatt.GATT_SUCCESS) {
+                readingGatt = null
+                recoveringGatt = null
+                discoveringGatt = null
+                handshakeComplete = false
+                ++writeGeneration
+                pendingReads.clear()
+                ++readGeneration
                 bleAckQueue.clear()
                 bleWritingAck = false
                 requeueActiveBleTransfer("Bluetooth 연결 끊김")
@@ -265,12 +352,15 @@ class ClipboardBridgeService : Service() {
         }
 
         override fun onMtuChanged(g: BluetoothGatt, value: Int, status: Int) {
+            if (gatt !== g) return
             if (status == BluetoothGatt.GATT_SUCCESS) mtu = value
+            discoverGatt(g)
         }
 
         override fun onServicesDiscovered(g: BluetoothGatt, status: Int) {
+            if (gatt !== g || destroyed) return
             if (status != BluetoothGatt.GATT_SUCCESS) {
-                showStatus("Clipboard BLE 서비스 확인 실패")
+                restartGatt(g, "Clipboard BLE 서비스 확인 실패 · 재연결")
                 return
             }
 
@@ -317,7 +407,7 @@ class ClipboardBridgeService : Service() {
                     }
                 }
             } else {
-                secretCharacteristic?.let { g.readCharacteristic(it) }
+                secretCharacteristic?.let { readCharacteristic(g, it) }
             }
             showStatus("BLE Clipboard 준비 중")
         }
@@ -327,9 +417,10 @@ class ClipboardBridgeService : Service() {
             descriptor: BluetoothGattDescriptor,
             status: Int
         ) {
+            if (gatt !== g || destroyed) return
             if (descriptor.uuid == CCCD_UUID) {
                 if (status == BluetoothGatt.GATT_SUCCESS) {
-                    secretCharacteristic?.let { g.readCharacteristic(it) }
+                    secretCharacteristic?.let { readCharacteristic(g, it) }
                 } else {
                     showStatus("BLE Clipboard 알림 구독 실패: $status")
                 }
@@ -342,6 +433,8 @@ class ClipboardBridgeService : Service() {
             characteristic: BluetoothGattCharacteristic,
             status: Int
         ) {
+            if (gatt !== g || destroyed) return
+            readCompleted(g)
             if (status == BluetoothGatt.GATT_SUCCESS)
                 handleCharacteristicRead(characteristic, characteristic.value ?: byteArrayOf())
             else if (characteristic.uuid == SECRET_UUID)
@@ -370,6 +463,8 @@ class ClipboardBridgeService : Service() {
             value: ByteArray,
             status: Int
         ) {
+            if (gatt !== g || destroyed) return
+            readCompleted(g)
             if (status == BluetoothGatt.GATT_SUCCESS)
                 handleCharacteristicRead(characteristic, value)
             else if (characteristic.uuid == SECRET_UUID)
@@ -394,7 +489,8 @@ class ClipboardBridgeService : Service() {
 
         @Suppress("DEPRECATION")
         override fun onCharacteristicChanged(g: BluetoothGatt, characteristic: BluetoothGattCharacteristic) {
-            handleCharacteristicChanged(characteristic, characteristic.value ?: byteArrayOf())
+            if (gatt === g && !destroyed)
+                handleCharacteristicChanged(characteristic, characteristic.value ?: byteArrayOf())
         }
 
         override fun onCharacteristicChanged(
@@ -402,7 +498,8 @@ class ClipboardBridgeService : Service() {
             characteristic: BluetoothGattCharacteristic,
             value: ByteArray
         ) {
-            handleCharacteristicChanged(characteristic, value)
+            if (gatt === g && !destroyed)
+                handleCharacteristicChanged(characteristic, value)
         }
 
         override fun onCharacteristicWrite(
@@ -410,13 +507,14 @@ class ClipboardBridgeService : Service() {
             characteristic: BluetoothGattCharacteristic,
             status: Int
         ) {
+            if (gatt !== g || destroyed) return
             if (characteristic.uuid == RX_UUID) {
                 val wasAck = bleWritingAck
                 bleWriting = false
                 bleWritingAck = false
 
                 if (status == BluetoothGatt.GATT_SUCCESS) {
-                    writeNextBle()
+                    if (pendingReads.isNotEmpty()) drainReads() else writeNextBle()
                 } else if (wasAck) {
                     bleAckQueue.clear()
                     showStatus(
@@ -435,7 +533,7 @@ class ClipboardBridgeService : Service() {
     private fun retrySecretRead(g: BluetoothGatt) {
         main.postDelayed({
             if (checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT) == PackageManager.PERMISSION_GRANTED)
-                secretCharacteristic?.let { g.readCharacteristic(it) }
+                secretCharacteristic?.let { readCharacteristic(g, it) }
         }, 2000)
     }
 
@@ -446,6 +544,7 @@ class ClipboardBridgeService : Service() {
         when (characteristic.uuid) {
             SECRET_UUID -> {
                 if (value.size != 64) return
+                handshakeComplete = true
                 credential = Credential(
                     value.copyOfRange(0, 32),
                     value.copyOfRange(32, 64)
@@ -456,9 +555,9 @@ class ClipboardBridgeService : Service() {
                 if (checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT) == PackageManager.PERMISSION_GRANTED) {
                     val capabilities = capabilitiesCharacteristic
                     if (capabilities != null)
-                        gatt?.readCharacteristic(capabilities)
+                        gatt?.let { g -> readCharacteristic(g, capabilities) }
                     else
-                        directLinkCharacteristic?.let { gatt?.readCharacteristic(it) }
+                        directLinkCharacteristic?.let { gatt?.let { g -> readCharacteristic(g, it) } }
                 }
             }
             CAPABILITIES_UUID -> {
@@ -490,7 +589,7 @@ class ClipboardBridgeService : Service() {
 
                         if (needP2P &&
                             checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT) == PackageManager.PERMISSION_GRANTED) {
-                            directLinkCharacteristic?.let { gatt?.readCharacteristic(it) }
+                            directLinkCharacteristic?.let { gatt?.let { g -> readCharacteristic(g, it) } }
                         }
                     }
                 } else if (
@@ -498,7 +597,7 @@ class ClipboardBridgeService : Service() {
                     checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT) == PackageManager.PERMISSION_GRANTED) {
                     // Older servers do not expose P2P demand. Only probe DirectLink
                     // when a queued local payload actually requires the fast path.
-                    directLinkCharacteristic?.let { gatt?.readCharacteristic(it) }
+                    directLinkCharacteristic?.let { gatt?.let { g -> readCharacteristic(g, it) } }
                 }
 
                 scheduleCapabilitiesRead()
@@ -541,7 +640,7 @@ class ClipboardBridgeService : Service() {
 
             if (gatt != null &&
                 checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT) == PackageManager.PERMISSION_GRANTED) {
-                capabilitiesCharacteristic?.let { gatt?.readCharacteristic(it) }
+                capabilitiesCharacteristic?.let { gatt?.let { g -> readCharacteristic(g, it) } }
             }
         }, 5000)
     }
@@ -576,7 +675,7 @@ class ClipboardBridgeService : Service() {
                 gatt != null &&
                 p2p?.ready != true &&
                 checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT) == PackageManager.PERMISSION_GRANTED) {
-                directLinkCharacteristic?.let { gatt?.readCharacteristic(it) }
+                directLinkCharacteristic?.let { gatt?.let { g -> readCharacteristic(g, it) } }
             }
         }, delay)
     }
@@ -766,7 +865,7 @@ class ClipboardBridgeService : Service() {
         if (checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT) ==
             PackageManager.PERMISSION_GRANTED) {
             directLinkCharacteristic?.let {
-                gatt?.readCharacteristic(it)
+                gatt?.let { g -> readCharacteristic(g, it) }
                 return
             }
         }
@@ -1216,7 +1315,7 @@ class ClipboardBridgeService : Service() {
                 if (direct != null)
                     requestDirectNetwork()
                 else
-                    directLinkCharacteristic?.let { gatt?.readCharacteristic(it) }
+                    directLinkCharacteristic?.let { gatt?.let { g -> readCharacteristic(g, it) } }
             } else if (directConfig != null && p2p?.ready != true) {
                 requestDirectNetwork()
             }
@@ -1494,7 +1593,8 @@ class ClipboardBridgeService : Service() {
     }
 
     private fun writeNextBle() {
-        if (bleWriting) return
+        if (Looper.myLooper() != Looper.getMainLooper()) { main.post { writeNextBle() }; return }
+        if (destroyed || recoveringGatt != null || readingGatt != null || bleWriting) return
 
         val g = gatt
         val characteristic = rx
@@ -1589,6 +1689,11 @@ class ClipboardBridgeService : Service() {
 
         bleWriting = true
         bleWritingAck = ackFrame != null
+        val writeAttempt = ++writeGeneration
+        main.postDelayed({
+            if (gatt === g && bleWriting && writeGeneration == writeAttempt)
+                restartGatt(g, "Bluetooth 쓰기 응답 시간 초과 · 재연결")
+        }, 10_000)
 
         val result =
             if (Build.VERSION.SDK_INT >= 33) {
@@ -1849,6 +1954,8 @@ class ClipboardBridgeService : Service() {
     }
 
     private fun showStatus(text: String) {
+        if (destroyed) return
+        latestStatus = text + pendingSummary()
         val manager = getSystemService(NotificationManager::class.java)
         val notification = Notification.Builder(this, CHANNEL)
             .setSmallIcon(android.R.drawable.stat_sys_data_bluetooth)
@@ -1871,6 +1978,11 @@ class ClipboardBridgeService : Service() {
         main.post { Toast.makeText(this, text, Toast.LENGTH_SHORT).show() }
 
     override fun onDestroy() {
+        destroyed = true
+        latestStatus = "연결 서비스가 중지됐어요."
+        main.removeCallbacksAndMessages(null)
+        if (checkSelfPermission(Manifest.permission.BLUETOOTH_SCAN) == PackageManager.PERMISSION_GRANTED)
+            runCatching { getSystemService(BluetoothManager::class.java).adapter?.bluetoothLeScanner?.stopScan(scanCallback) }
         synchronized(bleSendLock) {
             bleActiveContent = null
             bleActivePersistentShareId = null

@@ -29,10 +29,10 @@ public sealed class Outbox
                 // This path runs for every raw mouse packet. Keep it allocation-free
                 // so pointer coalescing itself cannot introduce GC jitter.
                 var canMerge =
-                    x is >= short.MinValue and <= short.MaxValue &&
-                    y is >= short.MinValue and <= short.MaxValue &&
-                    wheel is >= short.MinValue and <= short.MaxValue &&
-                    pan is >= short.MinValue and <= short.MaxValue;
+                    x is >= -32767 and <= 32767 &&
+                    y is >= -32767 and <= 32767 &&
+                    wheel is >= -32767 and <= 32767 &&
+                    pan is >= -32767 and <= 32767;
 
                 if (canMerge)
                 {
@@ -71,6 +71,24 @@ public sealed class Outbox
                 }
             }
             await _signal.WaitAsync(token).ConfigureAwait(false);
+        }
+    }
+    // Include motion received while pacing, but never cross a key, click, wheel or target boundary.
+    public Envelope CoalescePendingMotion(Envelope item)
+    {
+        lock (_gate)
+        {
+            while (item.Packet is PointerPacket a && a.Wheel == 0 && a.Pan == 0 &&
+                   _items.First is { } first && first.Value.Epoch == item.Epoch &&
+                   first.Value.Packet is PointerPacket b && b.Buttons == a.Buttons &&
+                   b.Wheel == 0 && b.Pan == 0)
+            {
+                long x = (long)a.X + b.X, y = (long)a.Y + b.Y;
+                if (x is < -32767 or > 32767 || y is < -32767 or > 32767) break;
+                item = new(item.Epoch, new PointerPacket(a.Buttons, (int)x, (int)y));
+                _items.RemoveFirst();
+            }
+            return item;
         }
     }
     public void Clear()

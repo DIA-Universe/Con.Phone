@@ -58,6 +58,8 @@ public sealed class ClipboardSyncCoordinator : IAsyncDisposable
     }
 
     public int BleSubscribers => _ble.Subscribers;
+    public bool ActiveTargetConnected => _approvedDeviceId() is { } id &&
+        (_p2p.HasClient(id) || _ble.HasSubscriber(id));
     public bool P2PLinkRunning => _direct.Running;
     public bool P2PChannelConnected => _p2p.Connected;
     public string? P2PHostAddress => _direct.Config?.HostAddress;

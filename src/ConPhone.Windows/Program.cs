@@ -7,6 +7,17 @@ internal static class Program
     {
         ApplicationConfiguration.Initialize();
 
+        if (args.Length == 1 && args[0] == "--input-selftest")
+        {
+            try { InputSelfTest.Run(); }
+            catch (Exception ex)
+            {
+                Console.Error.WriteLine(ex);
+                Environment.ExitCode = 1;
+            }
+            return;
+        }
+
         if (args.Length >= 4 &&
             args[0].Equals("--apply-update", StringComparison.OrdinalIgnoreCase) &&
             int.TryParse(args[2], out var oldProcessId))

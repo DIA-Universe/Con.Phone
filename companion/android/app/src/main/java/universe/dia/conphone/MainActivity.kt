@@ -16,6 +16,17 @@ import android.content.res.ColorStateList
 import android.view.WindowInsets
 
 class MainActivity : Activity() {
+    private val statusHandler = android.os.Handler(android.os.Looper.getMainLooper())
+    private val statusPoll = object : Runnable {
+        override fun run() {
+            statusText.text = ClipboardBridgeService.latestStatus
+            statusHandler.postDelayed(this, 500)
+        }
+    }
+    private var lastQueuedClip: String? = null
+    private val clipListener = android.content.ClipboardManager.OnPrimaryClipChangedListener {
+        if (hasWindowFocus()) sendFocusedClipboard(false)
+    }
     private val requestCode = 7001
     private var pendingServiceIntent: Intent? = null
 
@@ -89,11 +100,9 @@ class MainActivity : Activity() {
         connect.addView(statusText)
         button(connect, "PC 연결 시작", true) { ensurePermissionsAndStart() }
 
-        val send = card(root, "2. 복사한 내용 보내기", "텍스트나 이미지를 복사한 뒤 아래 버튼을 누르세요.")
+        val send = card(root, "2. 복사한 내용 보내기", "복사한 뒤 이 화면으로 돌아오면 자동으로 PC에 보냅니다. 다른 앱에서는 공유 → Con.Phone도 사용할 수 있어요.")
         button(send, "PC로 보내기", true) {
-            pendingServiceIntent = Intent(this, ClipboardBridgeService::class.java)
-                .setAction(ClipboardBridgeService.ACTION_SEND)
-            ensurePermissionsAndStart()
+            sendFocusedClipboard(true)
         }
         send.addView(text("다른 앱에서는 공유 → Con.Phone을 선택해도 보낼 수 있어요.", 14f))
 
@@ -107,10 +116,53 @@ class MainActivity : Activity() {
             stopService(Intent(this, ClipboardBridgeService::class.java))
             statusText.text = "연결 서비스를 중지했어요. 다시 연결하려면 위 버튼을 누르세요."
         }
-        root.addView(text("PC → 휴대폰: PC에서 복사한 뒤 휴대폰 입력으로 전환하세요. 이미지 붙여넣기는 사용하는 앱에 따라 지원 여부가 달라요.", 13f))
+        root.addView(text("PC → 휴대폰: PC의 클립보드 동기화를 켜면 복사할 때 자동 전송합니다. Android 정책상 다른 앱을 사용하는 동안에는 폰의 클립보드를 자동으로 읽을 수 없어요. 이미지 붙여넣기는 사용하는 앱에 따라 지원 여부가 달라요.", 13f))
         setContentView(scroll)
         // Explain permissions before requesting them; explicit share intents still start immediately.
         if (pendingServiceIntent != null) ensurePermissionsAndStart()
+    }
+
+    override fun onResume() {
+        super.onResume()
+        statusHandler.post(statusPoll)
+        getSystemService(android.content.ClipboardManager::class.java).addPrimaryClipChangedListener(clipListener)
+    }
+
+    override fun onPause() {
+        statusHandler.removeCallbacks(statusPoll)
+        getSystemService(android.content.ClipboardManager::class.java).removePrimaryClipChangedListener(clipListener)
+        super.onPause()
+    }
+
+    override fun onWindowFocusChanged(hasFocus: Boolean) {
+        super.onWindowFocusChanged(hasFocus)
+        if (hasFocus && hasBluetoothPermissions()) sendFocusedClipboard(false)
+    }
+
+    private fun sendFocusedClipboard(manual: Boolean) {
+        if (!hasWindowFocus()) return
+        if (!hasBluetoothPermissions()) { if (manual) ensurePermissionsAndStart(); return }
+        runCatching {
+            val clip = getSystemService(android.content.ClipboardManager::class.java).primaryClip
+                ?: return
+            if (clip.itemCount == 0) return
+            // Our own incoming clipboard must not echo back to the PC.
+            if (!manual && clip.description.label?.toString()?.startsWith("Con.Phone") == true) return
+            val item = clip.getItemAt(0)
+            val text = item.text?.toString()
+            val key = if (!text.isNullOrEmpty()) "text:$text" else "uri:${item.uri}"
+            if (!manual && key == lastQueuedClip) return
+            val store = AndroidSharedPayloadStore(this)
+            if (!text.isNullOrEmpty()) store.saveText(text)
+            else if (item.uri != null) store.saveImage(item.uri, contentResolver.getType(item.uri))
+            else return
+            lastQueuedClip = key
+            pendingServiceIntent = Intent(this, ClipboardBridgeService::class.java)
+                .setAction(ClipboardBridgeService.ACTION_DRAIN_SHARED)
+            ensurePermissionsAndStart()
+        }.onFailure {
+            android.widget.Toast.makeText(this, "클립보드 준비 실패: ${it.message}", android.widget.Toast.LENGTH_LONG).show()
+        }
     }
 
     private fun ensurePermissionsAndStart() {

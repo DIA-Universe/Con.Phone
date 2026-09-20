@@ -16,7 +16,8 @@ function Require-Command([string]$Name, [string]$Hint) {
     }
 }
 
-Write-Host "Con.Phone 0.3.0 TEST NOW" -ForegroundColor Cyan
+$version = ([xml](Get-Content (Join-Path $repo "src/ConPhone.Windows/ConPhone.Windows.csproj") -Raw)).Project.PropertyGroup.Version
+Write-Host "Con.Phone $version TEST NOW" -ForegroundColor Cyan
 Write-Host "Repo: $repo"
 
 if ($Target -in @("all", "windows")) {
@@ -67,7 +68,7 @@ if ($Target -in @("all", "android")) {
     $reports = Join-Path $artifacts 'android-test-results'
     New-Item -ItemType Directory -Path $reports -Force | Out-Null
     Copy-Item (Join-Path $project 'app/build/test-results/testDebugUnitTest/*.xml') $reports -Force
-    $apkOut = Join-Path $artifacts "ConPhone-Companion-0.3.0-debug.apk"
+    $apkOut = Join-Path $artifacts "ConPhone-Companion-$version-debug.apk"
     Copy-Item -LiteralPath $apk -Destination $apkOut -Force
     $hash = (Get-FileHash -LiteralPath $apkOut -Algorithm SHA256).Hash
     Set-Content -LiteralPath "$apkOut.sha256" -Value "$hash  $(Split-Path -Leaf $apkOut)" -NoNewline
@@ -76,12 +77,12 @@ if ($Target -in @("all", "android")) {
 Write-Host ""
 Write-Host "== 실기기 최소 테스트 순서 ==" -ForegroundColor Cyan
 Write-Host "1. Windows Mobile Hotspot을 끕니다."
-Write-Host "2. 휴대폰의 기존 Con.Phone Bluetooth 등록을 삭제하고 다시 페어링합니다."
-Write-Host "3. Windows ConPhone.exe와 Android/iOS Companion 0.3.0을 실행합니다."
+Write-Host "2. 기존 Bluetooth 페어링을 유지합니다. HID 구독이 없을 때만 다시 페어링합니다."
+Write-Host "3. Windows ConPhone.exe와 Android Companion $version 을 실행합니다."
 Write-Host "4. 같은 Wi-Fi에는 연결하지 않은 상태에서 테스트합니다."
 Write-Host "5. 마우스 60초 이동/드래그/휠, 한영키, WIN+L, 미디어키를 확인합니다."
-Write-Host "6. PC 텍스트 복사 -> 휴대폰 전환 -> 붙여넣기를 확인합니다."
+Write-Host "6. 기기간 복붙을 켠 뒤 PC 텍스트 복사 -> 폰 붙여넣기를 확인합니다 (입력 전환 불필요)."
 Write-Host "7. 큰 이미지는 Direct Wi-Fi/P2P 승인을 거쳐 전송되는지 확인합니다."
-Write-Host "8. 휴대폰 -> PC는 보내기 버튼 또는 공유 -> Con.Phone으로 확인합니다."
+Write-Host "8. 폰에서 복사 -> Companion 열기 또는 공유 -> Con.Phone -> PC 붙여넣기를 확인합니다."
 Write-Host ""
 Write-Host "자세한 체크리스트: docs/RELEASE_TEST_0.3.0.md"
