@@ -2,6 +2,23 @@ import XCTest
 @testable import ConPhoneCompanion
 
 final class ClipboardProtocolTests: XCTestCase {
+    func testP2PSessionKeyMatchesWindowsVector() throws {
+        let secret = Data((0..<32).map { UInt8($0) })
+        let deviceHash = Data((0..<32).map { UInt8($0 + 32) })
+        let clientNonce = Data((0..<16).map { UInt8($0) })
+        let serverNonce = Data((0..<16).map { UInt8($0 + 16) })
+
+        let key = try P2PSecurity.deriveSessionKey(
+            secret: secret,
+            deviceHash: deviceHash,
+            clientNonce: clientNonce,
+            serverNonce: serverNonce)
+
+        XCTAssertEqual(
+            key.map { String(format: "%02X", $0) }.joined(),
+            "16BE739CCB5056785C93854CFD3C384105BE7F799292A5BEBA8FFE2BE73248D0")
+    }
+
     func testTextRoundTripOutOfOrder() throws {
         let source = try ClipboardProtocol.text(String(repeating: "한글🙂abc", count: 300))
         let frames = try ClipboardProtocol.encode(source, chunkSize: 256)
