@@ -51,6 +51,7 @@ public sealed class ClipboardHistoryService : IDisposable
     private bool _selfWrite;
     private bool _disposed;
     private string? _lastRemoteHash;
+    private uint _lastRemoteClipboardSequence;
     private DateTimeOffset _lastRemoteAppliedAt;
     private uint _suppressedSelfClipboardSequence;
     private DateTimeOffset _suppressedSelfClipboardUntil;
@@ -545,7 +546,9 @@ public sealed class ClipboardHistoryService : IDisposable
                 _lastRemoteHash,
                 content.Hash,
                 StringComparison.Ordinal) &&
-            now - _lastRemoteAppliedAt <= TimeSpan.FromMinutes(2))
+            now - _lastRemoteAppliedAt <= TimeSpan.FromMinutes(2) &&
+            _lastRemoteClipboardSequence != 0 &&
+            GetClipboardSequenceNumber() == _lastRemoteClipboardSequence)
         {
             Status?.Invoke(
                 "최근 동일 Clipboard 재전송을 감지해 중복 적용을 생략했습니다.");
@@ -567,6 +570,7 @@ public sealed class ClipboardHistoryService : IDisposable
                 ArmSelfClipboardSequence();
                 AddText(text, publish: false);
                 _lastRemoteHash = content.Hash;
+                _lastRemoteClipboardSequence = GetClipboardSequenceNumber();
                 _lastRemoteAppliedAt = now;
                 changed = true;
                 Status?.Invoke("휴대폰에서 받은 텍스트를 Windows 클립보드에 적용했습니다.");
@@ -600,6 +604,7 @@ public sealed class ClipboardHistoryService : IDisposable
                 DateTime.Now);
 
             _lastRemoteHash = content.Hash;
+            _lastRemoteClipboardSequence = GetClipboardSequenceNumber();
             _lastRemoteAppliedAt = now;
             changed = true;
             Status?.Invoke("휴대폰에서 받은 이미지를 Windows 클립보드에 적용했습니다.");

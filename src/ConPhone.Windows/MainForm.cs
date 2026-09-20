@@ -27,6 +27,9 @@ public sealed partial class MainForm : Form
     private readonly CancellationTokenSource _lifetime = new();
     private readonly SemaphoreSlim _actions = new(1, 1);
     private int _healthCheckRunning, _clipboardSendRunning, _peerRefreshRunning;
+    private CancellationTokenSource? _automaticClipboardSend;
+    private int _clipboardFailureCount;
+    private DateTimeOffset _clipboardRetryAfter;
     private readonly SemaphoreSlim _inputActions = new(1, 1);
     private long _lastPointerDispatchTicks;
     private readonly Label _clipboardConnection = new() { AutoSize = true, MaximumSize = new Size(780, 0) };
@@ -1109,7 +1112,7 @@ public sealed partial class MainForm : Form
                     Log(
                         "휴대폰 클립보드를 Windows에 적용했습니다.");
                 }
-                else if (applied)
+                else if (applied && string.Equals(_latestLocalClipboard?.Hash, content.Hash, StringComparison.Ordinal))
                 {
                     // ACK/retry of an already-applied remote value succeeds
                     // without creating a new clipboard generation.
@@ -1172,6 +1175,9 @@ public sealed partial class MainForm : Form
             _clipboard.Status += text => Post(() => Log(text));
             _clipboard.ContentCaptured += content => Post(() =>
             {
+                _automaticClipboardSend?.Cancel();
+                _clipboardFailureCount = 0;
+                _clipboardRetryAfter = default;
                 _latestLocalClipboard = content;
                 Interlocked.Increment(ref _latestClipboardGeneration);
 
@@ -1719,7 +1725,9 @@ public sealed partial class MainForm : Form
         long epoch,
         string? targetId)
     {
-        if (_closing || _servicesPaused || Interlocked.CompareExchange(ref _clipboardSendRunning, 1, 0) != 0) return;
+        if (_closing || _servicesPaused || _clipboardFailureCount >= 3 ||
+            DateTimeOffset.UtcNow < _clipboardRetryAfter ||
+            Interlocked.CompareExchange(ref _clipboardSendRunning, 1, 0) != 0) return;
         try
         {
             await SyncLatestClipboardToPhoneAsync();
@@ -1730,7 +1738,8 @@ public sealed partial class MainForm : Form
         }
         catch (OperationCanceledException)
         {
-            Post(() => Log("클립보드 동기화 시간이 초과됐습니다. HID 입력은 계속 유지합니다."));
+            // New copies supersede stale transfers; the next timer sends the latest.
+            Post(() => Log("클립보드 전송을 취소했습니다. 새 복사 또는 연결 상태를 확인합니다."));
         }
         catch (Exception ex)
         {
@@ -1776,15 +1785,33 @@ public sealed partial class MainForm : Form
         if (content.Kind != ClipboardContentKind.TextUtf8 && !_settings.ClipboardAutoSendImages)
             return;
 
-        using var timeout = new CancellationTokenSource(
-            ClipboardSendTimeout(content));
-
-        if (await _clipboardSync.SendAsync(
+        using var timeout = new CancellationTokenSource(ClipboardSendTimeout(content));
+        _automaticClipboardSend = timeout;
+        var sent = false;
+        try
+        {
+            sent = await _clipboardSync.SendAsync(
                 content,
                 _settings.ClipboardBleImageLimitKb * 1024,
-                timeout.Token) &&
-            string.Equals(targetId, _ble.ApprovedId, StringComparison.Ordinal))
-            _lastSentClipboardGenerationByDevice[targetId] = generation;
+                timeout.Token);
+            if (sent && string.Equals(targetId, _ble.ApprovedId, StringComparison.Ordinal))
+                _lastSentClipboardGenerationByDevice[targetId] = generation;
+        }
+        finally
+        {
+            if (ReferenceEquals(_automaticClipboardSend, timeout)) _automaticClipboardSend = null;
+            if (generation == Interlocked.Read(ref _latestClipboardGeneration))
+            {
+                if (sent) _clipboardFailureCount = 0;
+                else
+                {
+                    _clipboardFailureCount++;
+                    _clipboardRetryAfter = DateTimeOffset.UtcNow.AddSeconds(5 * _clipboardFailureCount);
+                    if (_clipboardFailureCount >= 3)
+                        Log("클립보드 전송 3회 실패 · 자동 재시도를 멈췄습니다. Companion 연결 후 다시 복사하거나 ‘휴대폰으로 보내기’를 누르세요.");
+                }
+            }
+        }
     }
 
     private async Task SendSelectedClipboardToPhoneAsync()

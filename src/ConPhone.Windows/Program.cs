@@ -221,6 +221,13 @@ internal static class Program
             throw new InvalidOperationException(
                 "Remote clipboard replay incorrectly created a new change.");
 
+        // A fresh local copy between identical remote values must not be
+        // mistaken for an ACK replay and leave the local value stuck.
+        Clipboard.SetText("new local value between remote copies", TextDataFormat.UnicodeText);
+        if (!history.ApplyRemote(remoteMarker, out var reapplied) || !reapplied ||
+            Clipboard.GetText(TextDataFormat.UnicodeText) != remoteText)
+            throw new InvalidOperationException("Remote recopy after local replacement was incorrectly suppressed.");
+
         // Simulate a delayed WM_CLIPBOARDUPDATE arriving after ApplyRemote
         // released its immediate self-write guard.
         history.CaptureNow();

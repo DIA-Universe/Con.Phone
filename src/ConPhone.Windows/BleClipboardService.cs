@@ -82,6 +82,7 @@ public sealed class BleClipboardService : IDisposable
     private readonly Dictionary<(string DeviceId, Guid TransferId), TaskCompletionSource<bool>> _ackWaiters = [];
     private readonly ConcurrentDictionary<string, BleFragmentReassembler> _bleReassemblers = new();
     private readonly ConcurrentDictionary<string, ClipboardReassembler> _clipboardReassemblers = new();
+    private readonly ConcurrentDictionary<string, DateTimeOffset> _readyAfter = new();
 
     private GattServiceProvider? _provider;
     private GattLocalCharacteristic? _tx;
@@ -161,7 +162,12 @@ public sealed class BleClipboardService : IDisposable
             GattProtectionLevel.EncryptionRequired);
 
         _tx.SubscribedClientsChanged += (_, _) =>
-            Status?.Invoke($"Clipboard BLE 구독: {Subscribers}");
+        {
+            var liveIds = LiveClients(_tx).Select(SessionId).ToHashSet();
+            foreach (var id in _readyAfter.Keys)
+                if (!liveIds.Contains(id)) _readyAfter.TryRemove(id, out _);
+            Status?.Invoke($"Clipboard BLE 구독: {Subscribers} · 휴대폰 준비 확인 대기");
+        };
 
         _rx.WriteRequested += RxWriteRequested;
         _secret.ReadRequested += SecretReadRequested;
@@ -219,6 +225,7 @@ public sealed class BleClipboardService : IDisposable
             var id = args.Session.DeviceId.Id;
             if (!IsTrusted(id))
             {
+                Status?.Invoke("Clipboard 인증 거부 · 현재 연결한 휴대폰을 PC에서 등록해 주세요.");
                 request.RespondWithProtocolError(0x05);
                 return;
             }
@@ -229,6 +236,7 @@ public sealed class BleClipboardService : IDisposable
             deviceHash.CopyTo(credential, 0);
             secret.CopyTo(credential, 32);
             RespondRead(request, credential);
+            if (request.Offset == 0) Status?.Invoke("Clipboard 인증 정보 읽기 응답 완료");
         }
         catch (Exception ex)
         {
@@ -278,6 +286,9 @@ public sealed class BleClipboardService : IDisposable
                     ? (byte)1
                     : (byte)0;
             RespondRead(request, response);
+            if (request.Offset == 0 && response[8] == 1 &&
+                _readyAfter.TryAdd(args.Session.DeviceId.Id, DateTimeOffset.UtcNow.AddSeconds(1)))
+                Status?.Invoke("Clipboard 활성 대상 준비 응답 완료 · 전송 대기 해제");
         }
         finally
         {
@@ -522,6 +533,7 @@ public sealed class BleClipboardService : IDisposable
     }
 
     public bool HasSubscriber(string deviceId) =>
+        _readyAfter.TryGetValue(deviceId, out var readyAt) && DateTimeOffset.UtcNow >= readyAt &&
         LiveClients(_tx).Any(x => SessionId(x) == deviceId);
 
     public async Task SendAsync(
@@ -533,6 +545,8 @@ public sealed class BleClipboardService : IDisposable
         ObjectDisposedException.ThrowIf(_disposed, this);
         if (!IsActive(deviceId))
             throw new InvalidOperationException("승인된 기기에만 클립보드를 보낼 수 있습니다.");
+        if (!HasSubscriber(deviceId))
+            throw new InvalidOperationException("Companion이 인증·활성 대상 확인을 마치지 않았습니다. 휴대폰 앱의 연결 상태를 확인하세요.");
 
         var client = LiveClients(_tx).FirstOrDefault(x => SessionId(x) == deviceId)
             ?? throw new InvalidOperationException("휴대폰 Companion이 Clipboard BLE 알림을 구독하지 않았습니다.");
@@ -606,10 +620,12 @@ public sealed class BleClipboardService : IDisposable
                                     token).ConfigureAwait(false);
                         }
 
+                        using var notificationTimeout = CancellationTokenSource.CreateLinkedTokenSource(token);
+                        notificationTimeout.CancelAfter(TimeSpan.FromSeconds(5));
                         var result = await _tx.NotifyValueAsync(
                                 fragment.AsBuffer(),
                                 client)
-                            .AsTask(token).ConfigureAwait(false);
+                            .AsTask(notificationTimeout.Token).ConfigureAwait(false);
 
                         if (result.Status != GattCommunicationStatus.Success)
                             throw new InvalidOperationException(
@@ -632,7 +648,8 @@ public sealed class BleClipboardService : IDisposable
                         .ConfigureAwait(false);
                 }
 
-                await ack.Task.WaitAsync(token).ConfigureAwait(false);
+                Status?.Invoke($"Clipboard BLE 데이터 전송 완료 · {content.Data.Length:N0} bytes · 휴대폰 적용 확인 대기");
+                await ack.Task.WaitAsync(TimeSpan.FromSeconds(8), token).ConfigureAwait(false);
             }
             finally
             {

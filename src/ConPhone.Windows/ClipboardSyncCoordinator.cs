@@ -237,7 +237,7 @@ public sealed class ClipboardSyncCoordinator : IAsyncDisposable
             {
                 try
                 {
-                    await _p2p.SendAsync(id, content, sendToken).ConfigureAwait(false);
+                    await SendP2PBoundedAsync(id, content, sendToken).ConfigureAwait(false);
                     Status?.Invoke($"Clipboard 전송 완료 · P2P · {Describe(content)}");
                     return true;
                 }
@@ -255,7 +255,9 @@ public sealed class ClipboardSyncCoordinator : IAsyncDisposable
             var largeText =
                 content.Kind == ClipboardContentKind.TextUtf8 &&
                 content.Data.Length > 64 * 1024;
-            var bulkTransfer = isImage || largeText;
+            // Small screenshots fit comfortably over BLE. Do not start a Wi-Fi
+            // group or wait for P2P approval for every image.
+            var bulkTransfer = (isImage && content.Data.Length > 64 * 1024) || largeText;
             var bleAllowed =
                 !isImage ||
                 content.Data.Length <= bleImageLimitBytes;
@@ -296,7 +298,7 @@ public sealed class ClipboardSyncCoordinator : IAsyncDisposable
                 {
                     try
                     {
-                        await _p2p.SendAsync(id, content, sendToken).ConfigureAwait(false);
+                        await SendP2PBoundedAsync(id, content, sendToken).ConfigureAwait(false);
                         Status?.Invoke($"Clipboard 전송 완료 · P2P · {Describe(content)}");
                         return true;
                     }
@@ -355,6 +357,13 @@ public sealed class ClipboardSyncCoordinator : IAsyncDisposable
         {
             _send.Release();
         }
+    }
+
+    private async Task SendP2PBoundedAsync(string id, ClipboardContent content, CancellationToken token)
+    {
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(token);
+        timeout.CancelAfter(TimeSpan.FromSeconds(8));
+        await _p2p.SendAsync(id, content, timeout.Token).ConfigureAwait(false);
     }
 
     private async Task<bool> OnReceivedAsync(
