@@ -215,6 +215,22 @@ require("maxQueuedImageBytes = 40 * 1024 * 1024" in ios_share_store,
 require("sendPendingShareIfPresent" in ios_bridge,
         "iOS durable Share queue drain path missing")
 
+# Bluetooth recovery cadence must stay separate from the heavier peer refresh.
+main_form = read("src/ConPhone.Windows/MainForm.cs")
+require("_healthTimer = new() { Interval = 1500 }" in main_form,
+        "Windows HID/clipboard health timer must run every 1.5 seconds")
+require("_peerTimer = new() { Interval = 5000 }" in main_form,
+        "Windows peer refresh must remain at 5 seconds")
+require("await _ble.EnsureAdvertisingAsync()" in main_form and
+        "await _clipboardSync.EnsureHealthyAsync()" in main_form,
+        "Windows periodic HID/clipboard recovery hooks missing")
+
+# Android durable Share queue must preserve MIME and remain BLE-capable without P2P permission.
+require("saveImage(uri, intent.type)" in android_share,
+        "Android Share target must preserve image MIME in the durable queue")
+require("NEARBY_WIFI_DEVICES" not in android_share,
+        "Android Share target must not require Nearby Wi-Fi permission for BLE fallback")
+
 # Multi-device and active-target isolation.
 require("MaxDevices = 5" in trusted_store, "Trusted device cap must remain 5")
 require("IsActive(" in win_ble and "IsTrusted(" in win_ble,
