@@ -1001,7 +1001,7 @@ class ClipboardBridgeService : Service() {
         path: String?,
         mime: String?
     ) {
-        if (path.isNullOrWhiteSpace()) {
+        if (path.isNullOrBlank()) {
             toast("공유할 이미지가 없습니다.")
             return
         }
@@ -1637,7 +1637,7 @@ class ClipboardBridgeService : Service() {
         width: Int,
         height: Int
     ): Int {
-        const val maxDecodedPixels = 8_000_000L
+        val maxDecodedPixels = 8_000_000L
         var sample = 1
 
         while (
@@ -1903,6 +1903,7 @@ class ClipboardBridgeService : Service() {
         private val output = BufferedOutputStream(socket.getOutputStream())
         private val sendLock = Any()
         private val ackWaiters = ConcurrentHashMap<String, CompletableFuture<Unit>>()
+        @Volatile private var sessionKey: ByteArray? = null
         private var sendSequence = 0L
         private var receiveSequence = 0L
         @Volatile private var closed = false

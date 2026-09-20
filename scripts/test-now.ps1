@@ -1,4 +1,4 @@
-param(
+﻿param(
     [ValidateSet("all", "windows", "android")]
     [string]$Target = "all"
 )
@@ -20,11 +20,11 @@ Write-Host "Con.Phone 0.3.0 TEST NOW" -ForegroundColor Cyan
 Write-Host "Repo: $repo"
 
 if ($Target -in @("all", "windows")) {
-    Require-Command "dotnet" ".NET 8 SDK를 설치한 뒤 다시 실행하세요: https://dotnet.microsoft.com/download/dotnet/8.0"
+    Require-Command "dotnet" ".NET 10 SDK를 설치한 뒤 다시 실행하세요: https://dotnet.microsoft.com/download/dotnet/10.0"
 
     Write-Host ""
     Write-Host "== Windows/Core 검증 + EXE 생성 ==" -ForegroundColor Cyan
-    $verifyArgs = @("-Configuration", "Release", "-OutputRoot", (Join-Path $artifacts "windows"))
+    $verifyArgs = @{ Configuration = "Release"; OutputRoot = (Join-Path $artifacts "windows") }
     & (Join-Path $PSScriptRoot "verify-windows.ps1") @verifyArgs
 
     $exe = Join-Path $artifacts "windows/win-x64/ConPhone.exe"
@@ -36,27 +36,43 @@ if ($Target -in @("all", "windows")) {
 }
 
 if ($Target -in @("all", "android")) {
-    $gradle = Get-Command "gradle" -ErrorAction SilentlyContinue
-    if ($null -eq $gradle) {
-        Write-Warning "Gradle을 찾지 못해 Android APK 빌드는 건너뜁니다."
-        Write-Host "Android Studio에서 companion/android 을 열고 app > assembleDebug 를 실행하세요."
-    }
-    else {
-        Write-Host ""
-        Write-Host "== Android Companion APK ==" -ForegroundColor Cyan
-        & gradle --no-daemon -p (Join-Path $repo "companion/android") :app:assembleDebug
-
-        $apk = Join-Path $repo "companion/android/app/build/outputs/apk/debug/app-debug.apk"
-        if (!(Test-Path $apk -PathType Leaf)) {
-            throw "Android debug APK가 생성되지 않았습니다."
+    Require-Command "java" "JDK 17과 Android SDK 35를 설치하세요."
+    $source = Join-Path $repo "companion/android"
+    $project = $source
+    # AGP rejects non-ASCII project paths on Windows. Use a fresh staging copy.
+    if ($source -match '[^\x00-\x7F]') {
+        $project = Join-Path $env:LOCALAPPDATA ("ConPhoneBuild/android-" + [Guid]::NewGuid().ToString("N"))
+        if ($project -match '[^\x00-\x7F]') {
+            throw "Android requires an ASCII build path. Clone into C:\src\ConPhone and retry."
         }
-
-        $apkOut = Join-Path $artifacts "ConPhone-Companion-0.3.0-debug.apk"
-        Copy-Item $apk $apkOut -Force
-        Write-Host "Android TEST APK: $apkOut" -ForegroundColor Green
+        New-Item -ItemType Directory -Path $project -Force | Out-Null
+        & robocopy $source $project /E /XD .gradle build /XF local.properties /NFL /NDL /NJH /NJS
+        if ($LASTEXITCODE -ge 8) { throw "Android source staging failed." }
+        Write-Host "Android build path: $project"
     }
-}
+    $gradle = Join-Path $project "gradlew.bat"
+    if (!(Test-Path -LiteralPath $gradle)) { throw "Gradle Wrapper is missing: $gradle" }
+    Write-Host "== Android Companion tests + APK ==" -ForegroundColor Cyan
+    & $gradle --no-daemon -p $project :app:testDebugUnitTest :app:assembleDebug
+    if ($LASTEXITCODE -ne 0) { throw "Android tests/build failed (exit $LASTEXITCODE)." }
 
+    $apk = Join-Path $project "app/build/outputs/apk/debug/app-debug.apk"
+    if (!(Test-Path -LiteralPath $apk -PathType Leaf)) { throw "Android debug APK was not produced." }
+    if ((Get-Item -LiteralPath $apk).Length -eq 0) { throw "Android APK is empty." }
+    if ($project -ne $source) {
+        $expected = Join-Path $source "app/build/outputs/apk/debug"
+        New-Item -ItemType Directory -Path $expected -Force | Out-Null
+        Copy-Item -LiteralPath $apk -Destination (Join-Path $expected 'app-debug.apk') -Force
+    }
+    $reports = Join-Path $artifacts 'android-test-results'
+    New-Item -ItemType Directory -Path $reports -Force | Out-Null
+    Copy-Item (Join-Path $project 'app/build/test-results/testDebugUnitTest/*.xml') $reports -Force
+    $apkOut = Join-Path $artifacts "ConPhone-Companion-0.3.0-debug.apk"
+    Copy-Item -LiteralPath $apk -Destination $apkOut -Force
+    $hash = (Get-FileHash -LiteralPath $apkOut -Algorithm SHA256).Hash
+    Set-Content -LiteralPath "$apkOut.sha256" -Value "$hash  $(Split-Path -Leaf $apkOut)" -NoNewline
+    Write-Host "Android TEST APK: $apkOut" -ForegroundColor Green
+}
 Write-Host ""
 Write-Host "== 실기기 최소 테스트 순서 ==" -ForegroundColor Cyan
 Write-Host "1. Windows Mobile Hotspot을 끕니다."

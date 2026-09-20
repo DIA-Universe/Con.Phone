@@ -8,7 +8,7 @@
 
 ## 다운로드 / 실행
 
-저장소의 **Actions → Windows build and core tests → 성공한 실행 → Artifacts → ConPhone-win-x64**에서 내려받아 전체 압축을 푼 뒤 `ConPhone.exe`를 실행합니다. .NET 런타임을 포함하는 x64 배포본입니다. 코드 서명은 되어 있지 않습니다. 조직 보안 정책을 우회하거나 백신을 끄지 마세요.
+저장소의 **Actions → Windows build and core tests → 성공한 실행 → Artifacts → ConPhone-win-x64-single-exe**에서 내려받아 압축을 푼 뒤 `ConPhone.exe`를 실행합니다. .NET 런타임을 포함하는 x64 배포본입니다. 코드 서명은 되어 있지 않습니다. 조직 보안 정책을 우회하거나 백신을 끄지 마세요.
 
 **이름 주의:** GitHub 저장소/제품 이름은 Con.Phone이지만, Windows에서는 `CON` 및 `CON.*`가 예약되어 있습니다. 로컬 폴더와 실행 파일은 반드시 `ConPhone`처럼 점을 뺀 이름을 사용합니다. 저장소 이름 자체를 바꿀 필요는 없습니다.
 
@@ -79,13 +79,15 @@ powershell -ExecutionPolicy Bypass -File .\scripts\test-now.ps1 -Target windows
 - SHA-256: 같은 폴더의 `ConPhone.exe.sha256`
 - UI snapshot: `artifacts/test-now/windows/ui`
 
-Android Studio 또는 Gradle이 준비돼 있으면:
+JDK 17과 Android SDK 35가 준비돼 있고 `JAVA_HOME`, `ANDROID_HOME`이 설정돼 있으면 (Gradle 8.11.1은 저장소의 Wrapper가 다운로드합니다):
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\scripts\test-now.ps1 -Target all
 ```
 
 Android debug APK도 `artifacts/test-now/ConPhone-Companion-0.3.0-debug.apk`로 복사합니다.
+
+Android만 검증하려면 `-Target android`를 사용합니다. 단위 테스트도 실행하며 실패하면 즉시 중단합니다. Windows 작업 경로에 한글이 있으면 `%LOCALAPPDATA%/ConPhoneBuild` 아래의 영문 임시 경로로 소스를 복사해 빌드하고 APK와 테스트 결과를 가져옵니다. 직접 Gradle을 실행할 때는 영문 경로에서 `companion/android/gradlew.bat testDebugUnitTest assembleDebug`를 실행하세요. 상세 검증 범위와 Actions 제한 해제 절차는 `docs/BUILD_VERIFICATION.md`를 참고하세요.
 
 실기기에서는 Windows Mobile Hotspot을 끄고, 휴대폰의 기존 Con.Phone Bluetooth 등록을 삭제한 뒤 0.3.0 HID 프로필로 한 번 다시 페어링하는 것을 권장합니다. 자세한 항목은 `docs/RELEASE_TEST_0.3.0.md`를 따릅니다.
 

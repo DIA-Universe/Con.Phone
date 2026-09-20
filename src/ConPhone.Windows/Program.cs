@@ -98,13 +98,14 @@ internal static class Program
 
     private static void RunClipboardSelfTest()
     {
-        var marker = $"Con.Phone clipboard self-test {Guid.NewGuid():N}";
+        var marker = $"Con.Phone 한글🙂 clipboard self-test {Guid.NewGuid():N}";
         Clipboard.SetText(marker, TextDataFormat.UnicodeText);
 
         using var history = new ClipboardHistoryService(
             limit: 10,
             captureText: true,
-            captureImages: false);
+            captureImages: false,
+            storageRoot: Path.Combine(Path.GetTempPath(), "ConPhone-selftest", Guid.NewGuid().ToString("N")));
 
         var syncEvents = 0;
         var remoteSyncEvents = 0;
@@ -227,6 +228,15 @@ internal static class Program
         var restored = Clipboard.GetText(TextDataFormat.UnicodeText);
         if (!string.Equals(restored, marker, StringComparison.Ordinal))
             throw new InvalidOperationException("Restored Windows clipboard text did not match the original.");
+
+        // A valid signature alone must not allow truncated image data onto the clipboard.
+        var invalidPng = ConPhone.Core.ClipboardContent.FromImage(
+            ConPhone.Core.ClipboardContentKind.Png,
+            new byte[] { 137, 80, 78, 71, 13, 10, 26, 10, 1, 2, 3, 4 });
+        if (history.ApplyRemote(invalidPng, out var invalidChanged) || invalidChanged)
+            throw new InvalidOperationException("Truncated PNG was accepted by the Windows receiver.");
+        if (Clipboard.GetText(TextDataFormat.UnicodeText) != marker)
+            throw new InvalidOperationException("Invalid PNG changed the Windows clipboard.");
 
         history.Clear();
     }

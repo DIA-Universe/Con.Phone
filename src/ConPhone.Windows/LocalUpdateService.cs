@@ -166,7 +166,7 @@ public static class LocalUpdateService
         start.ArgumentList.Add(target);
         start.ArgumentList.Add(Environment.ProcessId.ToString());
         start.ArgumentList.Add(expectedSha256);
-        Process.Start(start)
+        using var installer = Process.Start(start)
             ?? throw new InvalidOperationException("업데이트 프로세스를 시작하지 못했습니다.");
     }
 
@@ -252,10 +252,12 @@ public static class LocalUpdateService
     {
         try
         {
-#pragma warning disable SYSLIB0026
+            // X509CertificateLoader cannot extract an Authenticode certificate
+            // from a signed PE file. Keep this narrowly scoped extraction API.
+#pragma warning disable SYSLIB0057
             using var certificate = new X509Certificate2(
                 X509Certificate.CreateFromSignedFile(path));
-#pragma warning restore SYSLIB0026
+#pragma warning restore SYSLIB0057
             return string.IsNullOrWhiteSpace(certificate.Thumbprint)
                 ? null
                 : certificate.Thumbprint;

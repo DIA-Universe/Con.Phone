@@ -6,3 +6,6 @@ artifacts/
 *.pfx
 *.cer
 TestResults/
+**/.gradle/
+companion/android/**/build/
+companion/android/local.properties

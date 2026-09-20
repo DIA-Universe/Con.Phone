@@ -482,8 +482,8 @@ public sealed class BleHidServer : IDisposable
 
         if (!enabled)
         {
-            foreach (var id in _throughputRequests.Keys.ToArray())
-                ReleaseThroughputRequest(id);
+            foreach (var connectedId in _throughputRequests.Keys.ToArray())
+                ReleaseThroughputRequest(connectedId);
             return;
         }
 

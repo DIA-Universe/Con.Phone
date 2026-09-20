@@ -57,19 +57,20 @@ public sealed class ClipboardHistoryService : IDisposable
     private uint _lastCapturedClipboardSequence;
     private long _captureGeneration;
 
-    private static readonly string Root = Path.Combine(
-        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-        "ConPhone");
-
-    private static readonly string ImageRoot = Path.Combine(Root, "ClipboardImages");
-    private static readonly string HistoryPath = Path.Combine(Root, "clipboard-history.json");
+    private readonly string Root;
+    private readonly string ImageRoot;
+    private readonly string HistoryPath;
 
     public event Action? Changed;
     public event Action<string>? Status;
     public event Action<ClipboardContent>? ContentCaptured;
 
-    public ClipboardHistoryService(int limit, bool captureText, bool captureImages)
+    public ClipboardHistoryService(int limit, bool captureText, bool captureImages, string? storageRoot = null)
     {
+        Root = storageRoot ?? Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "ConPhone");
+        ImageRoot = Path.Combine(Root, "ClipboardImages");
+        HistoryPath = Path.Combine(Root, "clipboard-history.json");
         if (Application.OleRequired() != ApartmentState.STA)
             throw new InvalidOperationException("클립보드 기록은 STA UI 스레드에서 시작해야 합니다.");
 
@@ -393,7 +394,7 @@ public sealed class ClipboardHistoryService : IDisposable
                     Text = text,
                     Preview = preview,
                     Hash = hash,
-                    CapturedAt = capturedAt ?? DateTime.Now
+                    CapturedAt = DateTime.Now
                 });
 
                 _entries.Sort(
@@ -729,7 +730,7 @@ public sealed class ClipboardHistoryService : IDisposable
         }
     }
 
-    private static bool TryResolveImage(string? fileName, out string path)
+    private bool TryResolveImage(string? fileName, out string path)
     {
         path = "";
         if (string.IsNullOrWhiteSpace(fileName)) return false;
@@ -741,7 +742,7 @@ public sealed class ClipboardHistoryService : IDisposable
         return File.Exists(path);
     }
 
-    private static void DeleteImageLocked(ClipboardEntry entry)
+    private void DeleteImageLocked(ClipboardEntry entry)
     {
         if (entry.Kind != ClipboardEntryKind.Image) return;
         if (!TryResolveImage(entry.ImageFileName, out var path)) return;
