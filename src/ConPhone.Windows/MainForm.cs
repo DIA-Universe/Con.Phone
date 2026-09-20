@@ -203,6 +203,7 @@ public sealed class MainForm : Form
     };
 
     private readonly System.Windows.Forms.Timer _timer = new() { Interval = 750 };
+    private readonly System.Windows.Forms.Timer _healthTimer = new() { Interval = 1500 };
     private readonly System.Windows.Forms.Timer _peerTimer = new() { Interval = 5000 };
 
     private readonly bool _previewMode;
@@ -927,7 +928,7 @@ public sealed class MainForm : Form
         };
         _timer.Start();
 
-        _peerTimer.Tick += (_, _) =>
+        _healthTimer.Tick += (_, _) =>
         {
             Dispatch(async () =>
             {
@@ -938,10 +939,14 @@ public sealed class MainForm : Form
                     _settings.ClipboardSyncEnabled &&
                     _clipboardSync is not null)
                     await _clipboardSync.EnsureHealthyAsync();
-
-                if (_ble.Advertisement is "Started" or "StartedWithoutAllAdvertisementData")
-                    await RefreshPeersAsync(true);
             });
+        };
+        _healthTimer.Start();
+
+        _peerTimer.Tick += (_, _) =>
+        {
+            if (_ble.Advertisement is "Started" or "StartedWithoutAllAdvertisementData")
+                Dispatch(() => RefreshPeersAsync(true));
         };
         _peerTimer.Start();
 
@@ -2302,6 +2307,8 @@ public sealed class MainForm : Form
 
         _timer.Stop();
         _timer.Dispose();
+        _healthTimer.Stop();
+        _healthTimer.Dispose();
         _peerTimer.Stop();
         _peerTimer.Dispose();
 
