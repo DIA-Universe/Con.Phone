@@ -36,7 +36,8 @@ internal static class Program
 
             using var form = new MainForm(previewMode: true)
             {
-                Size = new Size(980, 800),
+                Size = args.Length >= 4 && int.TryParse(args[2], out var width) && int.TryParse(args[3], out var height)
+                    ? new Size(Math.Max(900, width), Math.Max(720, height)) : new Size(1060, 860),
                 StartPosition = FormStartPosition.Manual,
                 Location = new Point(-2000, -2000)
             };

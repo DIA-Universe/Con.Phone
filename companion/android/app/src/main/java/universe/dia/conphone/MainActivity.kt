@@ -8,82 +8,109 @@ import android.os.Bundle
 import android.widget.Button
 import android.widget.LinearLayout
 import android.widget.TextView
+import android.widget.ScrollView
+import android.graphics.Color
+import android.graphics.Typeface
+import android.graphics.drawable.GradientDrawable
+import android.content.res.ColorStateList
+import android.view.WindowInsets
 
 class MainActivity : Activity() {
     private val requestCode = 7001
     private var pendingServiceIntent: Intent? = null
 
+    private lateinit var statusText: TextView
+    private val blue = Color.rgb(37, 99, 235)
+    private val ink = Color.rgb(26, 28, 32)
+    private fun dp(value: Int) = (value * resources.displayMetrics.density).toInt()
+
+    private fun text(value: String, size: Float = 15f, bold: Boolean = false) = TextView(this).apply {
+        text = value
+        textSize = size
+        setTextColor(if (bold) ink else Color.rgb(85, 93, 109))
+        if (bold) setTypeface(typeface, Typeface.BOLD)
+        setPadding(0, dp(4), 0, dp(8))
+        setLineSpacing(dp(3).toFloat(), 1f)
+    }
+
+    private fun card(root: LinearLayout, title: String, description: String): LinearLayout {
+        val card = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(20), dp(16), dp(20), dp(16))
+            background = GradientDrawable().apply {
+                setColor(Color.WHITE)
+                cornerRadius = dp(16).toFloat()
+                setStroke(dp(1), Color.rgb(225, 230, 238))
+            }
+        }
+        root.addView(card, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = dp(16) })
+        card.addView(text(title, 19f, true))
+        card.addView(text(description))
+        return card
+    }
+
+    private fun button(parent: LinearLayout, label: String, primary: Boolean = false, action: () -> Unit) {
+        parent.addView(Button(this).apply {
+            text = label
+            isAllCaps = false
+            textSize = 15f
+            minHeight = dp(52)
+            backgroundTintList = ColorStateList.valueOf(if (primary) blue else Color.rgb(237, 242, 250))
+            setTextColor(if (primary) Color.WHITE else blue)
+            setOnClickListener { action() }
+        }, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(6) })
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         capturePendingServiceIntent(intent)
 
-        val padding = (20 * resources.displayMetrics.density).toInt()
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(padding, padding, padding, padding)
+            setPadding(dp(20), dp(24), dp(20), dp(24))
         }
-
-        root.addView(TextView(this).apply {
-            text = "Con.Phone Companion"
-            textSize = 26f
-        })
-        root.addView(TextView(this).apply {
-            text = "Windows Con.Phone과 텍스트/이미지 클립보드를 동기화합니다. " +
-                "같은 Wi-Fi를 사용하지 않아도 Windows Direct Wi-Fi/P2P로 연결하고, 사용할 수 없으면 BLE로 fallback합니다.\n\n" +
-                "Android → PC는 이 화면의 전송 버튼 또는 다른 앱의 공유 메뉴에서 Con.Phone을 선택해 보낼 수 있습니다."
-            textSize = 16f
-        })
-
-        root.addView(Button(this).apply {
-            text = "PC 연결 / 연결 유지"
-            setOnClickListener { ensurePermissionsAndStart() }
-        })
-
-        root.addView(Button(this).apply {
-            text = "현재 텍스트/이미지를 PC로 보내기"
-            setOnClickListener {
-                pendingServiceIntent =
-                    Intent(this@MainActivity, ClipboardBridgeService::class.java)
-                        .setAction(ClipboardBridgeService.ACTION_SEND)
-                ensurePermissionsAndStart()
+        val scroll = ScrollView(this).apply {
+            isFillViewport = true
+            setBackgroundColor(Color.rgb(243, 245, 249))
+            addView(root)
+            setOnApplyWindowInsetsListener { view, insets ->
+                val bars = insets.getInsets(WindowInsets.Type.systemBars())
+                view.setPadding(bars.left, bars.top, bars.right, bars.bottom)
+                insets
             }
+        }
+        root.addView(text("Con.Phone", 30f, true))
+        root.addView(text("복사한 내용을 PC와 휴대폰에서 함께.", 16f).apply {
+            setPadding(0, 0, 0, dp(24))
         })
 
-        root.addView(Button(this).apply {
-            text = "P2P 고속 전송 권한 확인"
-            setOnClickListener {
-                if (hasNearbyWifiPermission()) {
-                    android.widget.Toast.makeText(
-                        this@MainActivity,
-                        "P2P 고속 전송 권한이 허용되어 있습니다.",
-                        android.widget.Toast.LENGTH_SHORT
-                    ).show()
-                } else {
-                    requestP2PPermission()
-                }
-            }
-        })
+        val connect = card(root, "1. PC와 연결하기", "PC에서 Con.Phone을 실행하고 Bluetooth로 페어링해 주세요.")
+        statusText = text(if (hasBluetoothPermissions()) "Bluetooth 권한이 준비됐어요. PC 연결을 시작하세요." else "처음 연결할 때 주변 기기 권한을 허용해 주세요.", 14f)
+        connect.addView(statusText)
+        button(connect, "PC 연결 시작", true) { ensurePermissionsAndStart() }
 
-        root.addView(Button(this).apply {
-            text = "연결 서비스 중지"
-            setOnClickListener {
-                startService(
-                    Intent(this@MainActivity, ClipboardBridgeService::class.java)
-                        .setAction(ClipboardBridgeService.ACTION_STOP)
-                )
-            }
-        })
+        val send = card(root, "2. 복사한 내용 보내기", "텍스트나 이미지를 복사한 뒤 아래 버튼을 누르세요.")
+        button(send, "PC로 보내기", true) {
+            pendingServiceIntent = Intent(this, ClipboardBridgeService::class.java)
+                .setAction(ClipboardBridgeService.ACTION_SEND)
+            ensurePermissionsAndStart()
+        }
+        send.addView(text("다른 앱에서는 공유 → Con.Phone을 선택해도 보낼 수 있어요.", 14f))
 
-        root.addView(TextView(this).apply {
-            text = "\nPC에서 휴대폰 입력으로 전환할 때 최신 클립보드가 자동으로 전송됩니다. " +
-                "Nearby Wi-Fi 권한을 거부해도 BLE 텍스트/작은 이미지는 계속 동작하고, " +
-                "큰 이미지 P2P 고속 전송만 사용할 수 없습니다. " +
-                "이미지 붙여넣기는 대상 Android 앱이 이미지 클립보드 URI를 지원해야 합니다."
-            textSize = 14f
-        })
-
-        setContentView(root)
-        ensurePermissionsAndStart()
+        val options = card(root, "연결 설정", "같은 Wi-Fi에 연결할 필요는 없어요. 큰 이미지를 빠르게 보내려면 추가 권한을 허용해 주세요.")
+        button(options, "빠른 이미지 전송 설정") {
+            if (hasNearbyWifiPermission()) {
+                android.widget.Toast.makeText(this, "빠른 전송 권한이 허용되어 있어요.", android.widget.Toast.LENGTH_SHORT).show()
+            } else requestP2PPermission()
+        }
+        button(options, "연결 중지") {
+            stopService(Intent(this, ClipboardBridgeService::class.java))
+            statusText.text = "연결 서비스를 중지했어요. 다시 연결하려면 위 버튼을 누르세요."
+        }
+        root.addView(text("PC → 휴대폰: PC에서 복사한 뒤 휴대폰 입력으로 전환하세요. 이미지 붙여넣기는 사용하는 앱에 따라 지원 여부가 달라요.", 13f))
+        setContentView(scroll)
+        // Explain permissions before requesting them; explicit share intents still start immediately.
+        if (pendingServiceIntent != null) ensurePermissionsAndStart()
     }
 
     private fun ensurePermissionsAndStart() {
@@ -92,6 +119,7 @@ class MainActivity : Activity() {
             return
         }
 
+        statusText.text = "PC 연결을 요청했어요. 실제 연결 상태는 Con.Phone 알림에서 확인하세요."
         startForegroundService(
             Intent(this, ClipboardBridgeService::class.java)
                 .setAction(ClipboardBridgeService.ACTION_START)
@@ -169,6 +197,8 @@ class MainActivity : Activity() {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
         if (requestCode == this.requestCode && hasBluetoothPermissions()) {
             ensurePermissionsAndStart()
+        } else if (requestCode == this.requestCode) {
+            statusText.text = "Bluetooth 권한이 필요해요. ‘PC 연결 시작’을 눌러 다시 허용해 주세요."
         } else if (requestCode == this.requestCode + 1) {
             if (hasNearbyWifiPermission()) {
                 android.widget.Toast.makeText(

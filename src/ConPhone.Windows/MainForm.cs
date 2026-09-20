@@ -4,17 +4,17 @@ using Microsoft.Win32;
 
 namespace ConPhone.Windows;
 
-public sealed class MainForm : Form
+public sealed partial class MainForm : Form
 {
-    private static readonly Color Bg = ColorTranslator.FromHtml("#F7F8F9");
+    private static readonly Color Bg = ColorTranslator.FromHtml("#F3F5F9");
     private static readonly Color Surface = Color.White;
     private static readonly Color Border = ColorTranslator.FromHtml("#DCDEE3");
     private static readonly Color TextColor = ColorTranslator.FromHtml("#1A1C20");
     private static readonly Color Secondary = ColorTranslator.FromHtml("#555D6D");
     private static readonly Color Tertiary = ColorTranslator.FromHtml("#868B94");
-    private static readonly Color Brand = ColorTranslator.FromHtml("#FF6600");
-    private static readonly Color BrandPressed = ColorTranslator.FromHtml("#E14D00");
-    private static readonly Color BrandWeak = ColorTranslator.FromHtml("#FFF2EC");
+    private static readonly Color Brand = ColorTranslator.FromHtml("#2563EB");
+    private static readonly Color BrandPressed = ColorTranslator.FromHtml("#1D4ED8");
+    private static readonly Color BrandWeak = ColorTranslator.FromHtml("#EAF1FF");
     private static readonly Color InfoWeak = ColorTranslator.FromHtml("#EFF6FF");
 
     private readonly BleHidServer _ble = new();
@@ -219,9 +219,9 @@ public sealed class MainForm : Form
         _activeHangulMode = _settings.HangulKeyMode;
         _activeModifierProfile = _settings.ModifierProfile;
         Text = $"Con.Phone {LocalUpdateService.CurrentVersion.ToString(3)} · Bluetooth 입력 허브";
-        Width = 980;
-        Height = 800;
-        MinimumSize = new Size(880, 700);
+        Width = 1060;
+        Height = 860;
+        MinimumSize = new Size(900, 720);
         StartPosition = FormStartPosition.CenterScreen;
         Font = new Font("Segoe UI", 10);
         BackColor = Bg;
@@ -248,7 +248,7 @@ public sealed class MainForm : Form
         if (_previewMode)
         {
             _tray.Visible = false;
-            _state.Text = "노트북 조작 중 · 검색:Started · K:1 M:1 LOCK:1 · 승인:준비됨";
+            _state.Text = "이 PC 사용 중  ·  휴대폰으로 전환할 준비가 되었어요";
             _peers.Items.Add(new Peer(
                 "preview-device",
                 "Galaxy / Android",
@@ -257,9 +257,13 @@ public sealed class MainForm : Form
                 Mouse: true,
                 SystemControl: true,
                 Paired: true,
-                Connected: true));
+                Connected: true,
+                Trusted: true,
+                Active: true));
             _peers.SelectedIndex = 0;
             _diagnosis.Text = "Bluetooth LE: True\r\nPeripheral 역할: True\r\n무선 상태: On";
+            _feedback.Text = "화면 미리보기 · 기기 정보는 예시입니다";
+            _toggleButton.Enabled = true;
         }
         else
         {
@@ -297,84 +301,114 @@ public sealed class MainForm : Form
     {
         var root = new TableLayoutPanel
         {
-            Dock = DockStyle.Fill,
-            Padding = new Padding(20, 18, 20, 20),
-            ColumnCount = 1,
-            RowCount = 3,
-            BackColor = Bg
+            Dock = DockStyle.Fill, Padding = new Padding(24, 16, 24, 12),
+            ColumnCount = 1, RowCount = 4, BackColor = Bg
         };
-
-        root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-        root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 74));
+        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 44));
         root.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 110));
         Controls.Add(root);
 
-        var header = new FlowLayoutPanel
-        {
-            Dock = DockStyle.Fill,
-            AutoSize = true,
-            FlowDirection = FlowDirection.TopDown,
-            WrapContents = false,
-            BackColor = Color.Transparent,
-            Margin = new Padding(0)
-        };
-
+        var header = new Panel { Dock = DockStyle.Fill, Margin = Padding.Empty };
         header.Controls.Add(new Label
         {
-            Text = "Con.Phone",
-            AutoSize = true,
-            Font = new Font("Segoe UI", 24, FontStyle.Bold),
-            ForeColor = TextColor,
-            Margin = new Padding(0)
+            Text = "Con.Phone", AutoSize = true, Location = new Point(0, 0),
+            Font = new Font("Segoe UI", 23, FontStyle.Bold), ForeColor = TextColor
         });
-
         header.Controls.Add(new Label
         {
-            Text = "노트북의 키보드·마우스를 Bluetooth HID로 휴대폰과 공유합니다.",
-            AutoSize = true,
-            ForeColor = Secondary,
-            Margin = new Padding(1, 4, 0, 0)
+            Text = "키보드, 마우스, 클립보드. 내 PC와 휴대폰을 하나처럼.",
+            AutoSize = true, Location = new Point(2, 44), ForeColor = Secondary
         });
-
         root.Controls.Add(header, 0, 0);
-
-        _state.Margin = new Padding(1, 14, 0, 12);
-        root.Controls.Add(_state, 0, 1);
+        var status = new Panel { Dock = DockStyle.Fill, BackColor = BrandWeak, Margin = new Padding(0, 0, 0, 8) };
+        _state.Dock = DockStyle.Fill;
+        _state.AutoSize = false;
+        _state.Padding = new Padding(12, 0, 0, 0);
+        _state.TextAlign = ContentAlignment.MiddleLeft;
+        _state.ForeColor = BrandPressed;
+        _state.Font = new Font("Segoe UI", 10, FontStyle.Bold);
+        _state.Text = "이 PC 사용 중  ·  Bluetooth를 확인하고 있어요";
+        status.Controls.Add(_state);
+        root.Controls.Add(status, 0, 1);
 
         var tabs = new TabControl
         {
-            Dock = DockStyle.Fill,
-            Font = new Font("Segoe UI", 10),
-            Padding = new Point(18, 7)
+            Dock = DockStyle.Fill, Font = new Font("Segoe UI", 10),
+            SizeMode = TabSizeMode.Fixed, ItemSize = new Size(148, 42),
+            DrawMode = TabDrawMode.OwnerDrawFixed, Margin = Padding.Empty
         };
-
+        tabs.DrawItem += (_, e) =>
+        {
+            bool selected = e.Index == tabs.SelectedIndex;
+            using var background = new SolidBrush(selected ? Surface : Bg);
+            e.Graphics.FillRectangle(background, e.Bounds);
+            TextRenderer.DrawText(e.Graphics, tabs.TabPages[e.Index].Text, tabs.Font,
+                e.Bounds, selected ? BrandPressed : Secondary,
+                TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter);
+            if (selected)
+            {
+                using var accent = new SolidBrush(Brand);
+                e.Graphics.FillRectangle(accent, e.Bounds.X + 18, e.Bounds.Bottom - 3, e.Bounds.Width - 36, 3);
+            }
+            if (tabs.Focused && selected) ControlPaint.DrawFocusRectangle(e.Graphics, Rectangle.Inflate(e.Bounds, -5, -5));
+        };
         tabs.TabPages.Add(BuildConnectionTab());
         tabs.TabPages.Add(BuildInputTab());
         tabs.TabPages.Add(BuildClipboardTab());
         tabs.TabPages.Add(BuildDiagnosticsTab());
         root.Controls.Add(tabs, 0, 2);
 
+        var footer = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 2, Margin = new Padding(0, 10, 0, 0) };
+        footer.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        footer.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 340));
+        footer.RowStyles.Add(new RowStyle(SizeType.Absolute, 48));
+        footer.RowStyles.Add(new RowStyle(SizeType.Absolute, 24));
+        _quickHotkeyHelp.Margin = new Padding(0, 12, 0, 0);
+        footer.Controls.Add(_quickHotkeyHelp, 0, 0);
+        _toggleButton = ActionButton("휴대폰으로 전환", ToggleAsync, primary: true);
+        _toggleButton.Enabled = false;
+        var back = ActionButton("이 PC로 돌아오기", ReturnLocalAsync, critical: true);
+        var actions = new FlowLayoutPanel { Dock = DockStyle.Fill, WrapContents = false, FlowDirection = FlowDirection.RightToLeft, Margin = Padding.Empty };
+        actions.Controls.Add(back);
+        actions.Controls.Add(_toggleButton);
+        footer.Controls.Add(actions, 1, 0);
+        _feedback.Dock = DockStyle.Fill;
+        _feedback.AutoEllipsis = true;
+        _feedback.ForeColor = Secondary;
+        _feedback.Text = "휴대폰을 연결하면 여기에서 바로 전환할 수 있어요.";
+        footer.Controls.Add(_feedback, 0, 1);
+        footer.SetColumnSpan(_feedback, 2);
+        root.Controls.Add(footer, 0, 3);
+
+        ConfigureFriendlyLists();
+        _mouseSpeed.Width = 280;
+        _scrollSpeed.Width = 280;
+        _mouseSpeed.TickStyle = TickStyle.None;
+        _scrollSpeed.TickStyle = TickStyle.None;
         _mouseSpeed.ValueChanged += (_, _) => _mouseSpeedValue.Text = $"{_mouseSpeed.Value}%";
         _scrollSpeed.ValueChanged += (_, _) => _scrollSpeedValue.Text = $"{_scrollSpeed.Value}%";
         _clipboardList.SelectedIndexChanged += (_, _) => UpdateClipboardDetail();
+        UpdateClipboardDetail();
     }
 
     private TabPage BuildConnectionTab()
     {
-        var tab = NewTab("연결");
+        var tab = NewTab("휴대폰 연결");
         var flow = TabFlow();
         tab.Controls.Add(flow);
 
         var connect = AutoSection();
-        connect.Controls.Add(SectionTitle("Bluetooth 연결"));
+        connect.Controls.Add(SectionTitle("1. 휴대폰 연결하기"));
         connect.Controls.Add(Help(
-            "HID 프로필에 잠금 및 미디어키 Report가 포함됩니다. 이전 프로필로 페어링했던 기기는 새 기능 테스트 전 한 번 재페어링하는 것을 권장합니다."));
+            "PC와 휴대폰의 Bluetooth를 켠 뒤, 휴대폰 Bluetooth 설정에서 이 PC를 선택하세요."));
         connect.Controls.Add(Help(
-            "Windows 내장 BLE에서는 앱별 Bluetooth 페어링 이름을 바꾸지 않습니다. Bluetooth 이름은 Windows 시스템 이름을 따르고, Con.Phone P2P 링크 이름은 클립보드 탭에서 변경할 수 있습니다.",
+            "처음 연결하나요? 아래 ‘휴대폰 연결 시작’을 누르고 양쪽 화면의 페어링 요청을 확인하세요.",
             Secondary));
         connect.Controls.Add(Row(
-            ActionButton("Bluetooth 다시 검사", async () => _diagnosis.Text = await BleHidServer.DiagnoseAsync()),
-            ActionButton("Bluetooth 검색 신호 확인 / 시작", async () =>
+            ActionButton("Bluetooth 설정 열기", () => OpenBluetoothSettingsAsync()),
+            ActionButton("휴대폰 연결 시작", async () =>
             {
                 _servicesPaused = false;
                 await _ble.StartAsync();
@@ -384,7 +418,7 @@ public sealed class MainForm : Form
 
                 Log("Bluetooth HID/Clipboard 서비스를 시작했습니다.");
             }, primary: true),
-            ActionButton("서비스 중지", async () =>
+            ActionButton("연결 일시 중지", async () =>
             {
                 _servicesPaused = true;
                 await ReturnLocalAsync();
@@ -398,26 +432,22 @@ public sealed class MainForm : Form
         flow.Controls.Add(connect);
 
         var devices = AutoSection();
-        devices.Controls.Add(SectionTitle("연결된 휴대폰"));
+        devices.Controls.Add(SectionTitle("2. 사용할 휴대폰 선택"));
         devices.Controls.Add(Help(
-            $"최대 {TrustedDeviceStore.MaxDevices}대까지 등록할 수 있습니다. ▶ 표시가 현재 활성 대상입니다. " +
-            "K/M은 키보드·마우스 구독, LOCK은 보조 잠금, MEDIA는 미디어키 구독 상태입니다."));
+            $"목록에서 내 휴대폰을 선택하고 ‘이 기기 사용’을 누르세요. 최대 {TrustedDeviceStore.MaxDevices}대를 등록할 수 있어요."));
         devices.Controls.Add(_peers);
         devices.Controls.Add(Row(
-            ActionButton("목록 갱신", () => RefreshPeersAsync(false)),
-            ActionButton("등록 / 활성화", ApproveSelectedAsync, primary: true),
-            ActionButton("활성 대상 전환", SelectSelectedTargetAsync),
-            ActionButton("선택 기기 해제", RevokeSelectedAsync)));
+            ActionButton("새로 고침", () => RefreshPeersAsync(false)),
+            ActionButton("이 기기 사용", ApproveSelectedAsync, primary: true),
+            ActionButton("선택 기기로 전환", SelectSelectedTargetAsync),
+            ActionButton("기기 등록 해제", RevokeSelectedAsync)));
         flow.Controls.Add(devices);
 
-        var quick = AutoSection();
-        quick.Controls.Add(SectionTitle("빠른 동작"));
-        quick.Controls.Add(_quickHotkeyHelp);
-        quick.Controls.Add(Row(
-            ActionButton("휴대폰으로 전환", ToggleAsync, primary: true),
-            ActionButton("노트북으로 복귀", ReturnLocalAsync),
-            ActionButton("휴대폰 잠금 + 복귀", LockPhoneAndReturnAsync)));
-        flow.Controls.Add(quick);
+        var tip = AutoSection(InfoWeak);
+        tip.Controls.Add(SectionTitle("이제 PC 키보드와 마우스로"));
+        tip.Controls.Add(Help("아래 ‘휴대폰으로 전환’을 누르면 입력이 휴대폰으로 이동합니다. 언제든 PC 복귀 단축키로 돌아오세요."));
+        tip.Controls.Add(ActionButton("휴대폰 잠그고 PC로 돌아오기", LockPhoneAndReturnAsync));
+        flow.Controls.Add(tip);
 
         return tab;
     }
@@ -431,7 +461,7 @@ public sealed class MainForm : Form
         var pointer = AutoSection();
         pointer.Controls.Add(SectionTitle("마우스 / 스크롤"));
         pointer.Controls.Add(Help(
-            "Windows 마우스 설정은 건드리지 않고 휴대폰으로 보내는 상대 좌표만 보정합니다. 100%가 원본 Raw Input입니다."));
+            "휴대폰에서 움직이는 마우스와 스크롤 속도를 조절하세요. 기본값은 100%입니다."));
         pointer.Controls.Add(LabeledRow("마우스 감도", Row(_mouseSpeed, _mouseSpeedValue)));
         pointer.Controls.Add(LabeledRow("스크롤 감도", Row(_scrollSpeed, _scrollSpeedValue, _invertScroll)));
         pointer.Controls.Add(Row(
@@ -455,7 +485,7 @@ public sealed class MainForm : Form
         keyboard.Controls.Add(Help(
             "Galaxy 기본값은 Right Alt입니다. 기기에서 한영 전환이 안 되면 LANG1, Ctrl+Space, Shift+Space 순서로 바꿔 테스트할 수 있습니다."));
         keyboard.Controls.Add(LabeledRow("한영키 전송 방식", _hangulMode));
-        keyboard.Controls.Add(LabeledRow("수정키 프로필", _modifierProfile));
+        keyboard.Controls.Add(LabeledRow("키보드 배열", _modifierProfile));
         keyboard.Controls.Add(Row(
             ActionButton("키보드 설정 저장", () =>
             {
@@ -473,7 +503,7 @@ public sealed class MainForm : Form
         var special = AutoSection();
         special.Controls.Add(SectionTitle("특수키 / 미디어"));
         special.Controls.Add(Help(
-            "표준 HID Consumer Control을 사용합니다. 기기가 MEDIA report를 구독해야 동작합니다."));
+            "연결한 휴대폰이 미디어키를 지원하면 음악과 볼륨을 조절할 수 있어요."));
         special.Controls.Add(Row(
             ActionButton("재생 / 일시정지", () => SendConsumerActionAsync(ConsumerAction.PlayPause), primary: true),
             ActionButton("이전 곡", () => SendConsumerActionAsync(ConsumerAction.PreviousTrack)),
@@ -487,7 +517,7 @@ public sealed class MainForm : Form
         var hotkeys = AutoSection();
         hotkeys.Controls.Add(SectionTitle("단축키"));
         hotkeys.Controls.Add(Help(
-            "드롭다운이 아니라 실제 키보드 조합을 읽습니다. ‘변경’을 누른 뒤 Ctrl·Alt·Shift·Win을 포함한 원하는 조합을 그대로 누르세요."));
+            "‘변경’을 누른 뒤 원하는 키 조합을 누르세요. Esc로 취소할 수 있어요."));
         hotkeys.Controls.Add(HotkeyRow("다음 등록 기기", _nextDeviceHotkeyBox, () => BeginHotkeyCapture(HotkeySlot.NextDevice)));
         hotkeys.Controls.Add(HotkeyRow("PC ↔ 휴대폰 전환", _toggleHotkeyBox, () => BeginHotkeyCapture(HotkeySlot.Toggle)));
         hotkeys.Controls.Add(HotkeyRow("비상 노트북 복귀", _emergencyHotkeyBox, () => BeginHotkeyCapture(HotkeySlot.Emergency)));
@@ -510,12 +540,12 @@ public sealed class MainForm : Form
         tab.Controls.Add(flow);
 
         var info = AutoSection(InfoWeak);
-        info.Controls.Add(SectionTitle("텍스트 · 이미지 기기간 복붙"));
+        info.Controls.Add(SectionTitle("복사한 내용을 휴대폰에서도"));
         info.Controls.Add(Help(
-            "PC와 휴대폰이 같은 Wi-Fi에 없다고 가정합니다. Windows가 Direct Wi-Fi/P2P 링크를 만들고, 사용할 수 없으면 Bluetooth LE로 fallback합니다.",
+            "텍스트나 이미지를 복사한 뒤 휴대폰으로 전환하세요. 선택한 기록을 직접 보낼 수도 있어요.",
             TextColor));
         info.Controls.Add(Help(
-            "동일 Wi-Fi는 필수가 아닙니다. 휴대폰에는 Con.Phone Companion이 필요하며 파일/폴더 복사는 지원하지 않습니다.",
+            "휴대폰에 Con.Phone Companion이 필요해요. 같은 Wi-Fi에 연결하지 않아도 사용할 수 있습니다.",
             Secondary));
         flow.Controls.Add(info);
 
@@ -524,18 +554,18 @@ public sealed class MainForm : Form
         history.Controls.Add(_clipboardList);
         history.Controls.Add(_clipboardDetail);
         history.Controls.Add(Row(
-            ActionButton("현재 클립보드 가져오기", () =>
+            ActionButton("지금 복사한 내용 가져오기", () =>
             {
                 _clipboard?.CaptureNow();
                 return Task.CompletedTask;
             }),
-            ActionButton("선택 항목 복원", () =>
+            ClipboardSelectionButton("PC에 다시 복사", () =>
             {
                 RestoreSelectedClipboard();
                 return Task.CompletedTask;
             }, primary: true),
-            ActionButton("휴대폰으로 보내기", SendSelectedClipboardToPhoneAsync),
-            ActionButton("삭제", () =>
+            ClipboardSelectionButton("휴대폰으로 보내기", SendSelectedClipboardToPhoneAsync),
+            ClipboardSelectionButton("삭제", () =>
             {
                 DeleteSelectedClipboard();
                 return Task.CompletedTask;
@@ -548,19 +578,19 @@ public sealed class MainForm : Form
         flow.Controls.Add(history);
 
         var options = AutoSection();
-        options.Controls.Add(SectionTitle("클립보드 · 동기화 설정"));
+        options.Controls.Add(SectionTitle("자동 전송 및 기록 설정"));
         options.Controls.Add(Row(_captureClipboardText, _captureClipboardImages));
         options.Controls.Add(Row(_clipboardSyncEnabled, _clipboardSyncText, _clipboardSyncImages));
         options.Controls.Add(LabeledRow("최대 저장 개수", _clipboardLimit));
-        options.Controls.Add(LabeledRow("BLE 이미지 한도 (KiB)", _clipboardBleImageLimit));
-        options.Controls.Add(LabeledRow("P2P 링크 이름", _p2pLinkName));
+        options.Controls.Add(LabeledRow("Bluetooth 이미지 한도 (KB)", _clipboardBleImageLimit));
+        options.Controls.Add(LabeledRow("빠른 연결 이름", _p2pLinkName));
         options.Controls.Add(Row(
             ActionButton("클립보드 설정 저장", () =>
             {
                 ApplyClipboardSettings(save: true);
                 return Task.CompletedTask;
             }, primary: true),
-            ActionButton("Windows 방화벽 P2P 허용", ConfigureP2PFirewallAsync)));
+            ActionButton("빠른 연결 문제 해결", ConfigureP2PFirewallAsync)));
         options.Controls.Add(Help(
             "P2P 연결은 TCP 47911을 사용합니다. 연결이 계속 실패할 때만 방화벽 허용 버튼을 누르세요. UAC 승인이 필요합니다.",
             Secondary));
@@ -572,7 +602,7 @@ public sealed class MainForm : Form
 
     private TabPage BuildDiagnosticsTab()
     {
-        var tab = NewTab("진단");
+        var tab = NewTab("도움말 · 진단");
         var flow = TabFlow();
         tab.Controls.Add(flow);
 
@@ -586,8 +616,7 @@ public sealed class MainForm : Form
         var update = AutoSection(InfoWeak);
         update.Controls.Add(SectionTitle("앱 업데이트"));
         update.Controls.Add(Help(
-            $"현재 버전 {LocalUpdateService.CurrentVersion}. private GitHub 인증키를 앱에 저장하지 않고, " +
-            "새 ConPhone.exe를 선택하면 종료 후 파일 교체와 재실행을 자동 수행합니다.",
+            $"현재 버전 {LocalUpdateService.CurrentVersion.ToString(3)} · 새로 받은 ConPhone.exe를 선택하면 앱을 업데이트합니다.",
             TextColor));
         update.Controls.Add(Row(
             ActionButton("업데이트 EXE 적용", ApplyLocalUpdateAsync, primary: true),
@@ -606,7 +635,7 @@ public sealed class MainForm : Form
         logs.Controls.Add(SectionTitle("실행 로그"));
         logs.Controls.Add(_events);
         logs.Controls.Add(Row(
-            ActionButton("진단 JSON 저장", SaveDiagnosticsAsync, primary: true),
+            ActionButton("진단 파일 저장", SaveDiagnosticsAsync, primary: true),
             ActionButton("로그 지우기", () =>
             {
                 _events.Clear();
@@ -624,15 +653,17 @@ public sealed class MainForm : Form
         Padding = new Padding(0)
     };
 
-    private static FlowLayoutPanel TabFlow() => new()
+    private static FlowLayoutPanel TabFlow()
     {
-        Dock = DockStyle.Fill,
-        AutoScroll = true,
-        FlowDirection = FlowDirection.TopDown,
-        WrapContents = false,
-        Padding = new Padding(16),
-        BackColor = Bg
-    };
+        var flow = new FlowLayoutPanel
+        {
+            Dock = DockStyle.Fill, AutoScroll = true, FlowDirection = FlowDirection.TopDown,
+            WrapContents = false, Padding = new Padding(14), BackColor = Bg
+        };
+        flow.SizeChanged += (_, _) => ResizeSections(flow);
+        flow.ControlAdded += (_, _) => ResizeSections(flow);
+        return flow;
+    }
 
     private static FlowLayoutPanel AutoSection(Color? background = null) => new()
     {
@@ -762,13 +793,13 @@ public sealed class MainForm : Form
         return row;
     }
 
-    private Button ActionButton(string text, Func<Task> action, bool primary = false)
+    private Button ActionButton(string text, Func<Task> action, bool primary = false, bool critical = false)
     {
         var button = new Button
         {
             Text = text,
             AutoSize = true,
-            MinimumSize = new Size(92, 36),
+            MinimumSize = new Size(100, 38),
             Padding = new Padding(10, 3, 10, 3),
             FlatStyle = FlatStyle.Flat,
             Font = new Font("Segoe UI", 9.5f, FontStyle.Bold),
@@ -778,8 +809,19 @@ public sealed class MainForm : Form
 
         button.FlatAppearance.BorderColor = primary ? Brand : Border;
         button.FlatAppearance.MouseDownBackColor = primary ? BrandPressed : ColorTranslator.FromHtml("#EEEFF1");
-        button.FlatAppearance.MouseOverBackColor = primary ? ColorTranslator.FromHtml("#FF7A23") : ColorTranslator.FromHtml("#F3F4F5");
-        button.Click += (_, _) => Dispatch(action);
+        button.FlatAppearance.MouseOverBackColor = primary ? ColorTranslator.FromHtml("#3B75F0") : ColorTranslator.FromHtml("#F3F4F5");
+        button.AccessibleName = text;
+        button.Cursor = Cursors.Hand;
+        button.EnabledChanged += (_, _) =>
+        {
+            button.BackColor = button.Enabled ? (primary ? Brand : Surface) : ColorTranslator.FromHtml("#E5E7EB");
+            button.ForeColor = button.Enabled ? (primary ? Color.White : TextColor) : Secondary;
+        };
+        button.Click += (_, _) =>
+        {
+            if (critical) DispatchCritical(action);
+            else Dispatch(action);
+        };
         return button;
     }
 
@@ -919,8 +961,11 @@ public sealed class MainForm : Form
             var emergency = HotkeyCatalog.Display(_settings.EmergencyHotkey);
             _state.Text = _input.IsRemote
                 ? $"휴대폰 조작 중 · {emergency}로 즉시 복귀"
-                : $"노트북 조작 중 · 검색:{_ble.Advertisement} · K:{_ble.KeyboardSubscribers} M:{_ble.MouseSubscribers} " +
-                  $"LOCK:{_ble.SystemSubscribers} MEDIA:{_ble.ConsumerSubscribers} · 승인:{(_ble.Ready ? "준비됨" : "대기")}";
+                : _servicesPaused ? "이 PC 사용 중  ·  휴대폰 연결을 일시 중지했어요"
+                : _ble.Ready ? "이 PC 사용 중  ·  휴대폰으로 전환할 준비가 되었어요"
+                : "이 PC 사용 중  ·  휴대폰을 연결하고 사용할 기기를 선택하세요";
+            _toggleButton.Text = _input.IsRemote ? "이 PC로 전환" : "휴대폰으로 전환";
+            _toggleButton.Enabled = _input.IsRemote || _ble.Ready;
 
             _tray.Text = _input.IsRemote
                 ? $"Con.Phone · 휴대폰 입력 / {emergency} 복귀"
@@ -1470,9 +1515,11 @@ public sealed class MainForm : Form
 
     private void UpdateClipboardDetail()
     {
+        foreach (var button in _clipboardSelectionButtons)
+            button.Enabled = _clipboardList.SelectedItem is ClipboardEntry;
         if (_clipboardList.SelectedItem is not ClipboardEntry entry)
         {
-            _clipboardDetail.Text = "저장된 항목이 없습니다.";
+            _clipboardDetail.Text = "아직 복사한 내용이 없어요. 텍스트나 이미지를 복사하면 여기에 표시됩니다.";
             return;
         }
 
@@ -1566,6 +1613,7 @@ public sealed class MainForm : Form
             _events.Clear();
 
         _events.AppendText($"{DateTime.Now:HH:mm:ss}  {text}\r\n");
+        _feedback.Text = text;
     }
 
     private void ImmediateLocal()
