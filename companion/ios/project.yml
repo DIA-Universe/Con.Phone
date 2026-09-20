@@ -29,6 +29,20 @@ targets:
         UIBackgroundModes:
           - bluetooth-central
 
+  ConPhoneProtocolTests:
+    type: bundle.unit-test
+    platform: iOS
+    deploymentTarget: "17.0"
+    sources:
+      - Tests
+    dependencies:
+      - target: ConPhoneCompanion
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: universe.dia.conphone.ios.tests
+        SWIFT_VERSION: "5.0"
+        CODE_SIGNING_ALLOWED: NO
+
   ConPhoneShare:
     type: app-extension
     platform: iOS
@@ -57,3 +71,15 @@ targets:
               NSExtensionActivationSupportsText: true
               NSExtensionActivationSupportsWebURLWithMaxCount: 1
               NSExtensionActivationSupportsImageWithMaxCount: 1
+
+schemes:
+  ConPhoneCompanion:
+    build:
+      targets:
+        ConPhoneCompanion: all
+        ConPhoneShare: all
+        ConPhoneProtocolTests: [test]
+    test:
+      config: Debug
+      targets:
+        - name: ConPhoneProtocolTests
