@@ -19,11 +19,12 @@ class MainActivity : Activity() {
     private val statusHandler = android.os.Handler(android.os.Looper.getMainLooper())
     private val statusPoll = object : Runnable {
         override fun run() {
+            if (hasWindowFocus() && hasBluetoothPermissions()) sendFocusedClipboard(false)
             statusText.text = FriendlyStatus.summary(ClipboardBridgeService.latestStatus)
             statusHandler.postDelayed(this, 500)
         }
     }
-    private var lastQueuedClip: String? = null
+    private val textSync = FocusedTextSync()
     private val clipListener = android.content.ClipboardManager.OnPrimaryClipChangedListener {
         if (hasWindowFocus()) sendFocusedClipboard(false)
     }
@@ -125,66 +126,41 @@ class MainActivity : Activity() {
         val connect = card(home, "PC 연결", "PC에서 LINKO를 실행해 주세요.")
         statusText = text(FriendlyStatus.summary(ClipboardBridgeService.latestStatus), 14f)
         connect.addView(statusText)
-        button(connect, "PC 연결", true) { ensurePermissionsAndStart() }
+        connect.addView(text("페어링한 PC에 자동으로 연결합니다.", 14f))
 
         val send = card(home, "클립보드", "휴대폰에서 복사한 뒤 이 화면을 열면 PC로 보냅니다.")
         button(send, "PC로 보내기", true) { sendFocusedClipboard(true) }
-        val received = card(home, "받은 이미지", "PC에서 받은 이미지를 다른 앱에 사용하세요.")
-        button(received, "이미지 복사") { receivedImage(false) }
-        button(received, "이미지 공유") { receivedImage(true) }
-        home.addView(text("다른 앱에서는 공유 → LINKO로 보낼 수 있어요.", 13f))
+        home.addView(text("이미지는 전달되지 않습니다. 텍스트만 자동으로 동기화합니다.", 15f, true))
+        button(send, "다른 앱에서도 자동 복사 설정") {
+            startActivity(Intent(this, BackgroundClipboardActivity::class.java))
+        }
+        home.addView(text("삼성 키보드를 그대로 사용할 수 있습니다. 자동 복사 설정 전에는 이 앱을 열거나 공유 → LINKO로 보내세요.", 13f))
 
         val options = card(settings, "연결 관리", "")
         button(options, "연결할 PC 선택") { choosePairedPc() }
-        button(options, "빠른 이미지 전송 설정") {
-            if (hasNearbyWifiPermission()) {
-                android.widget.Toast.makeText(this, "빠른 전송을 사용할 수 있어요.", android.widget.Toast.LENGTH_SHORT).show()
-            } else requestP2PPermission()
-        }
-        button(options, "연결 중지") {
-            stopService(Intent(this, ClipboardBridgeService::class.java))
-            statusText.text = "연결을 중지했어요."
+        button(options, "앱 권한 설정") {
+            startActivity(Intent(android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                android.net.Uri.parse("package:$packageName")))
         }
         @Suppress("DEPRECATION")
         val installedVersion = packageManager.getPackageInfo(packageName, 0).versionName ?: "알 수 없음"
         val updates = card(settings, "LINKO $installedVersion", "")
         button(updates, "업데이트 확인") { startActivity(Intent(this, UpdateActivity::class.java)) }
-        val help = card(settings, "도움말", "이미지 붙여넣기가 안 되면 홈에서 이미지 공유를 사용하세요.")
+        val help = card(settings, "도움말", "이미지는 전달되지 않습니다. Bluetooth가 연결되면 텍스트 동기화가 자동으로 시작됩니다.")
         button(help, "연결 상세 정보") {
             android.app.AlertDialog.Builder(this).setTitle("연결 상세 정보")
                 .setMessage(ClipboardBridgeService.latestStatus).setPositiveButton("닫기", null).show()
         }
         setContentView(scroll)
         // Explain permissions before requesting them; explicit share intents still start immediately.
-        if (pendingServiceIntent != null) ensurePermissionsAndStart()
+        ensurePermissionsAndStart()
     }
 
     override fun onResume() {
         super.onResume()
+        if (hasBluetoothPermissions()) ensurePermissionsAndStart()
         statusHandler.post(statusPoll)
         getSystemService(android.content.ClipboardManager::class.java).addPrimaryClipChangedListener(clipListener)
-    }
-
-    private fun receivedImage(share: Boolean) {
-        val uri = ClipboardImageProvider.latestImage(this)
-        if (uri == null) {
-            android.widget.Toast.makeText(this, "먼저 PC에서 이미지를 복사해 받아 주세요.", android.widget.Toast.LENGTH_LONG).show()
-            return
-        }
-        runCatching {
-            val clip = android.content.ClipData.newUri(contentResolver, "LINKO image", uri)
-            if (share) {
-                startActivity(Intent.createChooser(Intent(Intent.ACTION_SEND).apply {
-                    type = "image/png"
-                    putExtra(Intent.EXTRA_STREAM, uri)
-                    clipData = clip
-                    addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                }, "받은 이미지 공유"))
-            } else {
-                getSystemService(android.content.ClipboardManager::class.java).setPrimaryClip(clip)
-                android.widget.Toast.makeText(this, "이미지를 다시 복사했습니다.", android.widget.Toast.LENGTH_SHORT).show()
-            }
-        }.onFailure { statusText.text = "이미지 열기 실패: ${it.message}" }
     }
 
     override fun onPause() {
@@ -200,22 +176,26 @@ class MainActivity : Activity() {
 
     private fun sendFocusedClipboard(manual: Boolean) {
         if (!hasWindowFocus()) return
+        if (!manual && BackgroundClipboardMonitor.active) return
         if (!hasBluetoothPermissions()) { if (manual) ensurePermissionsAndStart(); return }
         runCatching {
             val clip = getSystemService(android.content.ClipboardManager::class.java).primaryClip
                 ?: return
             if (clip.itemCount == 0) return
-            // Our own incoming clipboard must not echo back to the PC.
-            if (!manual && clip.description.label?.toString()?.let { it.startsWith("LINKO") || it.startsWith("Con.Phone") } == true) return
             val item = clip.getItemAt(0)
             val text = item.text?.toString()
-            val key = if (!text.isNullOrEmpty()) "text:$text" else "uri:${item.uri}"
-            if (!manual && key == lastQueuedClip) return
-            val store = AndroidSharedPayloadStore(this)
-            if (!text.isNullOrEmpty()) store.saveText(text)
-            else if (item.uri != null) store.saveImage(item.uri, contentResolver.getType(item.uri))
-            else return
-            lastQueuedClip = key
+            val ownLabel = clip.description.label?.toString()?.let {
+                it.startsWith("LINKO") || it.startsWith("Con.Phone")
+            } == true
+            val remote = ownLabel && text == ClipboardBridgeService.lastReceivedText
+            val queued = textSync.capture(text, remote, manual) { value ->
+                AndroidSharedPayloadStore(this).saveText(value)
+            }
+            if (!queued) {
+                if (manual && text.isNullOrEmpty()) android.widget.Toast.makeText(this,
+                    "이미지는 전달되지 않습니다. 텍스트를 복사해 주세요.", android.widget.Toast.LENGTH_SHORT).show()
+                return
+            }
             pendingServiceIntent = Intent(this, ClipboardBridgeService::class.java)
                 .setAction(ClipboardBridgeService.ACTION_DRAIN_SHARED)
             ensurePermissionsAndStart()
@@ -328,7 +308,7 @@ class MainActivity : Activity() {
         if (requestCode == this.requestCode && hasBluetoothPermissions()) {
             ensurePermissionsAndStart()
         } else if (requestCode == this.requestCode) {
-            statusText.text = "Bluetooth 권한이 필요해요. ‘PC 연결 시작’을 눌러 다시 허용해 주세요."
+            statusText.text = "Bluetooth 권한이 필요해요. 설정의 앱 권한 설정에서 허용해 주세요."
         } else if (requestCode == this.requestCode + 1) {
             if (hasNearbyWifiPermission()) {
                 android.widget.Toast.makeText(

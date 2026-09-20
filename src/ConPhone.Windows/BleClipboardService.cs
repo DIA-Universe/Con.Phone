@@ -275,7 +275,7 @@ public sealed class BleClipboardService : IDisposable
                 64 * 1024,
                 4 * 1024 * 1024);
 
-            var response = new byte[10] { 2, 1, 1, 1, 0, 0, 0, 0, 0, 0 };
+            var response = new byte[10] { 2, 1, 0, 1, 0, 0, 0, 0, 0, 0 };
             System.Buffers.Binary.BinaryPrimitives.WriteInt32LittleEndian(
                 response.AsSpan(4, 4),
                 limit);

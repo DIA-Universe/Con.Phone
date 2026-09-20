@@ -7,6 +7,13 @@ internal static class Program
     {
         ApplicationConfiguration.Initialize();
 
+        if (args.Length == 1 && args[0] == "--release-selftest")
+        {
+            try { ReleaseSelfTest.RunAsync().GetAwaiter().GetResult(); }
+            catch (Exception ex) { Console.Error.WriteLine(ex); Environment.ExitCode = 1; }
+            return;
+        }
+
         if (args.Length == 1 && args[0] == "--input-selftest")
         {
             try { InputSelfTest.Run(); }

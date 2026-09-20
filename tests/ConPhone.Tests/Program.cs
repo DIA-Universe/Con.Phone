@@ -394,4 +394,12 @@ using (var cancelled = new CancellationTokenSource())
 }
 Check("unrelated ACK left for application decoder", !reliable.Accept("phone", new byte[22]));
 
+var preciseScaler = new PointerScaler();
+preciseScaler.Configure(1, 100, false);
+var exactOnePercent = Enumerable.Range(0, 100).Select(_ => preciseScaler.Apply(new PointerPacket(0, 1, -1))).ToArray();
+Check("1 percent accumulates exactly one positive pixel", exactOnePercent.Sum(x => x.X) == 1);
+Check("1 percent accumulates exactly one negative pixel", exactOnePercent.Sum(x => x.Y) == -1);
+preciseScaler.Configure(101, 100, false);
+Check("101 percent accumulates exactly 101 pixels", Enumerable.Range(0, 100).Sum(_ => preciseScaler.Apply(new PointerPacket(0, 1)).X) == 101);
+
 Console.WriteLine($"{passed} checks passed. No Windows/Bluetooth/phone hardware has been tested by these checks.");

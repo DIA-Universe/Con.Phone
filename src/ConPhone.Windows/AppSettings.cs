@@ -44,10 +44,10 @@ public sealed class ConPhoneSettings
 
     public int ClipboardHistoryLimit { get; set; } = 50;
     public bool CaptureClipboardText { get; set; } = true;
-    public bool CaptureClipboardImages { get; set; } = true;
-    public bool ClipboardSyncEnabled { get; set; } = false;
+    public bool CaptureClipboardImages { get; set; } = false;
+    public bool ClipboardSyncEnabled { get; set; } = true;
     public bool ClipboardAutoSendText { get; set; } = true;
-    public bool ClipboardAutoSendImages { get; set; } = true;
+    public bool ClipboardAutoSendImages { get; set; } = false;
     public int ClipboardBleImageLimitKb { get; set; } = 512;
     public string P2PLinkName { get; set; } = "ConPhone";
 }
@@ -93,7 +93,13 @@ public static class SettingsStore
 
     public static ConPhoneSettings Normalize(ConPhoneSettings settings)
     {
-        settings.MouseSpeedPercent = Math.Clamp(settings.MouseSpeedPercent, 25, 300);
+        // 1.0 migrates even explicitly disabled legacy settings to automatic text sync.
+        settings.ClipboardSyncEnabled = true;
+        settings.ClipboardAutoSendText = true;
+        settings.CaptureClipboardText = true;
+        settings.ClipboardAutoSendImages = false;
+        settings.CaptureClipboardImages = false;
+        settings.MouseSpeedPercent = Math.Clamp(settings.MouseSpeedPercent, 1, 300);
         settings.ScrollSpeedPercent = Math.Clamp(settings.ScrollSpeedPercent, 25, 300);
         settings.ClipboardHistoryLimit = Math.Clamp(settings.ClipboardHistoryLimit, 10, 200);
         settings.ClipboardBleImageLimitKb = Math.Clamp(settings.ClipboardBleImageLimitKb, 64, 4096);

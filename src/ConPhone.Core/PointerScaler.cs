@@ -10,7 +10,7 @@ public sealed class PointerScaler
     private int _speedPercent = 100;
     private int _scrollPercent = 100;
     private bool _invertScroll;
-    private double _carryX, _carryY, _carryWheel, _carryPan;
+    private long _carryX, _carryY, _carryWheel, _carryPan;
 
     public int SpeedPercent { get { lock (_gate) return _speedPercent; } }
     public int ScrollPercent { get { lock (_gate) return _scrollPercent; } }
@@ -20,7 +20,7 @@ public sealed class PointerScaler
     {
         lock (_gate)
         {
-            _speedPercent = Math.Clamp(speedPercent, 25, 300);
+            _speedPercent = Math.Clamp(speedPercent, 1, 300);
             _scrollPercent = Math.Clamp(scrollPercent, 25, 300);
             _invertScroll = invertScroll;
             _carryX = _carryY = _carryWheel = _carryPan = 0;
@@ -31,21 +31,21 @@ public sealed class PointerScaler
     {
         lock (_gate)
         {
-            var sx = packet.X * (_speedPercent / 100.0) + _carryX;
-            var sy = packet.Y * (_speedPercent / 100.0) + _carryY;
-            var direction = _invertScroll ? -1.0 : 1.0;
-            var sw = packet.Wheel * (_scrollPercent / 100.0) * direction + _carryWheel;
-            var sp = packet.Pan * (_scrollPercent / 100.0) * direction + _carryPan;
+            var sx = (long)packet.X * _speedPercent + _carryX;
+            var sy = (long)packet.Y * _speedPercent + _carryY;
+            var direction = _invertScroll ? -1L : 1L;
+            var sw = (long)packet.Wheel * _scrollPercent * direction + _carryWheel;
+            var sp = (long)packet.Pan * _scrollPercent * direction + _carryPan;
 
-            var x = (int)Math.Truncate(sx);
-            var y = (int)Math.Truncate(sy);
-            var wheel = (int)Math.Truncate(sw);
-            var pan = (int)Math.Truncate(sp);
+            var x = (int)(sx / 100);
+            var y = (int)(sy / 100);
+            var wheel = (int)(sw / 100);
+            var pan = (int)(sp / 100);
 
-            _carryX = sx - x;
-            _carryY = sy - y;
-            _carryWheel = sw - wheel;
-            _carryPan = sp - pan;
+            _carryX = sx % 100;
+            _carryY = sy % 100;
+            _carryWheel = sw % 100;
+            _carryPan = sp % 100;
 
             return new PointerPacket(packet.Buttons, x, y, wheel, pan);
         }

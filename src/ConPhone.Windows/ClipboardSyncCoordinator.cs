@@ -206,6 +206,11 @@ public sealed class ClipboardSyncCoordinator : IAsyncDisposable
         int bleImageLimitBytes,
         CancellationToken token)
     {
+        if (content.Kind != ClipboardContentKind.TextUtf8)
+        {
+            Status?.Invoke("이미지는 전달되지 않습니다. 텍스트만 동기화합니다.");
+            return false;
+        }
         if (!_enabled() || _disposed)
             return false;
 
@@ -370,7 +375,7 @@ public sealed class ClipboardSyncCoordinator : IAsyncDisposable
         string deviceId,
         ClipboardContent content)
     {
-        if (!_enabled() ||
+        if (content.Kind != ClipboardContentKind.TextUtf8 || !_enabled() ||
             !string.Equals(
                 _approvedDeviceId(),
                 deviceId,

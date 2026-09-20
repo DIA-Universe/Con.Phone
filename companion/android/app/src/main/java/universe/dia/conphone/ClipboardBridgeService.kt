@@ -43,6 +43,8 @@ import javax.crypto.spec.SecretKeySpec
 
 class ClipboardBridgeService : Service() {
     companion object {
+        @Volatile var lastReceivedText: String? = null
+            private set
         @Volatile var latestStatus = "연결 서비스를 시작해 주세요."
             private set
         const val ACTION_CONNECT_DEVICE = "universe.dia.conphone.CONNECT_DEVICE"
@@ -150,6 +152,7 @@ class ClipboardBridgeService : Service() {
     private val p2pWireReassembler = ClipboardWireReassembler()
     private val rejectedBleDevices = ConcurrentHashMap<String, Long>()
     private val sharedStore by lazy { AndroidSharedPayloadStore(this) }
+    private val backgroundClipboard by lazy { BackgroundClipboardMonitor(this) { drainPersistedShares() } }
     private val loadedPersistentShareIds = HashSet<String>()
     private val applyGate = Any()
     private var lastAppliedHash: ByteArray? = null
@@ -196,11 +199,24 @@ class ClipboardBridgeService : Service() {
     )
 
 
+    private val bluetoothReconnect = object : android.content.BroadcastReceiver() {
+        override fun onReceive(context: android.content.Context?, intent: Intent?) {
+            if (intent?.action == BluetoothDevice.ACTION_ACL_CONNECTED ||
+                intent?.getIntExtra(BluetoothAdapter.EXTRA_STATE, -1) == BluetoothAdapter.STATE_ON)
+                main.post { beginScan() }
+        }
+    }
+
     override fun onCreate() {
         super.onCreate()
         createNotificationChannel()
         showStatus("연결 준비 중")
+        backgroundClipboard.start()
         main.post { drainPersistedShares() }
+        val filter = android.content.IntentFilter(BluetoothAdapter.ACTION_STATE_CHANGED)
+        filter.addAction(BluetoothDevice.ACTION_ACL_CONNECTED)
+        if (Build.VERSION.SDK_INT >= 33) registerReceiver(bluetoothReconnect, filter, RECEIVER_EXPORTED)
+        else @Suppress("DEPRECATION") registerReceiver(bluetoothReconnect, filter)
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -213,13 +229,12 @@ class ClipboardBridgeService : Service() {
             ACTION_SEND -> sendCurrentClipboard()
             ACTION_SEND_SHARED_TEXT -> sendSharedText(
                 intent?.getStringExtra(EXTRA_SHARED_TEXT))
-            ACTION_SEND_SHARED_IMAGE -> sendSharedImage(
-                intent?.getStringExtra(EXTRA_SHARED_IMAGE_PATH),
-                intent?.getStringExtra(EXTRA_SHARED_IMAGE_MIME))
+            ACTION_SEND_SHARED_IMAGE -> showStatus("이미지는 전달되지 않습니다.")
             ACTION_DRAIN_SHARED -> drainPersistedShares()
             ACTION_RETRY_P2P -> retryP2PNow()
             else -> beginScan()
         }
+        beginScan() // Sharing or draining must also establish a connection on a cold start.
         return START_STICKY
     }
 
@@ -1035,6 +1050,10 @@ class ClipboardBridgeService : Service() {
             // while a persistent Share item was waiting. Re-check durable storage
             // whenever capacity becomes available.
             main.post { drainPersistedShares() }
+        val filter = android.content.IntentFilter(BluetoothAdapter.ACTION_STATE_CHANGED)
+        filter.addAction(BluetoothDevice.ACTION_ACL_CONNECTED)
+        if (Build.VERSION.SDK_INT >= 33) registerReceiver(bluetoothReconnect, filter, RECEIVER_EXPORTED)
+        else @Suppress("DEPRECATION") registerReceiver(bluetoothReconnect, filter)
             return
         }
 
@@ -1055,6 +1074,10 @@ class ClipboardBridgeService : Service() {
         }
 
         main.post { drainPersistedShares() }
+        val filter = android.content.IntentFilter(BluetoothAdapter.ACTION_STATE_CHANGED)
+        filter.addAction(BluetoothDevice.ACTION_ACL_CONNECTED)
+        if (Build.VERSION.SDK_INT >= 33) registerReceiver(bluetoothReconnect, filter, RECEIVER_EXPORTED)
+        else @Suppress("DEPRECATION") registerReceiver(bluetoothReconnect, filter)
     }
 
     private fun drainPersistedShares() {
@@ -1082,11 +1105,7 @@ class ClipboardBridgeService : Service() {
                         val text = item.data.toString(Charsets.UTF_8)
                         ClipboardProtocol.text(text)
                     }
-                    AndroidSharedPayloadStore.Kind.IMAGE -> {
-                        sharedImageContentForWindows(
-                            item.data,
-                            item.mime)
-                    }
+                    AndroidSharedPayloadStore.Kind.IMAGE -> error("이미지는 전달되지 않습니다.")
                 }
             }.onSuccess { content ->
                 sendContent(
@@ -1107,6 +1126,10 @@ class ClipboardBridgeService : Service() {
                     showStatus(
                         "저장된 Android 공유 항목을 전송할 수 없어 제거했습니다: ${error.message}")
                     main.post { drainPersistedShares() }
+        val filter = android.content.IntentFilter(BluetoothAdapter.ACTION_STATE_CHANGED)
+        filter.addAction(BluetoothDevice.ACTION_ACL_CONNECTED)
+        if (Build.VERSION.SDK_INT >= 33) registerReceiver(bluetoothReconnect, filter, RECEIVER_EXPORTED)
+        else @Suppress("DEPRECATION") registerReceiver(bluetoothReconnect, filter)
                 } else {
                     // Keep it marked as loaded so a corrupt persistent item
                     // cannot spin in a read/fail/re-read loop.
@@ -1127,44 +1150,6 @@ class ClipboardBridgeService : Service() {
             ClipboardProtocol.text(text)
         }.onSuccess(::sendContent)
             .onFailure { toast("텍스트 전송 준비 실패: ${it.message}") }
-    }
-
-    private fun sendSharedImage(
-        path: String?,
-        mime: String?
-    ) {
-        if (path.isNullOrBlank()) {
-            toast("공유할 이미지가 없습니다.")
-            return
-        }
-
-        executor.execute {
-            val file = runCatching {
-                val sharedRoot = File(cacheDir, "shared").canonicalFile
-                val candidate = File(path).canonicalFile
-                require(candidate.path.startsWith(sharedRoot.path + File.separator)) {
-                    "허용되지 않은 공유 이미지 경로입니다."
-                }
-                require(candidate.isFile &&
-                    candidate.length() in 1..ClipboardProtocol.MAX_IMAGE.toLong()) {
-                    "공유 이미지 임시 파일 크기가 올바르지 않습니다."
-                }
-                candidate
-            }.getOrElse {
-                toast("이미지 공유 준비 실패: ${it.message}")
-                return@execute
-            }
-
-            runCatching {
-                val bytes = file.readBytes()
-                sharedImageContentForWindows(
-                    bytes,
-                    mime)
-            }.onSuccess(::sendContent)
-                .onFailure { toast("이미지 전송 준비 실패: ${it.message}") }
-
-            runCatching { file.delete() }
-        }
     }
 
     private fun sharedImageContentForWindows(
@@ -1253,24 +1238,18 @@ class ClipboardBridgeService : Service() {
             return
         }
 
-        val uri = item.uri
-        if (uri != null) {
-            executor.execute {
-                runCatching {
-                    decodeClipboardUriToPng(uri)
-                }.onSuccess(::sendContent)
-                    .onFailure { toast("이미지 전송 준비 실패: ${it.message}") }
-            }
-            return
-        }
-
-        toast("텍스트 또는 이미지만 지원합니다.")
+        toast("이미지는 전달되지 않습니다. 텍스트만 지원합니다.")
     }
 
     private fun sendContent(
         content: ClipboardContent,
         persistedShareId: String? = null
     ) {
+        if (content.kind != ClipboardKind.TEXT) {
+            showStatus("이미지는 전달되지 않습니다.")
+            completePersistedShare(persistedShareId)
+            return
+        }
         val hasOlderPending = synchronized(pendingLock) {
             pruneExpiredPendingLocked()
             pendingQueue.isNotEmpty()
@@ -1877,6 +1856,10 @@ class ClipboardBridgeService : Service() {
     private fun applyRemoteClipboardBlocking(
         content: ClipboardContent
     ): Boolean {
+        if (content.kind != ClipboardKind.TEXT) {
+            showStatus("이미지는 전달되지 않습니다.")
+            return false
+        }
         synchronized(applyGate) {
             val now = System.currentTimeMillis()
             val previous = lastAppliedHash
@@ -1923,6 +1906,7 @@ class ClipboardBridgeService : Service() {
                 ClipboardKind.TEXT -> {
                     val text =
                         content.data.toString(Charsets.UTF_8)
+                    lastReceivedText = text
                     clipboard.setPrimaryClip(
                         ClipData.newPlainText(
                             "LINKO",
@@ -2011,6 +1995,8 @@ class ClipboardBridgeService : Service() {
         main.post { Toast.makeText(this, text, Toast.LENGTH_SHORT).show() }
 
     override fun onDestroy() {
+        backgroundClipboard.close()
+        runCatching { unregisterReceiver(bluetoothReconnect) }
         destroyed = true
         latestStatus = "연결 서비스가 중지됐어요."
         main.removeCallbacksAndMessages(null)

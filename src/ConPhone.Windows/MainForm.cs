@@ -73,11 +73,11 @@ public sealed partial class MainForm : Form
 
     private readonly TrackBar _mouseSpeed = new()
     {
-        Minimum = 25,
+        Minimum = 1,
         Maximum = 300,
         TickFrequency = 25,
-        SmallChange = 5,
-        LargeChange = 25,
+        SmallChange = 1,
+        LargeChange = 1,
         Width = 440
     };
 
@@ -91,6 +91,7 @@ public sealed partial class MainForm : Form
         Width = 440
     };
 
+    private readonly NumericUpDown _mouseSpeedExact = new() { Minimum = 1, Maximum = 300, Increment = 1, Width = 85 };
     private readonly Label _mouseSpeedValue = new() { AutoSize = true, Width = 70, ForeColor = Secondary };
     private readonly Label _scrollSpeedValue = new() { AutoSize = true, Width = 70, ForeColor = Secondary };
     private readonly CheckBox _invertScroll = new() { Text = "스크롤 방향 반전", AutoSize = true, ForeColor = TextColor };
@@ -397,7 +398,8 @@ public sealed partial class MainForm : Form
         _scrollSpeed.Width = 280;
         _mouseSpeed.TickStyle = TickStyle.None;
         _scrollSpeed.TickStyle = TickStyle.None;
-        _mouseSpeed.ValueChanged += (_, _) => _mouseSpeedValue.Text = $"{_mouseSpeed.Value}%";
+        _mouseSpeed.ValueChanged += (_, _) => { _mouseSpeedValue.Text = "%"; _mouseSpeedExact.Value = _mouseSpeed.Value; };
+        _mouseSpeedExact.ValueChanged += (_, _) => _mouseSpeed.Value = (int)_mouseSpeedExact.Value;
         _scrollSpeed.ValueChanged += (_, _) => _scrollSpeedValue.Text = $"{_scrollSpeed.Value}%";
         _clipboardList.SelectedIndexChanged += (_, _) => UpdateClipboardDetail();
         UpdateClipboardDetail();
@@ -418,16 +420,6 @@ public sealed partial class MainForm : Form
             Secondary));
         connect.Controls.Add(Row(
             ActionButton("Bluetooth 설정 열기", () => OpenBluetoothSettingsAsync()),
-            ActionButton("휴대폰 연결 시작", async () =>
-            {
-                _servicesPaused = false;
-                await _ble.StartAsync();
-
-                if (_settings.ClipboardSyncEnabled && _clipboardSync is not null)
-                    await _clipboardSync.SetActiveAsync(true);
-
-                Log("Bluetooth HID/Clipboard 서비스를 시작했습니다.");
-            }, primary: true),
             ActionButton("연결 일시 중지", async () =>
             {
                 _servicesPaused = true;
@@ -477,7 +469,7 @@ public sealed partial class MainForm : Form
         pointer.Controls.Add(SectionTitle("마우스 / 스크롤"));
         pointer.Controls.Add(Help(
             "휴대폰에서 움직이는 마우스와 스크롤 속도를 조절하세요. 기본값은 100%입니다."));
-        pointer.Controls.Add(LabeledRow("마우스 감도", Row(_mouseSpeed, _mouseSpeedValue)));
+        pointer.Controls.Add(LabeledRow("마우스 감도", Row(_mouseSpeed, _mouseSpeedExact, _mouseSpeedValue)));
         pointer.Controls.Add(LabeledRow("스크롤 감도", Row(_scrollSpeed, _scrollSpeedValue, _invertScroll)));
         pointer.Controls.Add(Row(
             ActionButton("감도 저장", () =>
@@ -565,12 +557,13 @@ public sealed partial class MainForm : Form
         var info = AutoSection(InfoWeak);
         info.Controls.Add(SectionTitle("복사한 내용을 휴대폰에서도"));
         info.Controls.Add(Help(
-            "Android에 LINKO를 설치하면 복사한 내용을 주고받을 수 있어요.",
+            "Android에 LINKO를 설치하면 복사한 텍스트를 주고받을 수 있어요.",
             TextColor));
         info.Controls.Add(Help(
             "iPhone · iPad는 앱 없는 키보드·마우스 연결만 제공합니다.",
             Secondary));
-        info.Controls.Add(_clipboardSyncEnabled);
+        info.Controls.Add(Help("텍스트는 연결되면 자동으로 동기화됩니다. 이미지는 전달되지 않습니다.", TextColor));
+        info.Controls.Add(Help("휴대폰의 다른 앱에서 PC로 자동 복사하려면 LINKO 앱에서 ‘다른 앱에서도 자동 복사 설정’을 완료하세요.", Secondary));
         info.Controls.Add(_clipboardConnection);
         flow.Controls.Add(info);
 
@@ -604,14 +597,9 @@ public sealed partial class MainForm : Form
 
         var options = AutoSection();
         options.Controls.Add(SectionTitle("자동 전송 및 기록 설정"));
-        options.Controls.Add(Row(_captureClipboardText, _captureClipboardImages));
-        options.Controls.Add(Row(_clipboardSyncText, _clipboardSyncImages));
+
+
         options.Controls.Add(LabeledRow("최대 저장 개수", _clipboardLimit));
-        var advanced = AutoSection();
-        advanced.Controls.Add(LabeledRow("Bluetooth 이미지 한도 (KB)", _clipboardBleImageLimit));
-        advanced.Controls.Add(LabeledRow("빠른 연결 이름", _p2pLinkName));
-        advanced.Controls.Add(ActionButton("빠른 연결 문제 해결", ConfigureP2PFirewallAsync));
-        AddDisclosure(options, "고급 연결 설정", advanced);
         options.Controls.Add(Row(
             ActionButton("클립보드 설정 저장", () =>
             {
@@ -956,7 +944,7 @@ public sealed partial class MainForm : Form
                 ? "동기화 꺼짐 · 아래 기기간 복붙을 켜 주세요."
                 : _clipboardSync?.ActiveTargetConnected == true
                     ? "휴대폰 클립보드 채널 연결됨 · 복사한 내용을 자동으로 보냅니다."
-                    : "휴대폰 앱 연결 대기 · LINKO의 ‘PC 연결’을 누르고 PC에서 기기를 등록해 주세요.";
+                    : "휴대폰 자동 연결 대기 · Bluetooth 연결과 앱 권한을 확인해 주세요.";
             if (_input.IsRemote)
             {
                 if (_ble.Ready)
@@ -1267,6 +1255,7 @@ public sealed partial class MainForm : Form
     private void LoadSettingsToUi()
     {
         _mouseSpeed.Value = _settings.MouseSpeedPercent;
+        _mouseSpeedExact.Value = _mouseSpeed.Value;
         _scrollSpeed.Value = _settings.ScrollSpeedPercent;
         _invertScroll.Checked = _settings.InvertScroll;
         LoadActiveDeviceProfileToUi();
@@ -1282,7 +1271,7 @@ public sealed partial class MainForm : Form
         _clipboardBleImageLimit.Value = _settings.ClipboardBleImageLimitKb;
         _p2pLinkName.Text = _settings.P2PLinkName;
 
-        _mouseSpeedValue.Text = $"{_mouseSpeed.Value}%";
+        _mouseSpeedValue.Text = "%";
         _scrollSpeedValue.Text = $"{_scrollSpeed.Value}%";
     }
 
@@ -1324,7 +1313,7 @@ public sealed partial class MainForm : Form
             _activeModifierProfile);
         RegisterShortcutFallbacks();
 
-        _mouseSpeedValue.Text = $"{_mouseSpeed.Value}%";
+        _mouseSpeedValue.Text = "%";
         _scrollSpeedValue.Text = $"{_scrollSpeed.Value}%";
         RefreshHotkeyUi();
 
@@ -1455,11 +1444,11 @@ public sealed partial class MainForm : Form
         var previousP2PLinkName = _settings.P2PLinkName;
 
         _settings.ClipboardHistoryLimit = (int)_clipboardLimit.Value;
-        _settings.CaptureClipboardText = _captureClipboardText.Checked;
-        _settings.CaptureClipboardImages = _captureClipboardImages.Checked;
-        _settings.ClipboardSyncEnabled = _clipboardSyncEnabled.Checked;
-        _settings.ClipboardAutoSendText = _clipboardSyncText.Checked;
-        _settings.ClipboardAutoSendImages = _clipboardSyncImages.Checked;
+        _settings.CaptureClipboardText = true;
+        _settings.CaptureClipboardImages = false;
+        _settings.ClipboardSyncEnabled = true;
+        _settings.ClipboardAutoSendText = true;
+        _settings.ClipboardAutoSendImages = false;
         _settings.ClipboardBleImageLimitKb = (int)_clipboardBleImageLimit.Value;
         _settings.P2PLinkName = _p2pLinkName.Text;
         _clipboard?.Configure(
@@ -1481,7 +1470,7 @@ public sealed partial class MainForm : Form
                 Log($"P2P 링크 이름 변경 · DIRECT-CP-{_settings.P2PLinkName}");
             }
 
-            Log($"클립보드 설정 저장 · 최대 {_settings.ClipboardHistoryLimit}개 · 동기화:{_settings.ClipboardSyncEnabled} · BLE 이미지 {_settings.ClipboardBleImageLimitKb} KiB");
+            Log($"클립보드 설정 저장 · 최대 {_settings.ClipboardHistoryLimit}개 · 텍스트 자동 동기화");
 
             if (_clipboardSync is not null)
             {
@@ -1530,7 +1519,7 @@ public sealed partial class MainForm : Form
         try
         {
             _clipboardList.Items.Clear();
-            foreach (var entry in _clipboard.Entries)
+            foreach (var entry in _clipboard.Entries.Where(entry => entry.Kind == ClipboardEntryKind.Text).ToArray())
                 _clipboardList.Items.Add(entry);
 
             if (selectedId is not null)
@@ -1557,7 +1546,7 @@ public sealed partial class MainForm : Form
             button.Enabled = _clipboardList.SelectedItem is ClipboardEntry;
         if (_clipboardList.SelectedItem is not ClipboardEntry entry)
         {
-            _clipboardDetail.Text = "아직 복사한 내용이 없어요. 텍스트나 이미지를 복사하면 여기에 표시됩니다.";
+            _clipboardDetail.Text = "아직 복사한 내용이 없어요. 텍스트를 복사하면 여기에 표시됩니다.";
             return;
         }
 
@@ -2152,9 +2141,7 @@ public sealed partial class MainForm : Form
 
         var delayMs = _ble.MousePacingIntervalMs - elapsedMs;
         if (delayMs > 0.5)
-            await Task.Delay(
-                TimeSpan.FromMilliseconds(Math.Ceiling(delayMs)),
-                token).ConfigureAwait(false);
+            await PrecisionDelay.WaitAsync(TimeSpan.FromMilliseconds(delayMs), token).ConfigureAwait(false);
     }
 
     private async Task PumpAsync()
@@ -2163,7 +2150,7 @@ public sealed partial class MainForm : Form
         {
             try
             {
-                var envelope = await _outbox.TakeAsync(_lifetime.Token);
+                var envelope = await _outbox.TakeAsync(_lifetime.Token).ConfigureAwait(false);
                 var pointer = envelope.Packet as PointerPacket;
                 if (pointer is not null)
                 {

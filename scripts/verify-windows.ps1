@@ -42,6 +42,10 @@ Write-Host "== Windows build ==" -ForegroundColor Cyan
 dotnet build (Join-Path $repo "src/ConPhone.Windows") -c $Configuration
 Assert-NativeSuccess "Windows build"
 
+Write-Host "== Release behavior checks ==" -ForegroundColor Cyan
+dotnet run --project (Join-Path $repo "src/ConPhone.Windows") -c $Configuration -- --release-selftest
+Assert-NativeSuccess "Release self-test"
+
 Write-Host "== Real Windows clipboard roundtrip ==" -ForegroundColor Cyan
 dotnet run --project (Join-Path $repo "src/ConPhone.Windows") -c $Configuration -- --clipboard-selftest
 Assert-NativeSuccess "Clipboard self-test"

@@ -11,8 +11,8 @@ android {
         applicationId = "universe.dia.conphone"
         minSdk = 31
         targetSdk = 35
-        versionCode = 9
-        versionName = "0.4.0"
+        versionCode = 10
+        versionName = "1.0.0"
         testInstrumentationRunner = "universe.dia.conphone.ImageProviderSmoke"
     }
 
@@ -24,9 +24,12 @@ android {
     kotlinOptions {
         jvmTarget = "17"
     }
+    buildFeatures { aidl = true }
 }
 
 
 dependencies {
+    implementation("dev.rikka.shizuku:api:13.1.5")
+    implementation("dev.rikka.shizuku:provider:13.1.5")
     testImplementation("junit:junit:4.13.2")
 }
