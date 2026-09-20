@@ -1,6 +1,5 @@
 import Foundation
 import CryptoKit
-import Security
 
 enum ClipboardKind: UInt8 {
     case text = 1
@@ -111,16 +110,13 @@ enum ClipboardProtocol {
 
             try ClipboardProtocol.validate(content.kind, content.data)
 
-            var transferId = Data(count: 16)
-            let status = transferId.withUnsafeMutableBytes { buffer in
-                SecRandomCopyBytes(
-                    kSecRandomDefault,
-                    16,
-                    buffer.baseAddress!)
-            }
-            guard status == errSecSuccess else {
-                throw ProtocolError.random
-            }
+            var random = SystemRandomNumberGenerator()
+            let transferId = Data(
+                (0..<16).map { _ in
+                    UInt8.random(
+                        in: UInt8.min...UInt8.max,
+                        using: &random)
+                })
 
             self.content = content
             self.chunkSize = chunkSize
@@ -287,7 +283,6 @@ enum ClipboardProtocol {
         case invalidFrame
         case tooLarge
         case integrity
-        case random
         case busy
     }
 }
