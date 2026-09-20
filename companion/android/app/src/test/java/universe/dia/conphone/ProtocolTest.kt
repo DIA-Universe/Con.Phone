@@ -5,6 +5,26 @@ import org.junit.Test
 
 class ProtocolTest {
     @Test
+    fun p2pSessionKeyMatchesWindowsVector() {
+        val secret = ByteArray(32) { it.toByte() }
+        val deviceHash = ByteArray(32) { (it + 32).toByte() }
+        val clientNonce = ByteArray(16) { it.toByte() }
+        val serverNonce = ByteArray(16) { (it + 16).toByte() }
+
+        val key = P2PSecurity.deriveSessionKey(
+            secret,
+            deviceHash,
+            clientNonce,
+            serverNonce
+        )
+
+        assertEquals(
+            "16BE739CCB5056785C93854CFD3C384105BE7F799292A5BEBA8FFE2BE73248D0",
+            key.joinToString("") { "%02X".format(it) }
+        )
+    }
+
+    @Test
     fun textRoundTripOutOfOrder() {
         val source = ClipboardProtocol.text("한글🙂abc".repeat(300))
         val frames = ClipboardProtocol.encode(source, 256)
