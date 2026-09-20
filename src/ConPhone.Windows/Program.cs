@@ -110,6 +110,25 @@ internal static class Program
 
     private static void RunClipboardSelfTest()
     {
+        // Do not leave test markers in the user's clipboard after verification.
+        var original = Clipboard.GetDataObject();
+        var snapshot = new DataObject();
+        if (original is not null)
+            foreach (var format in original.GetFormats(false))
+            {
+                var value = original.GetData(format, false);
+                if (value is not null) snapshot.SetData(format, false, value);
+            }
+        try { RunClipboardSelfTestCore(); }
+        finally
+        {
+            if (original is null) Clipboard.Clear();
+            else Clipboard.SetDataObject(snapshot, true, 10, 100);
+        }
+    }
+
+    private static void RunClipboardSelfTestCore()
+    {
         var marker = $"Con.Phone 한글🙂 clipboard self-test {Guid.NewGuid():N}";
         Clipboard.SetText(marker, TextDataFormat.UnicodeText);
 

@@ -1188,15 +1188,8 @@ public sealed partial class MainForm : Form
                 }
             });
 
-            if (_clipboard.TryGetLatestContent(out var latest))
-            {
-                _latestLocalClipboard = latest;
-                Interlocked.CompareExchange(
-                    ref _latestClipboardGeneration,
-                    1,
-                    0);
-            }
-
+            // History is not the current system clipboard. Only a fresh capture
+            // may become an automatic-send candidate after startup.
             _clipboard.CaptureNow();
             RefreshClipboardList();
         }
@@ -1894,9 +1887,11 @@ public sealed partial class MainForm : Form
                 MessageBoxIcon.Question) != DialogResult.Yes)
             return;
 
+        var previousTarget = _ble.ApprovedId;
         await _ble.ApproveAsync(peer.Id);
         _ = ClipboardPairingSecretStore.GetOrCreate(peer.Id);
-        _clipboardSync?.TargetChanged();
+        if (!string.Equals(previousTarget, peer.Id, StringComparison.Ordinal))
+            _clipboardSync?.TargetChanged();
         LoadActiveDeviceProfileToUi();
         ApplyInputSettings(save: false);
         await RefreshPeersAsync(true);
@@ -1990,8 +1985,10 @@ public sealed partial class MainForm : Form
         if (!peer.Trusted)
             throw new InvalidOperationException("먼저 이 기기를 등록해 주세요.");
 
+        var previousTarget = _ble.ApprovedId;
         await _ble.SelectTargetAsync(peer.Id);
-        _clipboardSync?.TargetChanged();
+        if (!string.Equals(previousTarget, peer.Id, StringComparison.Ordinal))
+            _clipboardSync?.TargetChanged();
         LoadActiveDeviceProfileToUi();
         ApplyInputSettings(save: false);
         await RefreshPeersAsync(true);

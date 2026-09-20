@@ -274,7 +274,8 @@ class ClipboardBridgeService : Service() {
             if (scanning && gatt == null && !destroyed) {
                 runCatching { scanner.stopScan(scanCallback) }
                 scanning = false
-                showStatus("PC 검색 지연 · 앱의 ‘페어링된 PC 직접 선택’을 눌러 연결해 주세요")
+                showStatus("PC 검색 지연 · 5초 후 재검색합니다. ‘페어링된 PC 직접 선택’으로도 연결할 수 있어요")
+                main.postDelayed({ if (!destroyed && gatt == null && !scanning) beginScan() }, 5000)
             }
         }, 15_000)
     }
