@@ -45,6 +45,10 @@ class ClipboardBridgeService : Service() {
     companion object {
         @Volatile var latestStatus = "연결 서비스를 시작해 주세요."
             private set
+        const val ACTION_CONNECT_DEVICE = "universe.dia.conphone.CONNECT_DEVICE"
+        const val EXTRA_DEVICE_ADDRESS = "device_address"
+        const val CONNECTION_PREFS = "conphone_connection"
+        const val SAVED_PC_ADDRESS = "pc_address"
         const val ACTION_START = "universe.dia.conphone.START"
         const val ACTION_SEND = "universe.dia.conphone.SEND"
         const val ACTION_SEND_SHARED_TEXT = "universe.dia.conphone.SEND_SHARED_TEXT"
@@ -205,6 +209,7 @@ class ClipboardBridgeService : Service() {
                 stopSelf()
                 return START_NOT_STICKY
             }
+            ACTION_CONNECT_DEVICE -> connectSelectedPc(intent?.getStringExtra(EXTRA_DEVICE_ADDRESS))
             ACTION_SEND -> sendCurrentClipboard()
             ACTION_SEND_SHARED_TEXT -> sendSharedText(
                 intent?.getStringExtra(EXTRA_SHARED_TEXT))
@@ -240,6 +245,11 @@ class ClipboardBridgeService : Service() {
         }
 
         if (scanning || gatt != null) return
+        val savedAddress = getSharedPreferences(CONNECTION_PREFS, MODE_PRIVATE).getString(SAVED_PC_ADDRESS, null)
+        val savedPc = adapter.bondedDevices.firstOrNull {
+            it.address == savedAddress && (rejectedBleDevices[it.address] ?: 0) <= System.currentTimeMillis()
+        }
+        if (savedPc != null) { connectDevice(savedPc); return }
         val scanner = adapter.bluetoothLeScanner ?: run {
             showStatus("BLE 스캐너 사용 불가")
             return
@@ -260,6 +270,43 @@ class ClipboardBridgeService : Service() {
         scanning = true
         showStatus("Con.Phone PC 검색 중 · Clipboard/HID UUID")
         scanner.startScan(filters, settings, scanCallback)
+        main.postDelayed({
+            if (scanning && gatt == null && !destroyed) {
+                runCatching { scanner.stopScan(scanCallback) }
+                scanning = false
+                showStatus("PC 검색 지연 · 앱의 ‘페어링된 PC 직접 선택’을 눌러 연결해 주세요")
+            }
+        }, 15_000)
+    }
+
+    private fun connectSelectedPc(address: String?) {
+        if (checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT) != PackageManager.PERMISSION_GRANTED) return
+        val adapter = getSystemService(BluetoothManager::class.java).adapter ?: return
+        val device = adapter.bondedDevices.firstOrNull { it.address == address }
+        if (device == null) { showStatus("먼저 휴대폰 Bluetooth 설정에서 PC와 페어링해 주세요"); return }
+        p2p?.close()
+        p2p = null
+        gatt?.let { gattCallback.onConnectionStateChange(it, 0, BluetoothProfile.STATE_DISCONNECTED) }
+        getSharedPreferences(CONNECTION_PREFS, MODE_PRIVATE).edit().putString(SAVED_PC_ADDRESS, device.address).apply()
+        rejectedBleDevices.remove(device.address)
+        connectDevice(device)
+    }
+
+    private fun connectDevice(device: BluetoothDevice) {
+        if (destroyed || gatt != null) return
+        val adapter = getSystemService(BluetoothManager::class.java).adapter ?: return
+        runCatching { adapter.bluetoothLeScanner?.stopScan(scanCallback) }
+        scanning = false
+        showStatus("${device.name ?: "선택한 PC"} 연결 중 · 클립보드 서비스 확인")
+        handshakeComplete = false
+        recoveringGatt = null
+        gatt = device.connectGatt(this, false, gattCallback, BluetoothDevice.TRANSPORT_LE,
+            BluetoothDevice.PHY_LE_1M_MASK, main)
+        val connecting = gatt
+        main.postDelayed({
+            if (connecting != null && gatt === connecting && !handshakeComplete)
+                restartGatt(connecting, "PC 연결 준비 시간 초과 · PC의 클립보드 동기화/기기 등록을 확인하세요")
+        }, 25_000)
     }
 
     private val scanCallback = object : ScanCallback() {
@@ -274,26 +321,7 @@ class ClipboardBridgeService : Service() {
             if (address != null && rejectedBleDevices[address]?.let { it > now } == true)
                 return
 
-            val adapter = getSystemService(BluetoothManager::class.java).adapter ?: return
-            runCatching { adapter.bluetoothLeScanner?.stopScan(this) }
-            scanning = false
-
-            showStatus("PC BLE 연결 중")
-            handshakeComplete = false
-            recoveringGatt = null
-            gatt = result.device.connectGatt(
-                this@ClipboardBridgeService,
-                false,
-                gattCallback,
-                BluetoothDevice.TRANSPORT_LE,
-                BluetoothDevice.PHY_LE_1M_MASK,
-                main
-            )
-            val connecting = gatt
-            main.postDelayed({
-                if (connecting != null && gatt === connecting && !handshakeComplete)
-                    restartGatt(connecting, "PC 연결 준비 시간 초과 · PC에서 클립보드 동기화/기기 등록을 확인하세요")
-            }, 25_000)
+            connectDevice(result.device)
         }
 
         override fun onScanFailed(errorCode: Int) {
@@ -437,8 +465,10 @@ class ClipboardBridgeService : Service() {
             readCompleted(g)
             if (status == BluetoothGatt.GATT_SUCCESS)
                 handleCharacteristicRead(characteristic, characteristic.value ?: byteArrayOf())
-            else if (characteristic.uuid == SECRET_UUID)
+            else if (characteristic.uuid == SECRET_UUID) {
+                showStatus("PC가 클립보드 연결을 승인하지 않았어요 (상태 $status). PC의 ‘이 기기 사용’과 동기화 설정을 확인하세요.")
                 retrySecretRead(g)
+            }
             else if (characteristic.uuid == CAPABILITIES_UUID) {
                 bleImageLimitBytes = 512 * 1024
                 scheduleCapabilitiesRead()
@@ -467,8 +497,10 @@ class ClipboardBridgeService : Service() {
             readCompleted(g)
             if (status == BluetoothGatt.GATT_SUCCESS)
                 handleCharacteristicRead(characteristic, value)
-            else if (characteristic.uuid == SECRET_UUID)
+            else if (characteristic.uuid == SECRET_UUID) {
+                showStatus("PC가 클립보드 연결을 승인하지 않았어요 (상태 $status). PC의 ‘이 기기 사용’과 동기화 설정을 확인하세요.")
                 retrySecretRead(g)
+            }
             else if (characteristic.uuid == CAPABILITIES_UUID) {
                 bleImageLimitBytes = 512 * 1024
                 scheduleCapabilitiesRead()
@@ -545,6 +577,9 @@ class ClipboardBridgeService : Service() {
             SECRET_UUID -> {
                 if (value.size != 64) return
                 handshakeComplete = true
+                gatt?.device?.let { pc ->
+                    getSharedPreferences(CONNECTION_PREFS, MODE_PRIVATE).edit().putString(SAVED_PC_ADDRESS, pc.address).apply()
+                }
                 credential = Credential(
                     value.copyOfRange(0, 32),
                     value.copyOfRange(32, 64)

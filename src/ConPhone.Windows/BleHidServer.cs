@@ -433,13 +433,14 @@ public sealed class BleHidServer : IDisposable
     {
         if (_devices.ContainsKey(id)) return;
 
-        await _deviceGate.WaitAsync().ConfigureAwait(false);
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+        await _deviceGate.WaitAsync(timeout.Token).ConfigureAwait(false);
         try
         {
             if (_devices.ContainsKey(id)) return;
 
             _lastOperation = "BluetoothLEDevice.FromIdAsync";
-            var device = await BluetoothLEDevice.FromIdAsync(id);
+            var device = await BluetoothLEDevice.FromIdAsync(id).AsTask(timeout.Token).ConfigureAwait(false);
             if (device is null) return;
 
             device.ConnectionStatusChanged += (sender, _) =>

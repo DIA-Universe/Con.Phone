@@ -99,6 +99,7 @@ class MainActivity : Activity() {
         statusText = text(if (hasBluetoothPermissions()) "Bluetooth 권한이 준비됐어요. PC 연결을 시작하세요." else "처음 연결할 때 주변 기기 권한을 허용해 주세요.", 14f)
         connect.addView(statusText)
         button(connect, "PC 연결 시작", true) { ensurePermissionsAndStart() }
+        button(connect, "페어링된 PC 직접 선택") { choosePairedPc() }
 
         val send = card(root, "2. 복사한 내용 보내기", "복사한 뒤 이 화면으로 돌아오면 자동으로 PC에 보냅니다. 다른 앱에서는 공유 → Con.Phone도 사용할 수 있어요.")
         button(send, "PC로 보내기", true) {
@@ -117,6 +118,15 @@ class MainActivity : Activity() {
             statusText.text = "연결 서비스를 중지했어요. 다시 연결하려면 위 버튼을 누르세요."
         }
         root.addView(text("PC → 휴대폰: PC의 클립보드 동기화를 켜면 복사할 때 자동 전송합니다. Android 정책상 다른 앱을 사용하는 동안에는 폰의 클립보드를 자동으로 읽을 수 없어요. 이미지 붙여넣기는 사용하는 앱에 따라 지원 여부가 달라요.", 13f))
+        @Suppress("DEPRECATION")
+        val installedVersion = packageManager.getPackageInfo(packageName, 0).versionName ?: "알 수 없음"
+        val updates = card(root, "앱 업데이트", "현재 버전 $installedVersion · 최신 시험판도 확인할 수 있어요.")
+        button(updates, "최신 업데이트 확인 · APK 다운로드", true) {
+            runCatching {
+                startActivity(Intent(Intent.ACTION_VIEW, android.net.Uri.parse("https://github.com/DIA-Universe/Con.Phone/releases")))
+            }.onFailure { statusText.text = "브라우저를 열 수 없습니다. GitHub의 Con.Phone Releases에서 다운로드해 주세요." }
+        }
+        updates.addView(text("브라우저에서 최신 버전의 Assets → APK를 선택하세요. 비공개 저장소라 접근 권한이 있는 GitHub 계정 로그인이 필요합니다.", 13f))
         setContentView(scroll)
         // Explain permissions before requesting them; explicit share intents still start immediately.
         if (pendingServiceIntent != null) ensurePermissionsAndStart()
@@ -163,6 +173,25 @@ class MainActivity : Activity() {
         }.onFailure {
             android.widget.Toast.makeText(this, "클립보드 준비 실패: ${it.message}", android.widget.Toast.LENGTH_LONG).show()
         }
+    }
+
+    private fun choosePairedPc() {
+        if (!hasBluetoothPermissions()) { requestPermissions(); return }
+        val adapter = getSystemService(android.bluetooth.BluetoothManager::class.java).adapter
+        val devices = adapter?.bondedDevices?.sortedBy { it.name ?: it.address }.orEmpty()
+        if (devices.isEmpty()) {
+            statusText.text = "휴대폰 Bluetooth 설정에서 먼저 이 PC와 페어링해 주세요."
+            return
+        }
+        android.app.AlertDialog.Builder(this)
+            .setTitle("Con.Phone을 실행한 PC 선택")
+            .setItems(devices.map { "${it.name ?: "이름 없는 기기"} · ${it.address.takeLast(5)}" }.toTypedArray()) { _, index ->
+                startForegroundService(Intent(this, ClipboardBridgeService::class.java)
+                    .setAction(ClipboardBridgeService.ACTION_CONNECT_DEVICE)
+                    .putExtra(ClipboardBridgeService.EXTRA_DEVICE_ADDRESS, devices[index].address))
+            }
+            .setNegativeButton("취소", null)
+            .show()
     }
 
     private fun ensurePermissionsAndStart() {

@@ -228,7 +228,7 @@ public sealed class BleClipboardService : IDisposable
             var credential = new byte[64];
             deviceHash.CopyTo(credential, 0);
             secret.CopyTo(credential, 32);
-            request.RespondWithValue(credential.AsBuffer());
+            RespondRead(request, credential);
         }
         catch (Exception ex)
         {
@@ -277,7 +277,7 @@ public sealed class BleClipboardService : IDisposable
                 response[8] == 1 && _p2pRequested()
                     ? (byte)1
                     : (byte)0;
-            request.RespondWithValue(response.AsBuffer());
+            RespondRead(request, response);
         }
         finally
         {
@@ -302,10 +302,10 @@ public sealed class BleClipboardService : IDisposable
             }
 
             var config = _directLinkConfig();
-            request.RespondWithValue(
+            RespondRead(request,
                 config is null
-                    ? new byte[] { 0 }.AsBuffer()
-                    : config.Encode().AsBuffer());
+                    ? new byte[] { 0 }
+                    : config.Encode());
         }
         catch (Exception ex)
         {
@@ -315,6 +315,14 @@ public sealed class BleClipboardService : IDisposable
         {
             deferral.Complete();
         }
+    }
+
+    internal static byte[] ReadSlice(byte[] value, int offset) => value.AsSpan(offset).ToArray();
+
+    private static void RespondRead(GattReadRequest request, byte[] value)
+    {
+        if (request.Offset > value.Length) request.RespondWithProtocolError(0x07);
+        else request.RespondWithValue(ReadSlice(value, (int)request.Offset).AsBuffer());
     }
 
     private async void RxWriteRequested(

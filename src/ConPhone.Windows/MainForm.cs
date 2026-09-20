@@ -26,7 +26,8 @@ public sealed partial class MainForm : Form
     private ModifierProfile _activeModifierProfile;
     private readonly CancellationTokenSource _lifetime = new();
     private readonly SemaphoreSlim _actions = new(1, 1);
-    private int _healthCheckRunning, _clipboardSendRunning;
+    private int _healthCheckRunning, _clipboardSendRunning, _peerRefreshRunning;
+    private readonly SemaphoreSlim _inputActions = new(1, 1);
     private long _lastPointerDispatchTicks;
     private readonly Label _clipboardConnection = new() { AutoSize = true, MaximumSize = new Size(780, 0) };
 
@@ -370,7 +371,7 @@ public sealed partial class MainForm : Form
         footer.RowStyles.Add(new RowStyle(SizeType.Absolute, 24));
         _quickHotkeyHelp.Margin = new Padding(0, 12, 0, 0);
         footer.Controls.Add(_quickHotkeyHelp, 0, 0);
-        _toggleButton = ActionButton("휴대폰으로 전환", ToggleAsync, primary: true);
+        _toggleButton = ActionButton("휴대폰으로 전환", ToggleAsync, primary: true, critical: true);
         _toggleButton.Enabled = false;
         var back = ActionButton("이 PC로 돌아오기", ReturnLocalAsync, critical: true);
         var actions = new FlowLayoutPanel { Dock = DockStyle.Fill, WrapContents = false, FlowDirection = FlowDirection.RightToLeft, Margin = Padding.Empty };
@@ -449,7 +450,7 @@ public sealed partial class MainForm : Form
         var tip = AutoSection(InfoWeak);
         tip.Controls.Add(SectionTitle("이제 PC 키보드와 마우스로"));
         tip.Controls.Add(Help("아래 ‘휴대폰으로 전환’을 누르면 입력이 휴대폰으로 이동합니다. 언제든 PC 복귀 단축키로 돌아오세요."));
-        tip.Controls.Add(ActionButton("휴대폰 잠그고 PC로 돌아오기", LockPhoneAndReturnAsync));
+        tip.Controls.Add(ActionButton("휴대폰 잠그고 PC로 돌아오기", LockPhoneAndReturnAsync, critical: true));
         flow.Controls.Add(tip);
 
         return tab;
@@ -995,7 +996,7 @@ public sealed partial class MainForm : Form
         _peerTimer.Tick += (_, _) =>
         {
             if (_ble.Advertisement is "Started" or "StartedWithoutAllAdvertisementData")
-                Dispatch(() => RefreshPeersAsync(true));
+                _ = RefreshPeersInBackgroundAsync();
         };
         _peerTimer.Start();
 
@@ -1307,7 +1308,7 @@ public sealed partial class MainForm : Form
         _input.ConfigureKeyboard(
             _activeHangulMode,
             _activeModifierProfile);
-        RegisterEmergencyFallback();
+        RegisterShortcutFallbacks();
 
         _mouseSpeedValue.Text = $"{_mouseSpeed.Value}%";
         _scrollSpeedValue.Text = $"{_scrollSpeed.Value}%";
@@ -1602,7 +1603,7 @@ public sealed partial class MainForm : Form
 
     private void DispatchCritical(Func<Task> action) => Post(async () =>
     {
-        await _actions.WaitAsync();
+        await _inputActions.WaitAsync();
 
         try
         {
@@ -1614,7 +1615,7 @@ public sealed partial class MainForm : Form
         }
         finally
         {
-            _actions.Release();
+            _inputActions.Release();
         }
     });
 
@@ -1642,6 +1643,7 @@ public sealed partial class MainForm : Form
     private void ImmediateLocal()
     {
         _input.Deactivate();
+        _input.RefreshHooks();
         _ble.SetInteractiveMode(false);
         Interlocked.Exchange(ref _bleNotReadySinceTicks, 0);
         _pointerScaler.Reset();
@@ -1703,6 +1705,8 @@ public sealed partial class MainForm : Form
         if (epoch != Volatile.Read(ref _epoch) || !_ble.Ready)
             return;
 
+        await _input.RefreshHooksAsync();
+        if (epoch != Volatile.Read(ref _epoch) || !_ble.Ready) return;
         _pointerScaler.Reset();
         Interlocked.Exchange(ref _bleNotReadySinceTicks, 0);
         _ble.SetInteractiveMode(true);
@@ -2021,10 +2025,19 @@ public sealed partial class MainForm : Form
             $"기기 해제 완료 · 남은 등록 {_ble.TrustedDeviceCount}/{TrustedDeviceStore.MaxDevices}");
     }
 
+    private async Task RefreshPeersInBackgroundAsync()
+    {
+        if (_closing || Interlocked.Exchange(ref _peerRefreshRunning, 1) != 0) return;
+        try { await RefreshPeersAsync(true); }
+        catch (Exception ex) { if (!_closing) Log($"기기 목록 조회 재시도: {ex.Message}"); }
+        finally { Volatile.Write(ref _peerRefreshRunning, 0); }
+    }
+
     private async Task RefreshPeersAsync(bool silent = false)
     {
         var selectedId = (_peers.SelectedItem as Peer)?.Id;
         var peers = await _ble.GetPeersAsync();
+        if (_closing || IsDisposed) return;
 
         _peers.BeginUpdate();
         try

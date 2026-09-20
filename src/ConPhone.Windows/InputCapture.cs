@@ -28,6 +28,8 @@ public sealed class InputCapture : IDisposable
     private readonly HashSet<int> _downKeys = [];
     private readonly HashSet<int> _suppressUntilUp = [];
     private readonly HashSet<int> _localPassthroughUntilUp = [];
+    private readonly System.Collections.Concurrent.ConcurrentQueue<TaskCompletionSource> _hookRefreshes = new();
+    private volatile bool _disposed;
 
     private byte _buttons;
     private int _wheel, _pan;
@@ -41,6 +43,7 @@ public sealed class InputCapture : IDisposable
     public event Action<string>? Fault;
 
     public bool IsRemote => _remote;
+    public bool IsCapturingHotkey { get { lock (_gate) return _captureCallback is not null; } }
     public Task Started => _started.Task;
 
     public InputCapture()
@@ -191,6 +194,41 @@ public sealed class InputCapture : IDisposable
             _buttons = 0;
             _wheel = 0;
             _pan = 0;
+        }
+    }
+
+    public async void RefreshHooks()
+    {
+        try { await RefreshHooksAsync().ConfigureAwait(false); }
+        catch (Exception ex) { if (!_disposed) Fault?.Invoke($"입력 훅 복구 실패: {ex.Message}"); }
+    }
+
+    public Task RefreshHooksAsync()
+    {
+        if (_disposed) return Task.CompletedTask;
+        var completion = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        _hookRefreshes.Enqueue(completion);
+        if (_sink is null || !PostMessage(_sink.Handle, 0x8002, 0, 0))
+            completion.TrySetException(new InvalidOperationException("입력 훅 스레드가 준비되지 않았습니다."));
+        return completion.Task;
+    }
+
+    private void ReinstallHooks()
+    {
+        // Windows may silently remove a low-level hook after a timeout/suspend.
+        // Restore it on its owning thread; never install hooks on the UI thread.
+        if (_remote) return;
+        if (_keyboardHook != 0) UnhookWindowsHookEx(_keyboardHook);
+        if (_mouseHook != 0) UnhookWindowsHookEx(_mouseHook);
+        _keyboardHook = SetWindowsHookEx(13, _keyboardDelegate!, GetModuleHandle(null), 0);
+        _mouseHook = SetWindowsHookEx(14, _mouseDelegate!, GetModuleHandle(null), 0);
+        if (_keyboardHook == 0 || _mouseHook == 0) throw new Win32Exception();
+        lock (_gate)
+        {
+            // A missed key-up must not permanently hide subsequent shortcut presses.
+            _downKeys.Clear();
+            _suppressUntilUp.RemoveWhere(key => (GetAsyncKeyState(key) & 0x8000) == 0);
+            _localPassthroughUntilUp.RemoveWhere(key => (GetAsyncKeyState(key) & 0x8000) == 0);
         }
     }
 
@@ -532,6 +570,14 @@ public sealed class InputCapture : IDisposable
             {
                 if (m.Msg == 0xFF) _owner.Raw(m.LParam);
                 if (m.Msg == 0x8001) Application.ExitThread();
+                if (m.Msg == 0x8002)
+                {
+                    while (_owner._hookRefreshes.TryDequeue(out var completion))
+                    {
+                        try { _owner.ReinstallHooks(); completion.TrySetResult(); }
+                        catch (Exception ex) { completion.TrySetException(ex); }
+                    }
+                }
             }
             catch (Exception ex)
             {
@@ -547,6 +593,9 @@ public sealed class InputCapture : IDisposable
 
     public void Dispose()
     {
+        if (_disposed) return;
+        _disposed = true;
+        while (_hookRefreshes.TryDequeue(out var completion)) completion.TrySetCanceled();
         Deactivate();
         CancelHotkeyCapture();
 

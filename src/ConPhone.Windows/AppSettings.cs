@@ -54,6 +54,11 @@ public sealed class ConPhoneSettings
 
 public static class SettingsStore
 {
+    internal static readonly JsonSerializerOptions JsonOptions = new()
+    {
+        WriteIndented = true,
+        Converters = { new JsonStringEnumConverter() }
+    };
     private static readonly string DirectoryPath = Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "ConPhone");
 
@@ -64,8 +69,7 @@ public static class SettingsStore
         try
         {
             if (!File.Exists(FilePath)) return new ConPhoneSettings();
-            var settings = JsonSerializer.Deserialize<ConPhoneSettings>(File.ReadAllText(FilePath));
-            return Normalize(settings ?? new ConPhoneSettings());
+            return ReadJson(File.ReadAllText(FilePath));
         }
         catch
         {
@@ -73,15 +77,14 @@ public static class SettingsStore
         }
     }
 
+    internal static ConPhoneSettings ReadJson(string json) => Normalize(
+        JsonSerializer.Deserialize<ConPhoneSettings>(json, JsonOptions) ?? new ConPhoneSettings());
+
     public static void Save(ConPhoneSettings settings)
     {
         Directory.CreateDirectory(DirectoryPath);
         var normalized = Normalize(settings);
-        var json = JsonSerializer.Serialize(normalized, new JsonSerializerOptions
-        {
-            WriteIndented = true,
-            Converters = { new JsonStringEnumConverter() }
-        });
+        var json = JsonSerializer.Serialize(normalized, JsonOptions);
 
         var temp = FilePath + ".tmp";
         File.WriteAllText(temp, json);

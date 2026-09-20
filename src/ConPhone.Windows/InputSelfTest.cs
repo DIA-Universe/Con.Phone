@@ -7,9 +7,28 @@ internal static class InputSelfTest
     // Runs only on explicit CLI request. Always release simulated keys and local capture.
     public static void Run()
     {
+        var saved = new ConPhoneSettings
+        {
+            ClipboardSyncEnabled = true,
+            MouseSpeedPercent = 125,
+            HangulKeyMode = ConPhone.Core.HangulKeyMode.CtrlSpace,
+            ModifierProfile = ConPhone.Core.ModifierProfile.MacCtrlCommandSwap
+        };
+        var restored = SettingsStore.ReadJson(System.Text.Json.JsonSerializer.Serialize(saved, SettingsStore.JsonOptions));
+        if (!restored.ClipboardSyncEnabled || restored.MouseSpeedPercent != 125 ||
+            restored.HangulKeyMode != saved.HangulKeyMode || restored.ModifierProfile != saved.ModifierProfile)
+            throw new InvalidOperationException("Saved settings did not roundtrip; clipboard sync was reset.");
+        var readValue = Enumerable.Range(0, 64).Select(x => (byte)x).ToArray();
+        if (!BleClipboardService.ReadSlice(readValue, 22).SequenceEqual(readValue.Skip(22)) ||
+            BleClipboardService.ReadSlice(readValue, 64).Length != 0)
+            throw new InvalidOperationException("BLE long-read continuation is incorrect.");
         var input = new InputCapture();
         using var returned = new ManualResetEventSlim();
+        using var toggled = new AutoResetEvent(false);
+        using var locked = new AutoResetEvent(false);
         input.Emergency += returned.Set;
+        input.Toggle += () => toggled.Set();
+        input.LockAndReturn += () => locked.Set();
         try
         {
             input.Started.GetAwaiter().GetResult();
@@ -27,12 +46,33 @@ internal static class InputSelfTest
             Key(0xA2, true);
             if (!returned.Wait(2000) || input.IsRemote)
                 throw new InvalidOperationException("Ctrl held during F9 prevented emergency return.");
+
+            for (var cycle = 0; cycle < 20; cycle++)
+            {
+                input.RefreshHooksAsync().WaitAsync(TimeSpan.FromSeconds(2)).GetAwaiter().GetResult();
+                Key(0x77, false); Key(0x77, true);
+                if (!toggled.WaitOne(2000)) throw new InvalidOperationException($"F8 lost after return at cycle {cycle}.");
+                input.Activate();
+                returned.Reset();
+                Key(0x78, false); Key(0x78, true);
+                if (!returned.Wait(2000) || input.IsRemote) throw new InvalidOperationException("F9 cycle failed.");
+                input.RefreshHooksAsync().WaitAsync(TimeSpan.FromSeconds(2)).GetAwaiter().GetResult();
+                Key(0x77, false); Key(0x77, true);
+                if (!toggled.WaitOne(2000)) throw new InvalidOperationException("F8 after F9 was lost.");
+                input.Activate();
+                Key(0xA2, false); Key(0xA4, false); Key(0x4C, false);
+                Key(0x4C, true); Key(0xA4, true); Key(0xA2, true);
+                if (!locked.WaitOne(2000) || input.IsRemote) throw new InvalidOperationException("Lock/return after F9/F8 was lost.");
+            }
         }
         finally
         {
             input.Deactivate();
             Key(0x78, true);
             Key(0xA2, true);
+            Key(0xA4, true);
+            Key(0x4C, true);
+            Key(0x77, true);
             input.Dispose();
         }
 
