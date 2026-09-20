@@ -233,12 +233,17 @@ final class P2PClipboardChannel {
                         return
                     }
 
-                    self.sessionKey = self.hmac(
-                        Data("ConPhone-P2P-Session-v2".utf8) +
-                        self.deviceHash +
-                        clientNonce +
-                        serverNonce
-                    )
+                    do {
+                        self.sessionKey = try P2PSecurity.deriveSessionKey(
+                            secret: self.secret,
+                            deviceHash: self.deviceHash,
+                            clientNonce: clientNonce,
+                            serverNonce: serverNonce)
+                    } catch {
+                        self.onStatus("P2P 세션키 파생 실패")
+                        self.connection.cancel()
+                        return
+                    }
 
                     self.connectionGeneration += 1
                     self.handshakeGeneration += 1
