@@ -311,7 +311,7 @@ internal static class Program
             RedirectStandardError = true
         };
         if (string.Equals(Path.GetFileNameWithoutExtension(Environment.ProcessPath), "dotnet", StringComparison.OrdinalIgnoreCase))
-            start.ArgumentList.Add(typeof(Program).Assembly.Location);
+            start.ArgumentList.Add(Path.Combine(AppContext.BaseDirectory, "LINKO.dll"));
         start.ArgumentList.Add("--clipboard-selftest-write");
         start.ArgumentList.Add(format);
         start.ArgumentList.Add(value);
