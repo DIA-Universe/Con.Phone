@@ -92,6 +92,7 @@ public sealed class BleClipboardService : IDisposable
     private GattLocalCharacteristic? _capabilities;
     private GattLocalCharacteristic? _directLink;
     private bool _disposed;
+    private volatile bool _published;
 
     public Func<string, ClipboardContent, Task<bool>>? ReceiveContentAsync { get; set; }
     public event Action<string>? Status;
@@ -112,7 +113,7 @@ public sealed class BleClipboardService : IDisposable
         _directLinkConfig = directLinkConfig;
     }
 
-    public bool Running => _provider?.AdvertisementStatus is
+    public bool Running => _published || _provider?.AdvertisementStatus is
         GattServiceProviderAdvertisementStatus.Started or
         GattServiceProviderAdvertisementStatus.StartedWithoutAllAdvertisementData;
 
@@ -130,7 +131,11 @@ public sealed class BleClipboardService : IDisposable
 
         _provider = created.ServiceProvider;
         _provider.AdvertisementStatusChanged += (_, args) =>
-            Status?.Invoke($"Clipboard BLE 검색 신호: {args.Status} ({args.Error})");
+        {
+            if (args.Status is GattServiceProviderAdvertisementStatus.Stopped or
+                GattServiceProviderAdvertisementStatus.Aborted) _published = false;
+            Status?.Invoke($"Clipboard BLE 서비스 상태: {args.Status} ({args.Error})");
+        };
 
         _tx = await CreateCharacteristicAsync(
             TxUuid,
@@ -186,11 +191,11 @@ public sealed class BleClipboardService : IDisposable
     {
         if (_provider is null || Running) return;
 
-        _provider.StartAdvertising(new GattServiceProviderAdvertisingParameters
-        {
-            IsConnectable = true,
-            IsDiscoverable = true
-        });
+        _provider.StartAdvertising(ConnectionStartup.ClipboardAdvertisement());
+        // Non-connectable publication can keep AdvertisementStatus at Created.
+        // It is already registered; repeating StartAdvertising then throws E_ILLEGAL_METHOD_CALL.
+        _published = true;
+        Status?.Invoke("Clipboard BLE 서비스 준비 · HID 검색 신호를 함께 사용합니다.");
     }
 
     private async Task<GattLocalCharacteristic> CreateCharacteristicAsync(
@@ -530,6 +535,7 @@ public sealed class BleClipboardService : IDisposable
         {
             if (Running)
                 _provider.StopAdvertising();
+            _published = false;
         }
         catch (Exception ex)
         {

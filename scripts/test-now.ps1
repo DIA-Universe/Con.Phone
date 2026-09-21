@@ -89,4 +89,4 @@ Write-Host "7. 이미지는 전송되지 않고 안내 문구가 표시되는지
 Write-Host "8. 삼성 키보드를 유지한 채 Shizuku 승인 후 다른 앱에서 복사 -> PC 붙여넣기를 확인합니다."
 Write-Host "9. Shizuku 미설정 상태에서는 LINKO 열기 또는 공유 -> LINKO로 전송합니다."
 Write-Host ""
-Write-Host "자세한 체크리스트: docs/LINKO-1.0.0.md"
+Write-Host "자세한 체크리스트: docs/LINKO-$version.md"

@@ -219,6 +219,8 @@ public sealed partial class MainForm : Form
     private long _epoch, _sent, _lastPointerSentTicks, _bleNotReadySinceTicks;
     private int _lastObservedPointerButtons, _lastSentPointerButtons;
     private bool _closing, _closed, _exitRequested, _servicesPaused;
+    private bool _startupCompleted;
+    private string? _lastConnectionDiagnostic;
     private string _lastError = "None";
 
     public MainForm(bool previewMode = false)
@@ -276,6 +278,7 @@ public sealed partial class MainForm : Form
         }
         else
         {
+            SessionDiagnostics.Write($"Start LINKO {LocalUpdateService.CurrentVersion}; PID {Environment.ProcessId}");
             _clipboardSync = new ClipboardSyncCoordinator(
                 () => _ble.ApprovedId,
                 id => _ble.IsTrustedDevice(id),
@@ -420,16 +423,13 @@ public sealed partial class MainForm : Form
             Secondary));
         connect.Controls.Add(Row(
             ActionButton("Bluetooth 설정 열기", () => OpenBluetoothSettingsAsync()),
-            ActionButton("연결 일시 중지", async () =>
+            ActionButton("연결 다시 확인", async () =>
             {
-                _servicesPaused = true;
-                await ReturnLocalAsync();
-
-                if (_clipboardSync is not null)
-                    await _clipboardSync.SetActiveAsync(false);
-
-                _ble.Stop();
-                Log("Bluetooth HID/Clipboard 서비스를 사용자가 중지했습니다.");
+                _servicesPaused = false;
+                await _ble.StartAsync();
+                if (_startupCompleted) await StartClipboardSyncSafeAsync();
+                await RefreshPeersInBackgroundAsync();
+                Log("키보드·마우스 연결을 다시 확인했습니다. 휴대폰 Bluetooth 설정에서 PC를 선택하세요.");
             })));
         flow.Controls.Add(connect);
 
@@ -940,6 +940,12 @@ public sealed partial class MainForm : Form
 
         _timer.Tick += (_, _) =>
         {
+            var connection = $"HID={_ble.Advertisement}; keyboard={_ble.KeyboardSubscribers}; mouse={_ble.MouseSubscribers}; approved={_ble.ApprovedId is not null}; ready={_ble.Ready}; input={_input.Started.Status}; clipboardPublished={_clipboardSync?.BlePublished}; paused={_servicesPaused}";
+            if (connection != _lastConnectionDiagnostic)
+            {
+                _lastConnectionDiagnostic = connection;
+                SessionDiagnostics.Write(connection);
+            }
             _clipboardConnection.Text = !_settings.ClipboardSyncEnabled
                 ? "동기화 꺼짐 · 아래 기기간 복붙을 켜 주세요."
                 : _clipboardSync?.ActiveTargetConnected == true
@@ -982,7 +988,9 @@ public sealed partial class MainForm : Form
                 ? $"휴대폰 조작 중 · {emergency}로 즉시 복귀"
                 : _servicesPaused ? "이 PC 사용 중  ·  휴대폰 연결을 일시 중지했어요"
                 : _ble.Ready ? "이 PC 사용 중  ·  휴대폰으로 전환할 준비가 되었어요"
-                : "이 PC 사용 중  ·  휴대폰을 연결하고 사용할 기기를 선택하세요";
+                : _ble.KeyboardSubscribers == 0 || _ble.MouseSubscribers == 0
+                    ? "이 PC 사용 중  ·  휴대폰 Bluetooth의 키보드·마우스 연결 대기"
+                    : "이 PC 사용 중  ·  목록에서 사용할 휴대폰을 선택하세요";
             _toggleButton.Text = _input.IsRemote ? "이 PC로 전환" : "휴대폰으로 전환";
             _toggleButton.Enabled = _input.IsRemote || _ble.Ready;
 
@@ -1011,22 +1019,34 @@ public sealed partial class MainForm : Form
         Shown += (_, _) => Dispatch(async () =>
         {
             _servicesPaused = false;
+            Log("시작 단계: 입력 수집 준비");
             await _input.Started;
+            Log("시작 단계: 클립보드 기록 준비");
             InitializeClipboardHistory();
 
-            _diagnosis.Text = await BleHidServer.DiagnoseAsync();
+            Log("시작 단계: Bluetooth 어댑터 확인");
+            try { _diagnosis.Text = await BleHidServer.DiagnoseAsync(); }
+            catch (Exception ex) { Log($"어댑터 정보 조회 실패 · HID 연결은 계속 시도합니다. ({ex.Message})"); }
 
-            // Keep the GATT database stable before HID advertising begins. The clipboard
-            // service is defined now but is only advertised/usable after the user opts in.
-            if (_clipboardSync is not null)
-                await _clipboardSync.PrepareBleAsync();
-
-            await _ble.StartAsync();
-            if (_settings.ClipboardSyncEnabled && _clipboardSync is not null)
-                await _clipboardSync.StartAsync();
+            try
+            {
+                await ConnectionStartup.RunAsync(
+                    async () =>
+                    {
+                        Log("시작 단계: 클립보드 GATT 준비");
+                        if (_clipboardSync is not null) await _clipboardSync.PrepareBleAsync();
+                    },
+                    async () => { Log("시작 단계: HID 시작"); await _ble.StartAsync(); },
+                    async () =>
+                    {
+                        if (_settings.ClipboardSyncEnabled && _clipboardSync is not null)
+                            await _clipboardSync.StartAsync();
+                    },
+                    (stage, ex) => Log($"클립보드 {stage} 재시도 대기 · HID는 독립 실행합니다. ({ex.Message})"));
+            }
+            finally { _startupCompleted = true; }
 
             Log("Bluetooth HID 검색 신호를 시작했습니다.");
-            Log("HID 프로필이 바뀌었습니다. LOCK/MEDIA가 0이면 휴대폰에서 기존 PC 등록을 삭제하고 한 번 다시 페어링해 주세요.");
         });
     }
 
@@ -1034,12 +1054,13 @@ public sealed partial class MainForm : Form
     {
         try
         {
-            if (!_closing)
+            if (!_closing && _startupCompleted)
             {
                 if (!_servicesPaused && _ble.DesiredRunning)
                     await _ble.EnsureAdvertisingAsync();
 
                 if (!_servicesPaused &&
+                    _ble.Advertisement is "Started" or "StartedWithoutAllAdvertisementData" &&
                     _settings.ClipboardSyncEnabled &&
                     _clipboardSync is not null)
                     await _clipboardSync.EnsureHealthyAsync();
@@ -1484,7 +1505,7 @@ public sealed partial class MainForm : Form
 
     private async Task StartClipboardSyncSafeAsync()
     {
-        if (_clipboardSync is null || !_settings.ClipboardSyncEnabled)
+        if (!_startupCompleted || _clipboardSync is null || !_settings.ClipboardSyncEnabled)
             return;
 
         try
@@ -1636,6 +1657,7 @@ public sealed partial class MainForm : Form
 
     private void Log(string text)
     {
+        if (!_previewMode) SessionDiagnostics.Write(text);
         if (_events.TextLength > 16000)
             _events.Clear();
 

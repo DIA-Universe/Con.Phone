@@ -58,13 +58,19 @@ public sealed class ClipboardSyncCoordinator : IAsyncDisposable
     }
 
     public int BleSubscribers => _ble.Subscribers;
+    public bool BlePublished => _ble.Running;
     public bool ActiveTargetConnected => _approvedDeviceId() is { } id &&
         (_p2p.HasClient(id) || _ble.HasSubscriber(id));
     public bool P2PLinkRunning => _direct.Running;
     public bool P2PChannelConnected => _p2p.Connected;
     public string? P2PHostAddress => _direct.Config?.HostAddress;
 
-    public Task PrepareBleAsync() => _ble.PrepareAsync();
+    public async Task PrepareBleAsync()
+    {
+        await _lifecycle.WaitAsync().ConfigureAwait(false);
+        try { await _ble.PrepareAsync().ConfigureAwait(false); }
+        finally { _lifecycle.Release(); }
+    }
 
     public async Task StartAsync()
     {

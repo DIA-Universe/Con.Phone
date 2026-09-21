@@ -43,6 +43,7 @@ public sealed class BleHidServer : IDisposable
     private readonly SemaphoreSlim _send = new(1, 1);
     private readonly SemaphoreSlim _deviceGate = new(1, 1);
     private readonly SemaphoreSlim _recoveryGate = new(1, 1);
+    private readonly SemaphoreSlim _startGate = new(1, 1);
 
     private volatile string? _approved;
     private volatile string _lastOperation = "Idle";
@@ -114,6 +115,13 @@ public sealed class BleHidServer : IDisposable
     }
 
     public async Task StartAsync()
+    {
+        await _startGate.WaitAsync();
+        try { await StartCoreAsync(); }
+        finally { _startGate.Release(); }
+    }
+
+    private async Task StartCoreAsync()
     {
         ThrowIfDisposed();
         _desiredRunning = true;
@@ -236,11 +244,7 @@ public sealed class BleHidServer : IDisposable
 
         try
         {
-            _provider.StartAdvertising(new GattServiceProviderAdvertisingParameters
-            {
-                IsConnectable = true,
-                IsDiscoverable = true
-            });
+            _provider.StartAdvertising(ConnectionStartup.HidAdvertisement());
             _lastOperation = $"AdvertisingRequested:{_provider.AdvertisementStatus}";
         }
         catch (InvalidOperationException ex) when (IsIllegalState(ex))
