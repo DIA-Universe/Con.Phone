@@ -1012,10 +1012,10 @@ public sealed partial class MainForm : Form
                             1000.0 /
                             System.Diagnostics.Stopwatch.Frequency;
 
-                        if (elapsedMs >= 1500)
+                        if (elapsedMs >= HidSendRecovery.GracePeriod.TotalMilliseconds)
                         {
                             ImmediateLocal();
-                            Log("Bluetooth 입력 준비 상태가 1.5초 이상 끊겨 노트북 입력으로 복귀했습니다.");
+                            Log("Bluetooth 입력 연결이 3초 동안 복구되지 않아 노트북 입력으로 복귀했습니다.");
                         }
                     }
                 }
@@ -2211,9 +2211,11 @@ public sealed partial class MainForm : Form
     {
         while (!_lifetime.IsCancellationRequested)
         {
+            var sendingEpoch = Volatile.Read(ref _epoch);
             try
             {
                 var envelope = await _outbox.TakeAsync(_lifetime.Token).ConfigureAwait(false);
+                sendingEpoch = envelope.Epoch;
                 var pointer = envelope.Packet as PointerPacket;
                 if (pointer is not null)
                 {
@@ -2230,15 +2232,13 @@ public sealed partial class MainForm : Form
                         Interlocked.Exchange(ref _lastPointerDispatchTicks,
                             System.Diagnostics.Stopwatch.GetTimestamp());
 
-                    using var timeout = CancellationTokenSource.CreateLinkedTokenSource(_lifetime.Token);
-                    timeout.CancelAfter(750);
-
-                    await _ble.SendAsync(
+                    var sent = await _ble.SendAsync(
                         report,
                         () =>
                             envelope.Epoch == Volatile.Read(ref _epoch) &&
                             _input.IsRemote,
-                        timeout.Token);
+                        _lifetime.Token).ConfigureAwait(false);
+                    if (!sent) break;
 
                     Interlocked.Increment(ref _sent);
 
@@ -2260,11 +2260,27 @@ public sealed partial class MainForm : Form
             }
             catch (Exception ex)
             {
-                ImmediateLocal();
-                _lastError = $"Send:{ex.GetType().Name}:0x{ex.HResult:X8}";
-
-                Post(() => Log(
-                    "Bluetooth 전송 실패/지연으로 노트북 입력으로 복귀했습니다. 서비스는 유지하며 재연결을 기다립니다."));
+                // Serialize fallback with UI target/F8/F9 actions and discard
+                // failures from a send that belonged to a previous activation.
+                var fallback = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+                Post(() =>
+                {
+                    try
+                    {
+                        if (sendingEpoch != Volatile.Read(ref _epoch) || !_input.IsRemote) return;
+                        var queued = _outbox.Count;
+                        ImmediateLocal();
+                        _lastError = $"Send:{ex.GetType().Name}:0x{ex.HResult:X8}";
+                        Log($"Bluetooth 입력 전송을 복구하지 못해 노트북으로 복귀했습니다. " +
+                            $"원인: {ex.Message} ({_lastError}); HID 준비: {_ble.Ready}; 대기열: {queued}");
+                        _ = ReleaseAsync();
+                    }
+                    finally { fallback.TrySetResult(); }
+                });
+                // Do not send later reports while the failed report's fallback
+                // is still queued on the UI thread.
+                try { await fallback.Task.WaitAsync(_lifetime.Token).ConfigureAwait(false); }
+                catch (OperationCanceledException) when (_lifetime.IsCancellationRequested) { break; }
             }
         }
     }

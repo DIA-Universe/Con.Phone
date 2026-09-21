@@ -42,40 +42,4 @@ internal static class BleConnectionTuning
         }
     }
 
-    public static IDisposable? TryRequestThroughputOptimized(
-        BluetoothLEDevice device)
-    {
-        if (!OperatingSystem.IsWindowsVersionAtLeast(10, 0, 22000))
-            return null;
-
-        try
-        {
-            var assembly = typeof(BluetoothLEDevice).Assembly;
-            var preferredType = assembly.GetType(
-                "Windows.Devices.Bluetooth.BluetoothLEPreferredConnectionParameters",
-                throwOnError: false);
-
-            if (preferredType is null) return null;
-
-            var throughput = preferredType.GetProperty(
-                    "ThroughputOptimized",
-                    BindingFlags.Static | BindingFlags.Public)
-                ?.GetValue(null);
-
-            if (throughput is null) return null;
-
-            var method = device.GetType().GetMethod(
-                "RequestPreferredConnectionParameters",
-                BindingFlags.Instance | BindingFlags.Public,
-                binder: null,
-                types: [preferredType],
-                modifiers: null);
-
-            return method?.Invoke(device, [throughput]) as IDisposable;
-        }
-        catch
-        {
-            return null;
-        }
-    }
 }

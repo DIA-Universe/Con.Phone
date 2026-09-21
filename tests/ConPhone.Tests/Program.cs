@@ -445,4 +445,61 @@ Check("1 percent accumulates exactly one negative pixel", exactOnePercent.Sum(x 
 preciseScaler.Configure(101, 100, false);
 Check("101 percent accumulates exactly 101 pixels", Enumerable.Range(0, 100).Sum(_ => preciseScaler.Apply(new PointerPacket(0, 1)).X) == 101);
 
+// Recovery waits for subscriptions without replaying an already submitted HID
+// report. Replay would double relative mouse movement/scrolls and held keys.
+var readinessChecks = 0;
+var submittedReports = new List<string>();
+var recoveryCurrent = true;
+foreach (var reportName in new[] { "key down", "key up", "mouse delta", "button up" })
+{
+    var sentReport = await HidSendRecovery.SendAsync(() => recoveryCurrent, _ =>
+    {
+        if (++readinessChecks <= 2) return Task.FromResult(false);
+        submittedReports.Add(reportName);
+        return Task.FromResult(true);
+    }, CancellationToken.None);
+    Check($"recovered HID {reportName} is sent", sentReport);
+}
+Check("HID recovery preserves report order exactly once", submittedReports.SequenceEqual(
+    new[] { "key down", "key up", "mouse delta", "button up" }));
+var delayedNotifications = 0;
+Check("750ms notification delay does not force local input", await HidSendRecovery.SendAsync(
+    () => true, async token => { delayedNotifications++; await Task.Delay(850, token); return true; },
+    CancellationToken.None) && delayedNotifications == 1);
+var ambiguousAttempts = 0;
+try
+{
+    await HidSendRecovery.SendAsync(() => true, _ =>
+    {
+        ambiguousAttempts++;
+        throw new IOException("notification delivery unknown");
+    }, CancellationToken.None);
+    Check("ambiguous notification must fail", false);
+}
+catch (IOException) { Check("ambiguous mouse notification is never replayed", ambiguousAttempts == 1); }
+try
+{
+    await HidSendRecovery.SendAsync(() => true, _ => Task.FromResult(false),
+        CancellationToken.None, TimeSpan.FromMilliseconds(100));
+    Check("permanent disconnect must time out", false);
+}
+catch (TimeoutException) { Check("permanent disconnect has bounded recovery", true); }
+var pendingOldSend = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+var oldSend = HidSendRecovery.SendAsync(() => recoveryCurrent, _ => pendingOldSend.Task, CancellationToken.None);
+recoveryCurrent = false;
+pendingOldSend.SetException(new IOException("old session closed"));
+Check("late failure from previous activation is ignored", !await oldSend);
+var supersededAttempts = 0;
+Check("superseded input cannot reach a new target", !await HidSendRecovery.SendAsync(() => false,
+    _ => { supersededAttempts++; return Task.FromResult(true); }, CancellationToken.None) && supersededAttempts == 0);
+using (var recoveryCancellation = new CancellationTokenSource())
+{
+    var pending = HidSendRecovery.SendAsync(() => true,
+        async token => { await Task.Delay(Timeout.InfiniteTimeSpan, token); return true; },
+        recoveryCancellation.Token);
+    recoveryCancellation.Cancel();
+    try { await pending; Check("shutdown must cancel recovery", false); }
+    catch (OperationCanceledException) { Check("shutdown cancels HID recovery", true); }
+}
+
 Console.WriteLine($"{passed} checks passed. No Windows/Bluetooth/phone hardware has been tested by these checks.");

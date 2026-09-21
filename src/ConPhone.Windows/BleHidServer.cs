@@ -37,9 +37,9 @@ public sealed class BleHidServer : IDisposable
     private readonly ConcurrentDictionary<string, byte> _protocol = new();
     private readonly ConcurrentDictionary<string, bool> _suspended = new();
     private readonly ConcurrentDictionary<string, GattSession> _sessions = new();
+    private readonly object _sessionGate = new();
     private readonly ConcurrentDictionary<string, BluetoothLEDevice> _devices = new();
     private readonly ConcurrentDictionary<string, int> _connectionIntervalMs = new();
-    private readonly ConcurrentDictionary<string, IDisposable> _throughputRequests = new();
     private readonly SemaphoreSlim _send = new(1, 1);
     private readonly SemaphoreSlim _deviceGate = new(1, 1);
     private readonly SemaphoreSlim _recoveryGate = new(1, 1);
@@ -49,7 +49,6 @@ public sealed class BleHidServer : IDisposable
     private volatile string _lastOperation = "Idle";
     private volatile bool _running;
     private volatile bool _desiredRunning;
-    private volatile bool _interactiveMode;
     private long _lastRecoveryAttemptTicks;
     private long _autoRecoveryAttempts;
     private long _autoRecoverySuccesses;
@@ -395,32 +394,37 @@ public sealed class BleHidServer : IDisposable
             Status?.Invoke("GATT 연결 유지 요청을 적용하지 못했습니다. 기본 연결 정책을 사용합니다.");
         }
 
-        bool attach = !_sessions.TryGetValue(id, out var existing) || !ReferenceEquals(existing, session);
-        _sessions[id] = session;
-
-        if (!attach) return;
-
-        session.SessionStatusChanged += (sender, args) =>
+        lock (_sessionGate)
         {
-            if (args.Status == GattSessionStatus.Closed)
+            if (_sessions.TryGetValue(id, out var existing) && ReferenceEquals(existing, session))
+                return;
+            _sessions[id] = session;
+            session.SessionStatusChanged += (sender, args) =>
             {
-                if (_sessions.TryGetValue(id, out var current) && ReferenceEquals(current, sender))
-                    _sessions.TryRemove(id, out _);
+                lock (_sessionGate)
+                {
+                    // Windows can close an older session after a replacement is
+                    // already subscribed. It must not clear the new link's state.
+                    if (_disposed || !_sessions.TryGetValue(id, out var current) ||
+                        !ReferenceEquals(current, sender)) return;
 
-                _protocol.TryRemove(id, out _);
-                _suspended.TryRemove(id, out _);
-                _connectionIntervalMs.TryRemove(id, out _);
-                ReleaseThroughputRequest(id);
-                Status?.Invoke("휴대폰 GATT 세션이 닫혔습니다. 입력은 로컬로 복귀하고 재연결을 기다립니다.");
-            }
-            else
-            {
-                TryMaintainConnection(sender);
-                Status?.Invoke($"휴대폰 GATT 세션: {args.Status}");
-            }
+                    if (args.Status == GattSessionStatus.Closed)
+                    {
+                        _sessions.TryRemove(id, out _);
+                        _protocol.TryRemove(id, out _);
+                        _suspended.TryRemove(id, out _);
+                        _connectionIntervalMs.TryRemove(id, out _);
+                    }
+                    else if (_desiredRunning)
+                    {
+                        TryMaintainConnection(sender);
+                    }
+                }
 
-            Changed?.Invoke();
-        };
+                Status?.Invoke($"휴대폰 GATT 세션: {args.Status}; 결과: {args.Error}; HID 준비: {Ready}");
+                Changed?.Invoke();
+            };
+        }
     }
 
     private void TryMaintainConnection(GattSession session)
@@ -452,8 +456,6 @@ public sealed class BleHidServer : IDisposable
                 if (sender.ConnectionStatus == BluetoothConnectionStatus.Connected)
                 {
                     RefreshConnectionInterval(id, sender);
-                    if (_interactiveMode && string.Equals(_approved, id, StringComparison.Ordinal))
-                        ApplyInteractiveLinkTuning(id, sender);
                 }
 
                 Status?.Invoke($"휴대폰 링크 상태: {sender.ConnectionStatus}");
@@ -467,8 +469,6 @@ public sealed class BleHidServer : IDisposable
             else
             {
                 RefreshConnectionInterval(id, device);
-                if (_interactiveMode && string.Equals(_approved, id, StringComparison.Ordinal))
-                    ApplyInteractiveLinkTuning(id, device);
             }
         }
         catch (Exception ex) when (ex is InvalidOperationException or ObjectDisposedException)
@@ -483,62 +483,12 @@ public sealed class BleHidServer : IDisposable
 
     public void SetInteractiveMode(bool enabled)
     {
-        _interactiveMode = enabled;
-
-        if (!enabled)
-        {
-            foreach (var connectedId in _throughputRequests.Keys.ToArray())
-                ReleaseThroughputRequest(connectedId);
-            return;
-        }
-
+        // Keep the phone/OS negotiated connection parameters. Requesting and
+        // disposing ThroughputOptimized on every F8/F9 transition renegotiates
+        // the shared Bluetooth link and can disrupt other GATT connections.
         var id = _approved;
-        if (id is not null && _devices.TryGetValue(id, out var device))
-            ApplyInteractiveLinkTuning(id, device);
-    }
-
-    private void ApplyInteractiveLinkTuning(string id, BluetoothLEDevice device)
-    {
-        RefreshConnectionInterval(id, device);
-
-        if (!OperatingSystem.IsWindowsVersionAtLeast(10, 0, 22000))
-            return;
-
-        // Windows documents that ThroughputOptimized can reduce the number of
-        // concurrent BLE connections. Preserve multi-host stability when more
-        // than one keyboard/mouse host is already subscribed.
-        if (Math.Max(KeyboardSubscribers, MouseSubscribers) > 1)
-        {
-            Status?.Invoke(
-                $"다중기기 연결 유지 · throughput 강제 없이 {MousePacingIntervalMs}ms pacing");
-            return;
-        }
-
-        try
-        {
-            if (_throughputRequests.ContainsKey(id))
-                return;
-
-            var request = BleConnectionTuning.TryRequestThroughputOptimized(device);
-            if (request is null)
-            {
-                Status?.Invoke(
-                    $"BLE throughput 요청 API를 사용할 수 없어 {MousePacingIntervalMs}ms pacing을 사용합니다.");
-                return;
-            }
-
-            if (!_throughputRequests.TryAdd(id, request))
-                request.Dispose();
-
+        if (enabled && id is not null && _devices.TryGetValue(id, out var device))
             RefreshConnectionInterval(id, device);
-            Status?.Invoke(
-                $"BLE 입력 최적화 · 마우스 pacing {MousePacingIntervalMs}ms");
-        }
-        catch (Exception ex) when (ex is InvalidOperationException or ObjectDisposedException or NotSupportedException)
-        {
-            Status?.Invoke(
-                $"BLE 입력 최적화 요청을 적용하지 못해 {MousePacingIntervalMs}ms pacing을 사용합니다.");
-        }
     }
 
     private void RefreshConnectionInterval(string id, BluetoothLEDevice device)
@@ -551,15 +501,6 @@ public sealed class BleHidServer : IDisposable
             interval = PointerPacing.FromBleConnectionInterval(intervalUnits);
 
         _connectionIntervalMs[id] = interval;
-    }
-
-    private void ReleaseThroughputRequest(string id)
-    {
-        if (!_throughputRequests.TryRemove(id, out var request))
-            return;
-
-        try { request.Dispose(); }
-        catch (Exception ex) when (ex is InvalidOperationException or ObjectDisposedException) { }
     }
 
     private bool IsConnected(string id) =>
@@ -839,8 +780,6 @@ public sealed class BleHidServer : IDisposable
         if (_devices.TryGetValue(id, out var device))
         {
             RefreshConnectionInterval(id, device);
-            if (_interactiveMode)
-                ApplyInteractiveLinkTuning(id, device);
         }
 
         if (_sessions.TryGetValue(id, out var session))
@@ -860,7 +799,6 @@ public sealed class BleHidServer : IDisposable
             SetInteractiveMode(false);
 
         TrustedDeviceStore.Remove(target);
-        ReleaseThroughputRequest(target);
         _connectionIntervalMs.TryRemove(target, out _);
 
         if (string.Equals(_approved, target, StringComparison.Ordinal))
@@ -978,7 +916,18 @@ public sealed class BleHidServer : IDisposable
         }
     }
 
-    public async Task SendAsync(
+    public Task<bool> SendAsync(
+        WireReport report,
+        Func<bool> current,
+        CancellationToken token)
+    {
+        var target = _approved;
+        bool StillCurrent() => current() && string.Equals(target, _approved, StringComparison.Ordinal);
+        return HidSendRecovery.SendAsync(StillCurrent,
+            ct => TrySendAsync(report, StillCurrent, ct), token);
+    }
+
+    private async Task<bool> TrySendAsync(
         WireReport report,
         Func<bool> current,
         CancellationToken token)
@@ -988,16 +937,16 @@ public sealed class BleHidServer : IDisposable
         await _send.WaitAsync(token).ConfigureAwait(false);
         try
         {
-            if (!current()) return;
+            if (!current()) return true;
 
             var id = _approved;
             if (id is null || !_running || !IsReady(id))
-                throw new InvalidOperationException("승인된 입력 연결이 사라졌습니다.");
+                return false;
 
             var characteristic = report.Keyboard ? _keyboard : _mouse;
             var client = Client(characteristic, id);
             if (characteristic is null || client is null)
-                throw new InvalidOperationException("승인된 입력 연결이 사라졌습니다.");
+                return false;
 
             var bytes = report.Data;
             if (bytes.Length > client.MaxNotificationSize)
@@ -1011,6 +960,7 @@ public sealed class BleHidServer : IDisposable
 
             if (result.Status != GattCommunicationStatus.Success)
                 throw new InvalidOperationException($"HID 전송 실패: {result.Status}");
+            return true;
         }
         finally
         {
@@ -1067,9 +1017,6 @@ public sealed class BleHidServer : IDisposable
         {
             try { device.Dispose(); } catch { }
         }
-
-        foreach (var id in _throughputRequests.Keys.ToArray())
-            ReleaseThroughputRequest(id);
 
         _devices.Clear();
         _sessions.Clear();

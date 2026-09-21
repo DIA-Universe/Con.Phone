@@ -86,6 +86,7 @@ class ClipboardBridgeService : Service() {
     private var discoveringGatt: BluetoothGatt? = null
     private var readingGatt: BluetoothGatt? = null
     private var readGeneration = 0L
+    private var readStartFailures = 0
     private val pendingReads = java.util.ArrayDeque<Pair<BluetoothGatt, BluetoothGattCharacteristic>>()
 
     private fun readCharacteristic(g: BluetoothGatt, c: BluetoothGattCharacteristic) {
@@ -105,10 +106,24 @@ class ClipboardBridgeService : Service() {
         readingGatt = g
         val generation = ++readGeneration
         if (!g.readCharacteristic(c)) {
+            // false means Android did not start the read; the shared GATT
+            // transport may simply be busy. Do not tear down a healthy HID
+            // connection on the first rejected periodic capabilities poll.
+            if (++readStartFailures < 4) {
+                pendingReads.addFirst(item)
+                main.postDelayed({
+                    if (!destroyed && gatt === g && readingGatt === g && readGeneration == generation) {
+                        readingGatt = null
+                        drainReads()
+                    }
+                }, 250)
+                return
+            }
             readingGatt = null
             restartGatt(g, "Bluetooth 읽기 요청 실패 · 재연결")
             return
         }
+        readStartFailures = 0
         main.postDelayed({
             if (gatt === g && readingGatt === g && readGeneration == generation)
                 restartGatt(g, "Bluetooth 응답 시간 초과 · 재연결")
@@ -128,6 +143,7 @@ class ClipboardBridgeService : Service() {
         recoveringGatt = g
         showStatus(message)
         readingGatt = null
+        readStartFailures = 0
         pendingReads.clear()
         ++readGeneration
         runCatching { g.disconnect() }
@@ -353,7 +369,9 @@ class ClipboardBridgeService : Service() {
             if (newState == BluetoothProfile.STATE_CONNECTED && status == BluetoothGatt.GATT_SUCCESS) {
                 showStatus("BLE 연결됨 · 서비스 확인")
                 if (checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT) == PackageManager.PERMISSION_GRANTED) {
-                    g.requestConnectionPriority(BluetoothGatt.CONNECTION_PRIORITY_HIGH)
+                    // HID and clipboard share the link. Keep Android's negotiated
+                    // connection parameters instead of forcing high priority on
+                    // every companion reconnect.
                     mtu = 23
                     discoveringGatt = null
                     if (!g.requestMtu(517)) discoverGatt(g)
@@ -361,6 +379,7 @@ class ClipboardBridgeService : Service() {
                 }
             } else if (newState == BluetoothProfile.STATE_DISCONNECTED || status != BluetoothGatt.GATT_SUCCESS) {
                 readingGatt = null
+                readStartFailures = 0
                 recoveringGatt = null
                 discoveringGatt = null
                 handshakeComplete = false
@@ -387,9 +406,9 @@ class ClipboardBridgeService : Service() {
                 }
 
                 showStatus(if (dataPlaneAlive)
-                    "Bluetooth 연결 끊김 · 기존 P2P Clipboard 채널 유지"
+                    "Bluetooth 연결 끊김 (상태 $status) · 기존 P2P Clipboard 채널 유지"
                 else
-                    "PC 연결 끊김 · 재연결 대기")
+                    "PC 연결 끊김 (상태 $status) · 재연결 대기")
                 runCatching { g.close() }
                 main.postDelayed({ beginScan() }, 2500)
             }
