@@ -51,6 +51,13 @@ public static class Hid
     public static byte[] SystemReport(bool lockPressed) =>
         [lockPressed ? SystemLockMask : (byte)0];
 
+    // Raw HID modifiers: GUI+L for Galaxy, Control+Command+Q for Apple.
+    // Already in host layout; do not apply the user's Ctrl/Command swap again.
+    public static byte[] LockKeyboardReport(ModifierProfile profile) =>
+        profile == ModifierProfile.MacCtrlCommandSwap
+            ? [0x09, 0, 0x14, 0, 0, 0, 0, 0]
+            : [0x08, 0, 0x0F, 0, 0, 0, 0, 0];
+
     public static byte[] ConsumerReport(ConsumerAction action, bool pressed)
     {
         var bit = (int)action;

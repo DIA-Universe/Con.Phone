@@ -7,6 +7,8 @@ void Check(string name, bool condition)
     Console.WriteLine($"PASS: {name}"); passed++;
 }
 var keys = new KeyboardState();
+Check("Galaxy lock keeps GUI+L", Hid.LockKeyboardReport(ModifierProfile.Standard).SequenceEqual(new byte[] { 8,0,15,0,0,0,0,0 }));
+Check("Apple lock sends Control+Command+Q without remapping", Hid.LockKeyboardReport(ModifierProfile.MacCtrlCommandSwap).SequenceEqual(new byte[] { 9,0,20,0,0,0,0,0 }));
 Check("A mapping", Hid.Usage(0x41) == 4);
 Check("Z mapping", Hid.Usage(0x5A) == 29);
 Check("right control mapping", Hid.Usage(0x11, extended: true) == 0xE4);

@@ -872,7 +872,7 @@ public sealed class BleHidServer : IDisposable
         return target;
     }
 
-    public async Task SendSystemLockAsync(CancellationToken token)
+    public async Task SendSystemLockAsync(ModifierProfile profile, CancellationToken token)
     {
         ThrowIfDisposed();
 
@@ -887,16 +887,14 @@ public sealed class BleHidServer : IDisposable
         await _send.WaitAsync(token).ConfigureAwait(false);
         try
         {
-            // Samsung DeX documents WIN/CMD + L as the lock shortcut. Use the standard
-            // keyboard report first because it works even when System Control is not subscribed.
-            byte[] winL = [0x08, 0x00, 0x0F, 0x00, 0x00, 0x00, 0x00, 0x00];
+            byte[] winL = Hid.LockKeyboardReport(profile);
             byte[] keyboardRelease = new byte[Hid.KeyboardReportLength];
 
             _keyboardValue = winL;
             var keyDown = await _keyboard.NotifyValueAsync(winL.AsBuffer(), keyboardClient)
                 .AsTask(token).ConfigureAwait(false);
             if (keyDown.Status != GattCommunicationStatus.Success)
-                throw new InvalidOperationException($"WIN+L 전송 실패: {keyDown.Status}");
+                throw new InvalidOperationException($"잠금 키 전송 실패: {keyDown.Status}");
 
             await Task.Delay(80, token).ConfigureAwait(false);
 
@@ -904,12 +902,12 @@ public sealed class BleHidServer : IDisposable
             var keyUp = await _keyboard.NotifyValueAsync(keyboardRelease.AsBuffer(), keyboardClient)
                 .AsTask(token).ConfigureAwait(false);
             if (keyUp.Status != GattCommunicationStatus.Success)
-                throw new InvalidOperationException($"WIN+L 해제 실패: {keyUp.Status}");
+                throw new InvalidOperationException($"잠금 키 해제 실패: {keyUp.Status}");
 
             // If the phone also subscribed to System Control, follow with System Sleep.
             // This is best-effort: lack of this optional characteristic must not make lock fail.
             var systemClient = Client(_system, id);
-            if (_system is not null && systemClient is not null)
+            if (profile == ModifierProfile.Standard && _system is not null && systemClient is not null)
             {
                 await Task.Delay(60, token).ConfigureAwait(false);
 
@@ -930,6 +928,10 @@ public sealed class BleHidServer : IDisposable
         }
         finally
         {
+            // A locked host may stop receiving notifications before key-up succeeds.
+            // Never retain a pressed lock chord in the readable report value.
+            _keyboardValue = new byte[Hid.KeyboardReportLength];
+            _systemValue = Hid.SystemReport(false);
             _send.Release();
         }
     }

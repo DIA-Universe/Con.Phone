@@ -453,7 +453,9 @@ public sealed partial class MainForm : Form
         var apple = AutoSection();
         apple.Controls.Add(SectionTitle("iPhone · iPad는 앱 없이"));
         apple.Controls.Add(Help("Bluetooth로 이 PC를 연결하면 키보드와 마우스를 사용할 수 있어요. iPhone은 설정 → 손쉬운 사용 → 터치 → AssistiveTouch를 켜고, 기기 → Bluetooth 기기에서 연결하세요."));
-        apple.Controls.Add(Help("iPad는 설정 → Bluetooth에서 연결하세요. 입력 설정의 Apple 권장값을 사용할 수 있어요. iOS는 키보드·마우스만 지원합니다."));
+        apple.Controls.Add(Help("iPad는 설정 → Bluetooth에서 연결하세요. 연결 후 입력 설정에서 ‘Apple 권장값’을 선택하세요."));
+        apple.Controls.Add(Help("iOS는 보안·클립보드 접근 제한으로 LINKO의 PC ↔ iPhone/iPad 복사·붙여넣기를 지원하지 않습니다. 기기 안에서의 복사·붙여넣기는 사용할 수 있습니다."));
+        apple.Controls.Add(Help("Apple 잠금은 Control + Command + Q를 보냅니다. 반응이 없으면 iOS 설정 → 손쉬운 사용 → 키보드 → 전체 키보드 접근 → 명령에서 ‘화면 잠금’에 이 조합을 지정하세요. PC로 복귀는 잠금 성공 여부와 무관하게 즉시 실행됩니다."));
         flow.Controls.Add(apple);
 
         return tab;
@@ -563,6 +565,7 @@ public sealed partial class MainForm : Form
             "iPhone · iPad는 앱 없는 키보드·마우스 연결만 제공합니다.",
             Secondary));
         info.Controls.Add(Help("텍스트는 연결되면 자동으로 동기화됩니다. 이미지는 전달되지 않습니다.", TextColor));
+        info.Controls.Add(Help("iOS는 보안·클립보드 접근 제한으로 PC와의 복사·붙여넣기를 지원하지 않습니다. 텍스트 동기화는 Android LINKO 앱에서 사용할 수 있습니다."));
         info.Controls.Add(Help("휴대폰의 다른 앱에서 PC로 자동 복사하려면 LINKO 앱에서 ‘다른 앱에서도 자동 복사 설정’을 완료하세요.", Secondary));
         info.Controls.Add(_clipboardConnection);
         flow.Controls.Add(info);
@@ -1901,6 +1904,7 @@ public sealed partial class MainForm : Form
 
     private async Task LockPhoneAndReturnAsync()
     {
+        var profile = _activeModifierProfile;
         ImmediateLocal();
         await ReleaseAsync();
 
@@ -1914,8 +1918,10 @@ public sealed partial class MainForm : Form
 
         try
         {
-            await _ble.SendSystemLockAsync(timeout.Token);
-            Log("Galaxy 잠금 WIN+L을 보내고, 지원 시 System Sleep까지 보조 전송한 뒤 노트북 입력으로 복귀했습니다.");
+            await _ble.SendSystemLockAsync(profile, timeout.Token);
+            Log(profile == ModifierProfile.MacCtrlCommandSwap
+                ? "Apple 잠금 Control+Command+Q 전송 · PC 복귀 완료. 화면이 잠기지 않으면 iOS 전체 키보드 접근의 화면 잠금 명령을 설정하세요."
+                : "Galaxy 잠금 WIN+L 전송 · PC 복귀 완료.");
         }
         catch (NotSupportedException ex)
         {

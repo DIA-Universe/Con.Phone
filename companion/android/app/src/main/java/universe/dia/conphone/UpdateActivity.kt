@@ -27,7 +27,7 @@ class UpdateActivity : Activity() {
     private var downloading = false
     private var generation = 0
     @Volatile private var closed = false
-    private val releases = "https://github.com/DIA-Universe/Con.Phone/releases"
+    private val releases = UpdateRoutes.latest
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -41,24 +41,34 @@ class UpdateActivity : Activity() {
         }
         root.addView(install)
         root.addView(Button(this).apply { text = "다시 확인"; setOnClickListener {
-            if (!downloading) { generation++; web.visibility = android.view.View.VISIBLE; web.loadUrl(releases) }
+            if (!downloading) {
+                generation++; install.visibility = android.view.View.GONE
+                status.text = "최신 APK 확인 중…"
+                web.visibility = android.view.View.VISIBLE; web.loadUrl(releases)
+            }
         } })
         web = WebView(this).apply {
             settings.javaScriptEnabled = true
             settings.domStorageEnabled = true
+            settings.cacheMode = android.webkit.WebSettings.LOAD_NO_CACHE
             settings.allowFileAccess = false
             settings.allowContentAccess = false
             settings.mixedContentMode = android.webkit.WebSettings.MIXED_CONTENT_NEVER_ALLOW
             webViewClient = object : WebViewClient() {
                 override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean {
+                    if (request.isForMainFrame && UpdateRoutes.isApk(request.url.toString())) {
+                        download(request.url.toString()); return true
+                    }
                     return request.url.scheme != "https" || request.url.host != "github.com"
                 }
                 override fun onPageFinished(view: WebView, url: String) {
                     if (closed || downloading) return
-                    val uri = Uri.parse(url)
-                    if (uri.host == "github.com" && uri.path == "/DIA-Universe/Con.Phone/releases") discover()
+                    if (UpdateRoutes.isReleasePage(url)) discover()
                     else status.text = "최신 APK 조회를 위해 이 화면에서 GitHub 로그인을 완료해 주세요."
                 }
+            }
+            setDownloadListener { url, _, _, _, _ ->
+                if (UpdateRoutes.isApk(url)) download(url)
             }
         }
         root.addView(web, LinearLayout.LayoutParams(-1, 0, 1f))
@@ -74,9 +84,13 @@ class UpdateActivity : Activity() {
               window.__conphoneUpdate = null;
               (async () => {
                 try {
-                  const latest = document.querySelector('a[href^="/DIA-Universe/Con.Phone/releases/tag/"]');
-                  if (!latest) throw new Error('릴리스를 찾지 못했습니다. 저장소 접근 권한과 로그인을 확인하세요.');
-                  const url = new URL(latest.getAttribute('href').replace('/releases/tag/', '/releases/expanded_assets/'), location.href);
+                  // /latest redirects to /tag/<version>; never select an unrelated
+                  // tag link from the navigation/sidebar on that page.
+                  const tagPath = location.pathname.startsWith('/DIA-Universe/Con.Phone/releases/tag/')
+                    ? location.pathname
+                    : document.querySelector('a[href^="/DIA-Universe/Con.Phone/releases/tag/"]')?.getAttribute('href');
+                  if (!tagPath) throw new Error('릴리스를 찾지 못했습니다. 저장소 접근 권한과 로그인을 확인하세요.');
+                  const url = new URL(tagPath.replace('/releases/tag/', '/releases/expanded_assets/'), location.href);
                   if (url.origin !== location.origin || !url.pathname.startsWith('/DIA-Universe/Con.Phone/releases/expanded_assets/')) throw new Error('잘못된 릴리스 주소');
                   const response = await fetch(url.href, {credentials:'same-origin'});
                   if (!response.ok) throw new Error('릴리스 조회 실패: ' + response.status);
@@ -109,10 +123,7 @@ class UpdateActivity : Activity() {
     }
 
     private fun download(assetUrl: String) {
-        val uri = Uri.parse(assetUrl)
-        if (uri.scheme != "https" || uri.host != "github.com" ||
-            uri.path?.startsWith("/DIA-Universe/Con.Phone/releases/download/") != true ||
-            uri.lastPathSegment?.matches(Regex("(?:LINKO-[0-9.]+|ConPhone-Companion-[0-9.]+-debug)\\.apk")) != true) {
+        if (!UpdateRoutes.isApk(assetUrl)) {
             status.text = "올바른 LINKO APK 주소가 아닙니다."; return
         }
         if (downloading) return
@@ -120,6 +131,7 @@ class UpdateActivity : Activity() {
         web.visibility = android.view.View.GONE
         status.text = "최신 APK 다운로드 중…"
         val cookie = CookieManager.getInstance().getCookie(assetUrl)
+        val userAgent = web.settings.userAgentString
         Thread {
             val directory = File(filesDir, "updates").apply { mkdirs() }
             val partial = File(directory, "download.part")
@@ -133,6 +145,8 @@ class UpdateActivity : Activity() {
                     connection.instanceFollowRedirects = false
                     connection.connectTimeout = 15000
                     connection.readTimeout = 20000
+                    connection.setRequestProperty("User-Agent", userAgent)
+                    connection.setRequestProperty("Accept", "application/octet-stream")
                     // Never forward GitHub login cookies to an asset CDN.
                     if (current.host == "github.com" && cookie != null) connection.setRequestProperty("Cookie", cookie)
                     try {
