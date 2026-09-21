@@ -2,7 +2,7 @@
 
 PC의 키보드와 마우스를 Bluetooth로 휴대폰에서 사용하세요.
 
-**Windows / Android 1.0.3** · [다운로드](https://github.com/DIA-Universe/Con.Phone/releases/tag/v1.0.3)
+**Windows / Android 1.0.4** · [다운로드](https://github.com/DIA-Universe/Con.Phone/releases/tag/v1.0.4)
 
 ## 시작하기
 
@@ -19,7 +19,7 @@ PC의 키보드와 마우스를 Bluetooth로 휴대폰에서 사용하세요.
 
 ## Android 클립보드
 
-`LINKO-1.0.3.apk`를 설치하고 처음 실행할 때 Bluetooth 권한을 허용하세요. 이후 페어링한 PC에 자동 연결하며 텍스트 동기화는 기본으로 켜져 있습니다. 기존 Con.Phone / LINKO에 덮어 설치할 수 있습니다.
+`LINKO-1.0.4.apk`를 설치하고 처음 실행할 때 Bluetooth 권한을 허용하세요. 이후 페어링한 PC에 자동 연결하며 텍스트 동기화는 기본으로 켜져 있습니다. 기존 Con.Phone / LINKO에 덮어 설치할 수 있습니다.
 
 **이미지는 전달되지 않습니다.** PC에서 복사한 텍스트는 휴대폰으로 자동 전송됩니다.
 
@@ -33,4 +33,5 @@ PC의 키보드와 마우스를 Bluetooth로 휴대폰에서 사용하세요.
 
 .NET 10, JDK 17, Android SDK 35를 사용합니다. `scripts/test-now.ps1 -Target all`은 EXE/APK 버전 일치를 검사한 뒤 로컬에서 빌드합니다. GitHub Actions를 실행할 필요가 없습니다.
 
-1.0.3은 HID 검색 신호를 우선하고 클립보드 초기화 실패와 분리합니다. 연결을 멈추는 버튼 대신 **연결 다시 확인**으로 복구할 수 있습니다. 검증 범위와 실기기 확인이 남은 항목은 [1.0.3 검토 기록](docs/LINKO-1.0.3.md), 자동 복사 설정은 [1.0.0 기록](docs/LINKO-1.0.0.md)에 정리했습니다. 저장소 주소와 기존 설치 데이터 식별자는 호환성을 위해 유지합니다.
+1.0.4은 HID 검색 신호를 우선하고 클립보드 초기화 실패와 분리합니다. 연결을 멈추는 버튼 대신 **연결 다시 확인**으로 복구할 수 있습니다. 검증 범위와 실기기 확인이 남은 항목은 [1.0.4 검토 기록](docs/LINKO-1.0.4.md), 자동 복사 설정은 [1.0.0 기록](docs/LINKO-1.0.0.md)에 정리했습니다. 저장소 주소와 기존 설치 데이터 식별자는 호환성을 위해 유지합니다.
+

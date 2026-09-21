@@ -33,6 +33,7 @@ public sealed partial class MainForm : Form
     private string? _lastConnectedClipboardTarget;
     private readonly SemaphoreSlim _inputActions = new(1, 1);
     private long _lastPointerDispatchTicks;
+    private long _lastPointerObservedTicks;
     private readonly Label _clipboardConnection = new() { AutoSize = true, MaximumSize = new Size(780, 0) };
 
     private readonly Label _state = new()
@@ -910,6 +911,8 @@ public sealed partial class MainForm : Form
                     scaled.Wheel == 0 &&
                     scaled.Pan == 0)
                     return;
+                Interlocked.Exchange(ref _lastPointerObservedTicks,
+                    System.Diagnostics.Stopwatch.GetTimestamp());
             }
 
             if (_input.IsRemote &&
@@ -2166,7 +2169,7 @@ public sealed partial class MainForm : Form
         if (!_input.IsRemote)
             return false;
 
-        var last = Interlocked.Read(ref _lastPointerSentTicks);
+        var last = Interlocked.Read(ref _lastPointerObservedTicks);
         if (last == 0)
             return false;
 

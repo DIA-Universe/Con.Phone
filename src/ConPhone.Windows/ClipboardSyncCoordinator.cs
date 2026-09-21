@@ -275,7 +275,7 @@ public sealed class ClipboardSyncCoordinator : IAsyncDisposable
 
             // Images and unusually large text prefer direct P2P so bulk clipboard
             // traffic does not compete with HID. BLE remains a fallback, but bulk
-            // fragments pause whenever recent pointer movement is detected.
+            // all BLE notifications yield briefly to recent pointer movement.
             if (bulkTransfer && !_p2p.HasClient(id))
             {
                 _ = GetDirectLinkConfig();
@@ -335,9 +335,7 @@ public sealed class ClipboardSyncCoordinator : IAsyncDisposable
                         id,
                         content,
                         sendToken,
-                        bulkTransfer && _interactiveInput()
-                            ? _pointerBusy
-                            : null).ConfigureAwait(false);
+                        () => _interactiveInput() && _pointerBusy()).ConfigureAwait(false);
                     if (bulkTransfer && !_p2p.HasClient(id))
                         _direct.Stop();
 

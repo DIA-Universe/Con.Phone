@@ -551,7 +551,7 @@ public sealed class BleClipboardService : IDisposable
         string deviceId,
         ClipboardContent content,
         CancellationToken token,
-        Func<bool>? pauseBulk = null)
+        Func<bool>? inputBusy = null)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
         if (!IsActive(deviceId))
@@ -610,6 +610,7 @@ public sealed class BleClipboardService : IDisposable
                 byte[]? finalFragment = null;
                 async Task NotifyAsync(byte[] packet, CancellationToken cancellation)
                 {
+                    await InputAwareClipboardPacing.YieldAsync(inputBusy, cancellation).ConfigureAwait(false);
                     if (!IsActive(deviceId)) throw new InvalidOperationException("활성 기기가 변경되었습니다.");
                     using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellation);
                     timeout.CancelAfter(TimeSpan.FromSeconds(5));
@@ -641,14 +642,6 @@ public sealed class BleClipboardService : IDisposable
                         if (!IsActive(deviceId))
                             throw new InvalidOperationException(
                                 "활성 휴대폰이 변경되어 이전 기기의 Clipboard BLE 전송을 중단했습니다.");
-
-                        if (bulkTransfer && pauseBulk is not null)
-                        {
-                            while (pauseBulk())
-                                await Task.Delay(
-                                    25,
-                                    token).ConfigureAwait(false);
-                        }
 
                         // Text needs the same receipt/replay protection as bulk data.
                         // A successful GATT notify is not proof that Android assembled it.

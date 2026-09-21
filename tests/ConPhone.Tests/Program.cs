@@ -408,6 +408,35 @@ using (var cancelled = new CancellationTokenSource())
 }
 Check("unrelated ACK left for application decoder", !reliable.Accept("phone", new byte[22]));
 
+// Continuous pointer activity must leave gaps even on retries, but cannot
+// starve text indefinitely. Fake time measures scheduling, not radio throughput.
+var busyYields = 0;
+Task RecordYield(TimeSpan duration, CancellationToken token)
+{
+    token.ThrowIfCancellationRequested();
+    if (duration != TimeSpan.FromMilliseconds(48)) throw new Exception("Unexpected input gap");
+    busyYields++;
+    return Task.CompletedTask;
+}
+await InputAwareClipboardPacing.YieldAsync(() => false, CancellationToken.None, RecordYield);
+Check("idle clipboard has no input delay", busyYields == 0);
+var pacedAttempts = 0;
+await reliable.SendAsync("phone", reliablePacket, async (packet, ct) =>
+{
+    await InputAwareClipboardPacing.YieldAsync(() => true, ct, RecordYield);
+    if (++pacedAttempts == 3) reliable.Accept("phone", packet.Take(8).ToArray());
+}, CancellationToken.None, TimeSpan.FromMilliseconds(5));
+Check("busy input yields on initial notification and every retry", busyYields == 3);
+Check("continuous input does not starve clipboard delivery", pacedAttempts == 3);
+using (var pacingCancel = new CancellationTokenSource())
+{
+    var waiting = InputAwareClipboardPacing.YieldAsync(() => true, pacingCancel.Token,
+        (_, token) => Task.Delay(Timeout.InfiniteTimeSpan, token));
+    pacingCancel.Cancel();
+    try { await waiting; Check("input pacing cancellation", false); }
+    catch (OperationCanceledException) { Check("input pacing cancellation", true); }
+}
+
 var preciseScaler = new PointerScaler();
 preciseScaler.Configure(1, 100, false);
 var exactOnePercent = Enumerable.Range(0, 100).Select(_ => preciseScaler.Apply(new PointerPacket(0, 1, -1))).ToArray();
