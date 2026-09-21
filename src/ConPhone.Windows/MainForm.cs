@@ -30,6 +30,7 @@ public sealed partial class MainForm : Form
     private CancellationTokenSource? _automaticClipboardSend;
     private int _clipboardFailureCount;
     private DateTimeOffset _clipboardRetryAfter;
+    private string? _lastConnectedClipboardTarget;
     private readonly SemaphoreSlim _inputActions = new(1, 1);
     private long _lastPointerDispatchTicks;
     private readonly Label _clipboardConnection = new() { AutoSize = true, MaximumSize = new Size(780, 0) };
@@ -455,7 +456,7 @@ public sealed partial class MainForm : Form
         apple.Controls.Add(Help("Bluetooth로 이 PC를 연결하면 키보드와 마우스를 사용할 수 있어요. iPhone은 설정 → 손쉬운 사용 → 터치 → AssistiveTouch를 켜고, 기기 → Bluetooth 기기에서 연결하세요."));
         apple.Controls.Add(Help("iPad는 설정 → Bluetooth에서 연결하세요. 연결 후 입력 설정에서 ‘Apple 권장값’을 선택하세요."));
         apple.Controls.Add(Help("iOS는 보안·클립보드 접근 제한으로 LINKO의 PC ↔ iPhone/iPad 복사·붙여넣기를 지원하지 않습니다. 기기 안에서의 복사·붙여넣기는 사용할 수 있습니다."));
-        apple.Controls.Add(Help("Apple 잠금은 Control + Command + Q를 보냅니다. 반응이 없으면 iOS 설정 → 손쉬운 사용 → 키보드 → 전체 키보드 접근 → 명령에서 ‘화면 잠금’에 이 조합을 지정하세요. PC로 복귀는 잠금 성공 여부와 무관하게 즉시 실행됩니다."));
+        apple.Controls.Add(Help("iOS 잠금 단축키는 휴대폰에서 한 번 지정해야 합니다. 설정 → 손쉬운 사용 → 키보드 → 전체 키보드 접근 → 명령 → 화면 잠금에서 F12를 등록하세요. LINKO의 입력 설정에서 iOS로 보내는 잠금 키를 바꿀 수 있습니다. PC의 ‘휴대폰 잠금 + 복귀’ 단축키는 그대로 사용합니다."));
         flow.Controls.Add(apple);
 
         return tab;
@@ -515,6 +516,27 @@ public sealed partial class MainForm : Form
             ApplyInputSettings(save: true);
             return Task.CompletedTask;
         }));
+        var appleLockBox = HotkeyBox();
+        appleLockBox.Text = HotkeyCatalog.Display(_settings.AppleLockShortcut);
+        keyboard.Controls.Add(HotkeyRow("iOS로 보내는 잠금 키", appleLockBox, () =>
+        {
+            if (_input.IsRemote) throw new InvalidOperationException("F9로 PC에 복귀한 뒤 잠금 키를 지정해 주세요.");
+            appleLockBox.Text = "키 조합 입력 중…";
+            _input.BeginHotkeyCapture(binding => Post(() =>
+            {
+                try
+                {
+                    _ = AppleLockShortcut.Report(binding);
+                    if (new[] { _settings.ToggleHotkey.Key, _settings.EmergencyHotkey.Key, _settings.NextDeviceHotkey.Key }.Contains(binding.Key))
+                        throw new InvalidOperationException("PC 전환·복귀 키와 다른 iOS 잠금 키를 선택해 주세요. 기본 F12를 권장합니다.");
+                    _settings.AppleLockShortcut = binding;
+                    SettingsStore.Save(_settings);
+                }
+                catch (Exception ex) { Log(ex.Message); }
+                appleLockBox.Text = HotkeyCatalog.Display(_settings.AppleLockShortcut);
+            }));
+        }));
+        keyboard.Controls.Add(Help("iPhone의 전체 키보드 접근 → 명령 → 화면 잠금에 같은 키를 등록하세요. 기본은 F12입니다. 등록 화면에서 F8로 폰 조작으로 전환한 뒤 F12를 누르세요. Apple 권장값에서만 이 키를 전송합니다."));
         flow.Controls.Add(keyboard);
 
         var special = AutoSection();
@@ -943,7 +965,17 @@ public sealed partial class MainForm : Form
 
         _timer.Tick += (_, _) =>
         {
-            var connection = $"HID={_ble.Advertisement}; keyboard={_ble.KeyboardSubscribers}; mouse={_ble.MouseSubscribers}; approved={_ble.ApprovedId is not null}; ready={_ble.Ready}; input={_input.Started.Status}; clipboardPublished={_clipboardSync?.BlePublished}; paused={_servicesPaused}";
+            var connectedClipboardTarget = _clipboardSync?.ActiveTargetConnected == true ? _ble.ApprovedId : null;
+            if (connectedClipboardTarget != _lastConnectedClipboardTarget)
+            {
+                _lastConnectedClipboardTarget = connectedClipboardTarget;
+                if (connectedClipboardTarget is not null)
+                {
+                    _clipboardFailureCount = 0;
+                    _clipboardRetryAfter = default;
+                }
+            }
+            var connection = $"HID={_ble.Advertisement}; keyboard={_ble.KeyboardSubscribers}; mouse={_ble.MouseSubscribers}; approved={_ble.ApprovedId is not null}; ready={_ble.Ready}; input={_input.Started.Status}; clipboardPublished={_clipboardSync?.BlePublished}; clipboardConnected={connectedClipboardTarget is not null}; clipboardEvents={_clipboard?.NotificationsReceived}; clipboardCaptures={_clipboard?.CaptureCount}; clipboardReadErrors={_clipboard?.ReadFailureCount}; paused={_servicesPaused}";
             if (connection != _lastConnectionDiagnostic)
             {
                 _lastConnectionDiagnostic = connection;
@@ -1757,7 +1789,7 @@ public sealed partial class MainForm : Form
         long epoch,
         string? targetId)
     {
-        if (_closing || _servicesPaused || _clipboardFailureCount >= 3 ||
+        if (_closing || _servicesPaused ||
             DateTimeOffset.UtcNow < _clipboardRetryAfter ||
             Interlocked.CompareExchange(ref _clipboardSendRunning, 1, 0) != 0) return;
         try
@@ -1784,7 +1816,7 @@ public sealed partial class MainForm : Form
     private static TimeSpan ClipboardSendTimeout(
         ClipboardContent content) =>
         content.Kind == ClipboardContentKind.TextUtf8
-            ? TimeSpan.FromSeconds(12)
+            ? TimeSpan.FromSeconds(45)
             : TimeSpan.FromSeconds(120);
 
     private async Task SyncLatestClipboardToPhoneAsync()
@@ -1837,10 +1869,10 @@ public sealed partial class MainForm : Form
                 if (sent) _clipboardFailureCount = 0;
                 else
                 {
-                    _clipboardFailureCount++;
+                    _clipboardFailureCount = Math.Min(12, _clipboardFailureCount + 1);
                     _clipboardRetryAfter = DateTimeOffset.UtcNow.AddSeconds(5 * _clipboardFailureCount);
                     if (_clipboardFailureCount >= 3)
-                        Log("클립보드 전송 3회 실패 · 자동 재시도를 멈췄습니다. LINKO 앱 연결 후 다시 복사하거나 ‘휴대폰으로 보내기’를 누르세요.");
+                        Log($"클립보드 전송 지연 · {5 * _clipboardFailureCount}초 후 자동 재시도합니다. 새 복사나 재연결 시 바로 다시 시도합니다.");
                 }
             }
         }
@@ -1918,9 +1950,9 @@ public sealed partial class MainForm : Form
 
         try
         {
-            await _ble.SendSystemLockAsync(profile, timeout.Token);
+            await _ble.SendSystemLockAsync(profile, _settings.AppleLockShortcut.Clone(), timeout.Token);
             Log(profile == ModifierProfile.MacCtrlCommandSwap
-                ? "Apple 잠금 Control+Command+Q 전송 · PC 복귀 완료. 화면이 잠기지 않으면 iOS 전체 키보드 접근의 화면 잠금 명령을 설정하세요."
+                ? $"iOS 잠금 키 {HotkeyCatalog.Display(_settings.AppleLockShortcut)} 전송 · PC 복귀 완료. iOS 화면 잠금 명령에 같은 키를 지정해야 합니다."
                 : "Galaxy 잠금 WIN+L 전송 · PC 복귀 완료.");
         }
         catch (NotSupportedException ex)

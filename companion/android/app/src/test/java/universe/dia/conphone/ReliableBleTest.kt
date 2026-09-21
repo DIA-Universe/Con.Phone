@@ -4,6 +4,35 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class ReliableBleTest {
+    @Test fun textRecoversLostReceiptAndFinalAckAtSmallMtu() {
+        for (mtu in listOf(20, 182, 512)) {
+            val source = ClipboardProtocol.text("Teams 한글 & 🙂\n두 번째 줄".repeat(20))
+            val packets = ClipboardProtocol.encode(source, 256).flatMapIndexed { index, frame ->
+                ClipboardProtocol.splitBle(frame, mtu, (index + 10).toUInt()).map { it.also { p -> p[1] = 2 } }
+            }
+            val receiver = ReliableBleReceiver()
+            val ble = BleReassembler()
+            val wire = ClipboardWireReassembler()
+            var applied = 0
+            var actual: ByteArray? = null
+            val consume: (ByteArray) -> ByteArray? = { packet ->
+                ble.add(ClipboardProtocol.decodeBle(packet))?.let { frame ->
+                    val chunk = ClipboardProtocol.decode(frame)
+                    wire.add(chunk)?.let { content -> applied++; actual = content.data; chunk.transferId }
+                }
+            }
+            for (packet in packets) {
+                val first = receiver.receive(packet, consume)
+                // The first receipt is lost; replay must not reassemble/apply twice.
+                val retry = receiver.receive(packet, consume)
+                assertArrayEquals(first.receipt, retry.receipt)
+            }
+            assertArrayEquals(source.data, actual)
+            assertEquals(1, applied)
+            assertNotNull(receiver.receive(packets.last(), consume).applicationAck)
+            assertEquals(1, applied)
+        }
+    }
     @Test fun windowsImageRecoversDroppedPacketsAndReceipts() {
         for (mtu in listOf(182, 512)) {
             val expected = javaClass.getResourceAsStream("/source.png")!!.readBytes()

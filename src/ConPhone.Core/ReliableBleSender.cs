@@ -41,7 +41,7 @@ public sealed class ReliableBleSender
                 {
                     var index = System.Buffers.Binary.BinaryPrimitives.ReadUInt16LittleEndian(packet.AsSpan(6));
                     var count = System.Buffers.Binary.BinaryPrimitives.ReadUInt16LittleEndian(packet.AsSpan(8));
-                    throw new TimeoutException($"이미지 조각 {index + 1}/{count} 수신 확인 없음 (4회 시도). 휴대폰 Companion 0.3.6 이상과 연결 상태를 확인하세요.", error);
+                    throw new TimeoutException($"클립보드 조각 {index + 1}/{count} 수신 확인 없음 (4회 시도). 휴대폰 LINKO 앱 연결 상태를 확인하세요.", error);
                 }
             }
         }

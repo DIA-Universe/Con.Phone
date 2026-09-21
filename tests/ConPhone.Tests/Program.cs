@@ -7,6 +7,18 @@ void Check(string name, bool condition)
     Console.WriteLine($"PASS: {name}"); passed++;
 }
 var keys = new KeyboardState();
+Check("HTML-only Teams fragment preserves paragraphs and Unicode", HtmlClipboardText.Extract("<html>outside<!--StartFragment--><p>한글 &amp; 🙂</p><p>둘<br>셋</p><!--EndFragment-->outside</html>") == "한글 & 🙂\n둘\n셋");
+Check("HTML text excludes scripts, styles, attributes and images", HtmlClipboardText.Extract("<style>secret</style><script>secret</script><a href='https://example.com/private'>복사</a><img src='https://example.com/image'>") == "복사");
+Check("HTML table keeps cell boundaries", HtmlClipboardText.Extract("<table><tr><td>A</td><td>B</td></tr><tr><td>C</td><td>D</td></tr></table>") == "A\tB\nC\tD");
+Check("HTML preformatted text retains indentation", HtmlClipboardText.Extract("<pre>one\n  two</pre>") == "one\n  two");
+var htmlPrefix = "Version:1.0\r\nStartFragment:0000000000\r\nEndFragment:0000000000\r\n<html>제외🙂";
+var selectedHtml = "<b>선택🙂</b>";
+var htmlStart = System.Text.Encoding.UTF8.GetByteCount(htmlPrefix);
+var htmlEnd = htmlStart + System.Text.Encoding.UTF8.GetByteCount(selectedHtml);
+var cfHtml = htmlPrefix.Replace("StartFragment:0000000000", $"StartFragment:{htmlStart:D10}").Replace("EndFragment:0000000000", $"EndFragment:{htmlEnd:D10}") + selectedHtml + "제외</html>";
+Check("CF_HTML uses byte offsets for Korean and emoji", HtmlClipboardText.Extract(cfHtml) == "선택🙂");
+try { HtmlClipboardText.Extract("Version:1.0\r\nStartFragment:99999\r\nEndFragment:999999\r\n<html>unselected</html>"); Check("malformed CF_HTML is rejected", false); }
+catch (InvalidDataException) { Check("malformed CF_HTML is rejected", true); }
 Check("Galaxy lock keeps GUI+L", Hid.LockKeyboardReport(ModifierProfile.Standard).SequenceEqual(new byte[] { 8,0,15,0,0,0,0,0 }));
 Check("Apple lock sends Control+Command+Q without remapping", Hid.LockKeyboardReport(ModifierProfile.MacCtrlCommandSwap).SequenceEqual(new byte[] { 9,0,20,0,0,0,0,0 }));
 Check("A mapping", Hid.Usage(0x41) == 4);

@@ -872,7 +872,7 @@ public sealed class BleHidServer : IDisposable
         return target;
     }
 
-    public async Task SendSystemLockAsync(ModifierProfile profile, CancellationToken token)
+    public async Task SendSystemLockAsync(ModifierProfile profile, HotkeyBinding appleLockShortcut, CancellationToken token)
     {
         ThrowIfDisposed();
 
@@ -887,7 +887,9 @@ public sealed class BleHidServer : IDisposable
         await _send.WaitAsync(token).ConfigureAwait(false);
         try
         {
-            byte[] winL = Hid.LockKeyboardReport(profile);
+            byte[] winL = profile == ModifierProfile.MacCtrlCommandSwap
+                ? AppleLockShortcut.Report(appleLockShortcut)
+                : Hid.LockKeyboardReport(ModifierProfile.Standard);
             byte[] keyboardRelease = new byte[Hid.KeyboardReportLength];
 
             _keyboardValue = winL;

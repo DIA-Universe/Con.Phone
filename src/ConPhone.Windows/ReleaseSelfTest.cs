@@ -6,6 +6,22 @@ internal static class ReleaseSelfTest
 {
     public static async Task RunAsync()
     {
+        if (!AppleLockShortcut.Report(new HotkeyBinding { Key = (int)Keys.F12 }).SequenceEqual(new byte[] {0,0,0x45,0,0,0,0,0}))
+            throw new InvalidOperationException("iOS F12 lock report is incorrect.");
+        if (!AppleLockShortcut.Report(new HotkeyBinding { Key = (int)Keys.Q, Modifiers = HotkeyModifiers.Control | HotkeyModifiers.Windows }).SequenceEqual(new byte[] {9,0,0x14,0,0,0,0,0}))
+            throw new InvalidOperationException("Custom iOS lock chord differs from Apple input mapping.");
+        var htmlOnly = new DataObject();
+        htmlOnly.SetData(DataFormats.Html, false, "<html><!--StartFragment--><div>Teams 한글🙂</div><div>두 번째 줄</div><!--EndFragment--></html>");
+        if (ClipboardTextReader.Read(htmlOnly, out var converted) != "Teams 한글🙂\n두 번째 줄" || !converted)
+            throw new InvalidOperationException("HTML-only clipboard text was ignored.");
+        htmlOnly.SetData(DataFormats.UnicodeText, false, "preferred plain text");
+        if (ClipboardTextReader.Read(htmlOnly, out converted) != "preferred plain text" || converted)
+            throw new InvalidOperationException("HTML displaced an existing Unicode text representation.");
+        var streamHtml = new DataObject();
+        streamHtml.SetData(DataFormats.Html, false, new MemoryStream(System.Text.Encoding.UTF8.GetBytes("<p>Teams 스트림🙂</p>\0")));
+        if (ClipboardTextReader.Read(streamHtml, out converted) != "Teams 스트림🙂" || !converted)
+            throw new InvalidOperationException("Stream-backed HTML clipboard was ignored.");
+        Console.WriteLine("PASS: HTML-only clipboard source and Unicode-text priority.");
         var startupEvents = new List<string>();
         await ConnectionStartup.RunAsync(
             () => throw new InvalidOperationException("clipboard unavailable"),

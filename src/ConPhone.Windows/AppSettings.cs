@@ -32,6 +32,7 @@ public sealed class ConPhoneSettings
     public bool InvertScroll { get; set; }
     public HangulKeyMode HangulKeyMode { get; set; } = HangulKeyMode.RightAlt;
     public ModifierProfile ModifierProfile { get; set; } = ModifierProfile.Standard;
+    public HotkeyBinding AppleLockShortcut { get; set; } = new() { Key = (int)Keys.F12 };
 
     public HotkeyBinding NextDeviceHotkey { get; set; } = new() { Key = (int)Keys.F7 };
     public HotkeyBinding ToggleHotkey { get; set; } = new() { Key = (int)Keys.F8 };
@@ -113,6 +114,9 @@ public static class SettingsStore
         settings.ToggleHotkey ??= DefaultToggle();
         settings.EmergencyHotkey ??= DefaultEmergency();
         settings.LockAndReturnHotkey ??= DefaultLockAndReturn();
+        settings.AppleLockShortcut ??= new() { Key = (int)Keys.F12 };
+        if (!HotkeyCatalog.IsAllowedKey(settings.AppleLockShortcut.Key))
+            settings.AppleLockShortcut = new() { Key = (int)Keys.F12 };
 
         if (!HotkeyCatalog.IsAllowedKey(settings.NextDeviceHotkey.Key)) settings.NextDeviceHotkey = DefaultNextDevice();
         if (!HotkeyCatalog.IsAllowedKey(settings.ToggleHotkey.Key)) settings.ToggleHotkey = DefaultToggle();

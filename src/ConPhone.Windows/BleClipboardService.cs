@@ -613,7 +613,15 @@ public sealed class BleClipboardService : IDisposable
                     if (!IsActive(deviceId)) throw new InvalidOperationException("활성 기기가 변경되었습니다.");
                     using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellation);
                     timeout.CancelAfter(TimeSpan.FromSeconds(5));
-                    var result = await _tx.NotifyValueAsync(packet.AsBuffer(), client).AsTask(timeout.Token).ConfigureAwait(false);
+                    GattClientNotificationResult result;
+                    try
+                    {
+                        result = await _tx.NotifyValueAsync(packet.AsBuffer(), client).AsTask(timeout.Token).ConfigureAwait(false);
+                    }
+                    catch (Exception ex) when (!cancellation.IsCancellationRequested)
+                    {
+                        throw new IOException($"클립보드 조각을 Bluetooth에 전달하지 못했습니다: {ex.Message}", ex);
+                    }
                     if (result.Status != GattCommunicationStatus.Success)
                         throw new InvalidOperationException($"Clipboard BLE 전송 실패: {result.Status}");
                 }
@@ -642,12 +650,10 @@ public sealed class BleClipboardService : IDisposable
                                     token).ConfigureAwait(false);
                         }
 
-                        if (isImage)
-                        {
-                            await _reliableSender.SendAsync(deviceId, fragment, NotifyAsync, token).ConfigureAwait(false);
-                            finalFragment = fragment;
-                        }
-                        else await NotifyAsync(fragment, token).ConfigureAwait(false);
+                        // Text needs the same receipt/replay protection as bulk data.
+                        // A successful GATT notify is not proof that Android assembled it.
+                        await _reliableSender.SendAsync(deviceId, fragment, NotifyAsync, token).ConfigureAwait(false);
+                        finalFragment = fragment;
 
                         fragmentIndex++;
                         if (bulkTransfer && fragmentIndex % 4 == 0)
@@ -676,11 +682,15 @@ public sealed class BleClipboardService : IDisposable
                         await ack.Task.WaitAsync(TimeSpan.FromSeconds(8), token).ConfigureAwait(false);
                         break;
                     }
-                    catch (TimeoutException) when (isImage && finalFragment is not null && attempt < 2)
+                    catch (TimeoutException) when (finalFragment is not null && attempt < 2)
                     {
-                        // The image may already be applied: replay only the final fragment
+                        // The clipboard may already be applied: replay only the final fragment
                         // to request its cached application ACK, without applying twice.
                         await _reliableSender.SendAsync(deviceId, finalFragment, NotifyAsync, token).ConfigureAwait(false);
+                    }
+                    catch (TimeoutException ex)
+                    {
+                        throw new TimeoutException("휴대폰 조각 수신 완료, 클립보드 적용 ACK 없음 (3회 확인).", ex);
                     }
                 }
             }

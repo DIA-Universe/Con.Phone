@@ -65,6 +65,9 @@ public sealed class ClipboardHistoryService : IDisposable
     public event Action? Changed;
     public event Action<string>? Status;
     public event Action<ClipboardContent>? ContentCaptured;
+    public long NotificationsReceived { get; private set; }
+    public long CaptureCount { get; private set; }
+    public long ReadFailureCount { get; private set; }
 
     public ClipboardHistoryService(int limit, bool captureText, bool captureImages, string? storageRoot = null)
     {
@@ -139,19 +142,28 @@ public sealed class ClipboardHistoryService : IDisposable
 
         try
         {
-            if (_captureText && Clipboard.ContainsText(TextDataFormat.UnicodeText))
+            var beforeRead = GetClipboardSequenceNumber();
+            var convertedHtml = false;
+            var text = _captureText ? ClipboardTextReader.Read(Clipboard.GetDataObject(), out convertedHtml) : null;
+            if (text is not null)
             {
-                var text = Clipboard.GetText(TextDataFormat.UnicodeText);
+                var afterRead = GetClipboardSequenceNumber();
+                // Another process may copy while OLE renders/reads the old item.
+                // Do not associate old text with the new copy's sequence number.
+                if (beforeRead != 0 && afterRead != beforeRead) return;
                 _retryTimer.Stop();
 
                 if (!string.IsNullOrEmpty(text))
                 {
-                    var sequence = GetClipboardSequenceNumber();
+                    var sequence = afterRead;
                     var publish =
                         sequence == 0 ||
                         sequence != _lastCapturedClipboardSequence;
 
                     Interlocked.Increment(ref _captureGeneration);
+
+                    if (convertedHtml && publish)
+                        Status?.Invoke("서식 있는 클립보드에서 텍스트를 추출했습니다. (HTML → 텍스트)");
 
                     AddText(
                         text,
@@ -201,9 +213,10 @@ public sealed class ClipboardHistoryService : IDisposable
         }
         catch (ExternalException)
         {
+            ReadFailureCount++;
             // WM_CLIPBOARDUPDATE can arrive while the source application still owns the clipboard.
             // Retry on the STA UI thread instead of silently losing the item.
-            if (_attempt >= 12)
+            if (_attempt >= 50)
             {
                 _retryTimer.Stop();
                 Status?.Invoke("클립보드가 계속 사용 중이라 이번 항목을 읽지 못했습니다.");
@@ -211,6 +224,7 @@ public sealed class ClipboardHistoryService : IDisposable
         }
         catch (Exception ex)
         {
+            ReadFailureCount++;
             _retryTimer.Stop();
             Status?.Invoke($"클립보드 읽기 실패: {ex.Message}");
         }
@@ -418,7 +432,10 @@ public sealed class ClipboardHistoryService : IDisposable
         // A repeated Ctrl+C of identical text is still a new sync intent even
         // though the local history should not store a duplicate row.
         if (publish)
+        {
+            CaptureCount++;
             ContentCaptured?.Invoke(ClipboardContent.FromText(text));
+        }
     }
 
     private void AddImage(
@@ -874,7 +891,10 @@ public sealed class ClipboardHistoryService : IDisposable
         protected override void WndProc(ref Message m)
         {
             if (m.Msg == 0x031D) // WM_CLIPBOARDUPDATE
+            {
+                _owner.NotificationsReceived++;
                 _owner.ScheduleCapture();
+            }
 
             base.WndProc(ref m);
         }

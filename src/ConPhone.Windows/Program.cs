@@ -7,6 +7,18 @@ internal static class Program
     {
         ApplicationConfiguration.Initialize();
 
+        if (args.Length == 3 && args[0] == "--clipboard-selftest-write")
+        {
+            try
+            {
+                var value = new DataObject();
+                value.SetData(args[1] == "html" ? DataFormats.Html : DataFormats.UnicodeText, false, args[2]);
+                Clipboard.SetDataObject(value, true);
+            }
+            catch (Exception ex) { Console.Error.WriteLine(ex); Environment.ExitCode = 1; }
+            return;
+        }
+
         if (args.Length == 1 && args[0] == "--release-selftest")
         {
             try { ReleaseSelfTest.RunAsync().GetAwaiter().GetResult(); }
@@ -90,7 +102,8 @@ internal static class Program
 
         if (args.Length >= 1 && args[0].Equals("--clipboard-selftest", StringComparison.OrdinalIgnoreCase))
         {
-            RunClipboardSelfTest();
+            try { RunClipboardSelfTest(); Console.WriteLine("PASS: external-process text/HTML clipboard notifications, recopy and echo suppression."); }
+            catch (Exception ex) { Console.Error.WriteLine(ex); Environment.ExitCode = 1; }
             return;
         }
 
@@ -170,7 +183,7 @@ internal static class Program
                 Interlocked.Increment(ref remoteSyncEvents);
         };
 
-        history.CaptureNow();
+        WriteClipboardFromOtherProcess("text", marker);
 
         var deadline = DateTime.UtcNow.AddSeconds(4);
         ClipboardEntry? entry = null;
@@ -191,8 +204,7 @@ internal static class Program
 
         // Re-copy identical text. History should remain deduplicated, but sync intent
         // must be emitted again so the same value can be sent to a phone later.
-        Clipboard.SetText(marker, TextDataFormat.UnicodeText);
-        history.CaptureNow();
+        WriteClipboardFromOtherProcess("html", "<html><!--StartFragment--><span>" + System.Net.WebUtility.HtmlEncode(marker) + "</span><!--EndFragment--></html>");
 
         deadline = DateTime.UtcNow.AddSeconds(4);
         while (DateTime.UtcNow < deadline &&
@@ -289,5 +301,24 @@ internal static class Program
             throw new InvalidOperationException("Invalid PNG changed the Windows clipboard.");
 
         history.Clear();
+    }
+
+    private static void WriteClipboardFromOtherProcess(string format, string value)
+    {
+        var start = new System.Diagnostics.ProcessStartInfo(Environment.ProcessPath!)
+        {
+            UseShellExecute = false, CreateNoWindow = true,
+            RedirectStandardError = true
+        };
+        if (string.Equals(Path.GetFileNameWithoutExtension(Environment.ProcessPath), "dotnet", StringComparison.OrdinalIgnoreCase))
+            start.ArgumentList.Add(typeof(Program).Assembly.Location);
+        start.ArgumentList.Add("--clipboard-selftest-write");
+        start.ArgumentList.Add(format);
+        start.ArgumentList.Add(value);
+        using var child = System.Diagnostics.Process.Start(start) ?? throw new InvalidOperationException("Clipboard source process did not start.");
+        var until = DateTime.UtcNow.AddSeconds(10);
+        while (!child.HasExited && DateTime.UtcNow < until) { Application.DoEvents(); Thread.Sleep(20); }
+        if (!child.HasExited) { child.Kill(); throw new TimeoutException("External clipboard source timed out."); }
+        if (child.ExitCode != 0) throw new InvalidOperationException("External clipboard source failed: " + child.StandardError.ReadToEnd());
     }
 }
