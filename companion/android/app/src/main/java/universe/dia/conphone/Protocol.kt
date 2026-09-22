@@ -219,6 +219,8 @@ object ClipboardProtocol {
 }
 
 class ClipboardWireReassembler {
+    // Drop transport debris without permitting completed-transfer replay.
+    fun clearPending() = pending.clear()
     private data class Pending(
         val kind: ClipboardKind,
         val count: Int,
@@ -293,6 +295,7 @@ class ClipboardWireReassembler {
 }
 
 class BleReassembler {
+    fun clearPending() = pending.clear()
     private data class Pending(
         val count: Int,
         val parts: MutableMap<Int, ByteArray> = mutableMapOf(),

@@ -128,6 +128,11 @@ class MainActivity : Activity() {
         connect.addView(statusText)
         connect.addView(text("선택한 PC에만 자동으로 연결합니다.", 14f))
         button(connect, "연결할 PC 선택") { choosePairedPc() }
+        button(connect, "연결") {
+            if (hasBluetoothPermissions()) startForegroundService(Intent(this, ClipboardBridgeService::class.java)
+                .setAction(ClipboardBridgeService.ACTION_CONNECT))
+            else requestPermissions()
+        }
 
         val send = card(home, "클립보드", "휴대폰에서 복사한 뒤 이 화면을 열면 PC로 보냅니다.")
         button(send, "PC로 보내기", true) { sendFocusedClipboard(true) }
@@ -139,6 +144,10 @@ class MainActivity : Activity() {
 
         val options = card(settings, "연결 관리", "")
         button(options, "연결할 PC 선택") { choosePairedPc() }
+        button(options, "연결 해제") {
+            startForegroundService(Intent(this, ClipboardBridgeService::class.java)
+                .setAction(ClipboardBridgeService.ACTION_DISCONNECT))
+        }
         button(options, "앱 권한 설정") {
             startActivity(Intent(android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
                 android.net.Uri.parse("package:$packageName")))

@@ -6,6 +6,7 @@ using ConPhone.Core;
 using Windows.Devices.Bluetooth;
 using Windows.Devices.Bluetooth.GenericAttributeProfile;
 using Windows.Security.Credentials;
+using Windows.Foundation;
 
 namespace ConPhone.Windows;
 
@@ -79,6 +80,7 @@ public sealed class BleClipboardService : IDisposable
     private readonly Func<bool> _p2pRequested;
     private readonly Func<DirectLinkConfig?> _directLinkConfig;
     private readonly SemaphoreSlim _sendGate = new(1, 1);
+    private readonly SemaphoreSlim _notifyGate = new(1, 1);
     private readonly object _ackGate = new();
     private readonly Dictionary<(string DeviceId, Guid TransferId), TaskCompletionSource<bool>> _ackWaiters = [];
     private readonly ConcurrentDictionary<string, BleFragmentReassembler> _bleReassemblers = new();
@@ -92,6 +94,13 @@ public sealed class BleClipboardService : IDisposable
     private GattLocalCharacteristic? _capabilities;
     private GattLocalCharacteristic? _directLink;
     private bool _disposed;
+    private readonly SemaphoreSlim _lifecycleGate = new(1, 1);
+    private BleResourceLifetime _resources;
+    private BleResourceLifetime _sends = new();
+    private readonly object _peerGate = new();
+    private readonly Dictionary<string, Subscription> _subscriptions = [];
+    private sealed record Subscription(GattSession Session, BleResourceLifetime Lifetime);
+    private long _stopGeneration;
     private volatile bool _published;
 
     public Func<string, ClipboardContent, Task<bool>>? ReceiveContentAsync { get; set; }
@@ -105,6 +114,7 @@ public sealed class BleClipboardService : IDisposable
         Func<bool> p2pRequested,
         Func<DirectLinkConfig?> directLinkConfig)
     {
+        _resources = new BleResourceLifetime(text => Status?.Invoke(text));
         _approvedDeviceId = approvedDeviceId;
         _trustedDevice = trustedDevice;
         _enabled = enabled;
@@ -121,21 +131,43 @@ public sealed class BleClipboardService : IDisposable
 
     public async Task PrepareAsync()
     {
-        ObjectDisposedException.ThrowIf(_disposed, this);
-        if (_provider is not null)
-            return;
+        var stopGeneration = Interlocked.Read(ref _stopGeneration);
+        await _lifecycleGate.WaitAsync().ConfigureAwait(false);
+        try { if (stopGeneration == Interlocked.Read(ref _stopGeneration)) await PrepareCoreAsync().ConfigureAwait(false); }
+        catch { CleanupServerResources(); throw; }
+        finally { _lifecycleGate.Release(); }
+    }
 
-        var created = await GattServiceProvider.CreateAsync(ServiceUuid);
+    private async Task PrepareCoreAsync()
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        if (_provider is not null && !_resources.IsDisposed) return;
+        if (_resources.IsDisposed) {
+            CleanupServerResources();
+            _resources = new BleResourceLifetime(text => Status?.Invoke(text));
+        }
+        var lifetime = _resources;
+        using var startupTimeout = CancellationTokenSource.CreateLinkedTokenSource(lifetime.Token);
+        startupTimeout.CancelAfter(TimeSpan.FromSeconds(15));
+        using var startupCancellation = startupTimeout.Token.Register(lifetime.Dispose);
+
+        var created = await GattServiceProvider.CreateAsync(ServiceUuid).AsTask(_resources.Token);
         if (created.Error != BluetoothError.Success)
             throw new InvalidOperationException($"Clipboard BLE 서비스 생성 실패: {created.Error}");
 
         _provider = created.ServiceProvider;
-        _provider.AdvertisementStatusChanged += (_, args) =>
+        var provider = _provider;
+        lifetime.Register(() => provider.StopAdvertising());
+        TypedEventHandler<GattServiceProvider, GattServiceProviderAdvertisementStatusChangedEventArgs> advertisementChanged = (_, args) =>
         {
+            if (lifetime.IsDisposed || !ReferenceEquals(provider, _provider)) return;
             if (args.Status is GattServiceProviderAdvertisementStatus.Stopped or
                 GattServiceProviderAdvertisementStatus.Aborted) _published = false;
             Status?.Invoke($"Clipboard BLE 서비스 상태: {args.Status} ({args.Error})");
         };
+
+        provider.AdvertisementStatusChanged += advertisementChanged;
+        lifetime.Register(() => provider.AdvertisementStatusChanged -= advertisementChanged);
 
         _tx = await CreateCharacteristicAsync(
             TxUuid,
@@ -167,24 +199,36 @@ public sealed class BleClipboardService : IDisposable
             GattProtectionLevel.EncryptionRequired,
             GattProtectionLevel.EncryptionRequired);
 
-        _tx.SubscribedClientsChanged += (_, _) =>
-        {
-            var liveIds = LiveClients(_tx).Select(SessionId).ToHashSet();
-            foreach (var id in _readyAfter.Keys)
-                if (!liveIds.Contains(id)) _readyAfter.TryRemove(id, out _);
-            Status?.Invoke($"Clipboard BLE 구독: {Subscribers} · 휴대폰 준비 확인 대기");
+        var tx = _tx; var rx = _rx; var secret = _secret;
+        var capabilities = _capabilities; var direct = _directLink;
+        TypedEventHandler<GattLocalCharacteristic, object> subscribed = (_, _) => {
+            if (!lifetime.IsDisposed) RefreshSubscriptions();
         };
-
-        _rx.WriteRequested += RxWriteRequested;
-        _secret.ReadRequested += SecretReadRequested;
-        _capabilities.ReadRequested += CapabilitiesReadRequested;
-        _directLink.ReadRequested += DirectLinkReadRequested;
+        tx.SubscribedClientsChanged += subscribed;
+        lifetime.Register(() => tx.SubscribedClientsChanged -= subscribed);
+        rx.WriteRequested += RxWriteRequested;
+        lifetime.Register(() => rx.WriteRequested -= RxWriteRequested);
+        secret.ReadRequested += SecretReadRequested;
+        lifetime.Register(() => secret.ReadRequested -= SecretReadRequested);
+        capabilities.ReadRequested += CapabilitiesReadRequested;
+        lifetime.Register(() => capabilities.ReadRequested -= CapabilitiesReadRequested);
+        direct.ReadRequested += DirectLinkReadRequested;
+        lifetime.Register(() => direct.ReadRequested -= DirectLinkReadRequested);
+        lifetime.Token.ThrowIfCancellationRequested();
     }
 
     public async Task StartAsync()
     {
-        await PrepareAsync().ConfigureAwait(false);
-        StartAdvertising();
+        var stopGeneration = Interlocked.Read(ref _stopGeneration);
+        await _lifecycleGate.WaitAsync().ConfigureAwait(false);
+        try {
+            if (stopGeneration != Interlocked.Read(ref _stopGeneration)) return;
+            await PrepareCoreAsync().ConfigureAwait(false);
+            _resources.Token.ThrowIfCancellationRequested();
+            StartAdvertising();
+        }
+        catch { CleanupServerResources(); throw; }
+        finally { _lifecycleGate.Release(); }
     }
 
     private void StartAdvertising()
@@ -211,7 +255,7 @@ public sealed class BleClipboardService : IDisposable
             WriteProtectionLevel = writeProtection
         };
 
-        var result = await _provider!.Service.CreateCharacteristicAsync(uuid, parameters);
+        var result = await _provider!.Service.CreateCharacteristicAsync(uuid, parameters).AsTask(_resources.Token);
         if (result.Error != BluetoothError.Success)
             throw new InvalidOperationException($"Clipboard BLE characteristic {uuid}: {result.Error}");
 
@@ -222,11 +266,16 @@ public sealed class BleClipboardService : IDisposable
         GattLocalCharacteristic sender,
         GattReadRequestedEventArgs args)
     {
+        var lifetime = _resources;
         var deferral = args.GetDeferral();
         try
         {
-            var request = await args.GetRequestAsync();
+            var request = await args.GetRequestAsync().AsTask(lifetime.Token);
             if (request is null) return;
+            if (lifetime.IsDisposed || !ReferenceEquals(sender, _secret)) {
+                request.RespondWithProtocolError(0x0E);
+                return;
+            }
 
             var id = args.Session.DeviceId.Id;
             if (!IsTrusted(id))
@@ -250,7 +299,7 @@ public sealed class BleClipboardService : IDisposable
         }
         finally
         {
-            deferral.Complete();
+            try { deferral.Complete(); } catch (Exception ex) { Status?.Invoke($"[BLE] deferral completion HRESULT=0x{ex.HResult:X8}"); }
         }
     }
 
@@ -258,11 +307,16 @@ public sealed class BleClipboardService : IDisposable
         GattLocalCharacteristic sender,
         GattReadRequestedEventArgs args)
     {
+        var lifetime = _resources;
         var deferral = args.GetDeferral();
         try
         {
-            var request = await args.GetRequestAsync();
+            var request = await args.GetRequestAsync().AsTask(lifetime.Token);
             if (request is null) return;
+            if (lifetime.IsDisposed || !ReferenceEquals(sender, _capabilities)) {
+                request.RespondWithProtocolError(0x0E);
+                return;
+            }
 
             if (!IsTrusted(args.Session.DeviceId.Id))
             {
@@ -291,14 +345,23 @@ public sealed class BleClipboardService : IDisposable
                 response[8] == 1 && _p2pRequested()
                     ? (byte)1
                     : (byte)0;
-            RespondRead(request, response);
-            if (request.Offset == 0 && response[8] == 1 &&
-                _readyAfter.TryAdd(args.Session.DeviceId.Id, DateTimeOffset.UtcNow.AddSeconds(1)))
-                Status?.Invoke("Clipboard 활성 대상 준비 응답 완료 · 전송 대기 해제");
+            var subscription = FindSubscription(args.Session.DeviceId.Id, args.Session);
+            lock (_peerGate)
+            {
+                if (lifetime.IsDisposed || subscription is null || subscription.Lifetime.IsDisposed) {
+                    request.RespondWithProtocolError(0x0E);
+                    return;
+                }
+                RespondRead(request, response);
+                if (request.Offset == 0 && response[8] == 1 &&
+                    _readyAfter.TryAdd(args.Session.DeviceId.Id, DateTimeOffset.UtcNow.AddSeconds(1)))
+                    Status?.Invoke("Clipboard 활성 대상 준비 응답 완료 · 전송 대기 해제");
+            }
         }
+        catch (Exception ex) { Status?.Invoke($"[BLE] capabilities read HRESULT=0x{ex.HResult:X8}"); }
         finally
         {
-            deferral.Complete();
+            try { deferral.Complete(); } catch (Exception ex) { Status?.Invoke($"[BLE] deferral completion HRESULT=0x{ex.HResult:X8}"); }
         }
     }
 
@@ -306,11 +369,16 @@ public sealed class BleClipboardService : IDisposable
         GattLocalCharacteristic sender,
         GattReadRequestedEventArgs args)
     {
+        var lifetime = _resources;
         var deferral = args.GetDeferral();
         try
         {
-            var request = await args.GetRequestAsync();
+            var request = await args.GetRequestAsync().AsTask(lifetime.Token);
             if (request is null) return;
+            if (lifetime.IsDisposed || !ReferenceEquals(sender, _directLink)) {
+                request.RespondWithProtocolError(0x0E);
+                return;
+            }
 
             if (!IsActive(args.Session.DeviceId.Id))
             {
@@ -330,7 +398,7 @@ public sealed class BleClipboardService : IDisposable
         }
         finally
         {
-            deferral.Complete();
+            try { deferral.Complete(); } catch (Exception ex) { Status?.Invoke($"[BLE] deferral completion HRESULT=0x{ex.HResult:X8}"); }
         }
     }
 
@@ -348,12 +416,18 @@ public sealed class BleClipboardService : IDisposable
     {
         Guid? ackToSend = null;
         string? ackDeviceId = null;
+        Subscription? receiving = null;
+        var lifetime = _resources;
         var deferral = args.GetDeferral();
 
         try
         {
-            var request = await args.GetRequestAsync();
+            var request = await args.GetRequestAsync().AsTask(lifetime.Token);
             if (request is null) return;
+            if (lifetime.IsDisposed || !ReferenceEquals(sender, _rx)) {
+                request.RespondWithProtocolError(0x0E);
+                return;
+            }
 
             var id = args.Session.DeviceId.Id;
             if (!IsActive(id))
@@ -363,6 +437,13 @@ public sealed class BleClipboardService : IDisposable
                 return;
             }
 
+            receiving = FindSubscription(id, args.Session);
+            if (receiving is null) {
+                if (request.Option == GattWriteOption.WriteWithResponse) request.RespondWithProtocolError(0x0E);
+                return;
+            }
+            var receiveToken = receiving.Lifetime.Token;
+            receiveToken.ThrowIfCancellationRequested();
             var valid = false;
             try
             {
@@ -383,7 +464,8 @@ public sealed class BleClipboardService : IDisposable
                     var ble = _bleReassemblers.GetOrAdd(
                         id,
                         _ => new BleFragmentReassembler());
-                    var frame = ble.Add(fragment);
+                    byte[]? frame;
+                    lock (ble) { receiveToken.ThrowIfCancellationRequested(); frame = ble.Add(fragment); }
 
                     if (frame is not null)
                     {
@@ -401,7 +483,8 @@ public sealed class BleClipboardService : IDisposable
                             var clipboard = _clipboardReassemblers.GetOrAdd(
                                 id,
                                 _ => new ClipboardReassembler());
-                            var content = clipboard.Add(chunk);
+                            ClipboardContent? content;
+                            lock (clipboard) { receiveToken.ThrowIfCancellationRequested(); content = clipboard.Add(chunk); }
 
                             if (content is not null)
                             {
@@ -414,7 +497,7 @@ public sealed class BleClipboardService : IDisposable
                                         id,
                                         content)
                                     .WaitAsync(
-                                        TimeSpan.FromSeconds(8))
+                                        TimeSpan.FromSeconds(8), receiveToken)
                                     .ConfigureAwait(false);
 
                                 if (!applied)
@@ -455,11 +538,11 @@ public sealed class BleClipboardService : IDisposable
             // Complete the GATT write transaction before sending the application
             // notification ACK. Some Bluetooth stacks serialize server callbacks
             // and notifications behind this deferral.
-            deferral.Complete();
+            try { deferral.Complete(); } catch (Exception ex) { Status?.Invoke($"[BLE] deferral completion HRESULT=0x{ex.HResult:X8}"); }
         }
 
         if (ackToSend is { } transferId &&
-            ackDeviceId is { } deviceId)
+            ackDeviceId is { } deviceId && receiving is not null && !receiving.Lifetime.IsDisposed)
         {
             try
             {
@@ -467,10 +550,11 @@ public sealed class BleClipboardService : IDisposable
                     new CancellationTokenSource(
                         TimeSpan.FromSeconds(5));
 
+                using var receivedAck = CancellationTokenSource.CreateLinkedTokenSource(ackTimeout.Token, receiving.Lifetime.Token);
                 await SendAckAsync(
                         deviceId,
                         transferId,
-                        ackTimeout.Token)
+                        receivedAck.Token)
                     .ConfigureAwait(false);
             }
             catch (Exception ex)
@@ -495,6 +579,13 @@ public sealed class BleClipboardService : IDisposable
             ?? throw new InvalidOperationException(
                 "Clipboard ACK 대상이 BLE 알림을 구독하지 않았습니다.");
 
+        var characteristic = _tx ?? throw new InvalidOperationException("Clipboard service unavailable.");
+        var subscription = FindSubscription(deviceId, client.Session)
+            ?? throw new InvalidOperationException("Clipboard subscription expired.");
+        using var linked = CancellationTokenSource.CreateLinkedTokenSource(
+            token, _resources.Token, _sends.Token, subscription.Lifetime.Token);
+        token = linked.Token;
+        token.ThrowIfCancellationRequested();
         var maxGattValue = client.MaxNotificationSize;
         if (maxGattValue <= BleFragmentCodec.HeaderSize)
             throw new InvalidOperationException(
@@ -510,11 +601,7 @@ public sealed class BleClipboardService : IDisposable
                      maxGattValue,
                      transportTransferId))
         {
-            var result = await _tx.NotifyValueAsync(
-                    fragment.AsBuffer(),
-                    client)
-                .AsTask(token)
-                .ConfigureAwait(false);
+            var result = await NotifySerializedAsync(characteristic, fragment, client, token).ConfigureAwait(false);
 
             if (result.Status != GattCommunicationStatus.Success)
                 throw new InvalidOperationException(
@@ -522,25 +609,101 @@ public sealed class BleClipboardService : IDisposable
         }
     }
 
+    private async Task<GattClientNotificationResult> NotifySerializedAsync(
+        GattLocalCharacteristic characteristic, byte[] packet, GattSubscribedClient client, CancellationToken token)
+    {
+        await _notifyGate.WaitAsync(token).ConfigureAwait(false);
+        try {
+            token.ThrowIfCancellationRequested();
+            return await characteristic.NotifyValueAsync(packet.AsBuffer(), client).AsTask(token).ConfigureAwait(false);
+        }
+        finally { _notifyGate.Release(); }
+    }
+
     public void CancelPendingSends(string reason)
     {
-        FailAllAcks(
-            new InvalidOperationException(reason));
+        BleResourceLifetime old;
+        lock (_ackGate)
+        {
+            old = _sends;
+            _sends = new BleResourceLifetime();
+            FailAllAcks(new InvalidOperationException(reason));
+        }
+        old.Dispose();
     }
 
     public void StopAdvertising()
     {
-        if (_provider is null) return;
-        try
-        {
-            if (Running)
-                _provider.StopAdvertising();
-            _published = false;
+        Interlocked.Increment(ref _stopGeneration);
+        CleanupServerResources();
+    }
+
+    private void RefreshSubscriptions()
+    {
+        if (_disposed || _resources.IsDisposed) return;
+        try {
+            var live = LiveClients(_tx);
+            lock (_peerGate)
+            {
+                if (_disposed || _resources.IsDisposed) return;
+                foreach (var id in _subscriptions.Keys.ToArray())
+                    if (!live.Any(c => SessionId(c) == id && ReferenceEquals(c.Session, _subscriptions[id].Session)))
+                        RemoveSubscription(id, _subscriptions[id]);
+                foreach (var client in live)
+                {
+                    var id = SessionId(client);
+                    if (id is null || _subscriptions.ContainsKey(id)) continue;
+                    var session = client.Session;
+                    var lifetime = new BleResourceLifetime(text => Status?.Invoke(text));
+                    var lease = SharedBleResource<GattSession>.Acquire(session);
+                    lifetime.Register(lease.Dispose);
+                    var subscription = new Subscription(session, lifetime);
+                    _subscriptions.Add(id, subscription);
+                    TypedEventHandler<GattSession, GattSessionStatusChangedEventArgs> changed = (_, args) => {
+                        if (args.Status == GattSessionStatus.Closed) {
+                            lock (_peerGate) RemoveSubscription(id, subscription);
+                        }
+                        Status?.Invoke($"[BLE][Session {lifetime.Id}] clipboard session={args.Status} status={args.Error}");
+                    };
+                    session.SessionStatusChanged += changed;
+                    lifetime.Register(() => session.SessionStatusChanged -= changed);
+                    Status?.Invoke($"[BLE][Session {lifetime.Id}] notification subscribed");
+                }
+            }
         }
-        catch (Exception ex)
-        {
-            Status?.Invoke($"Clipboard BLE 검색 신호 중지 확인 실패: {ex.Message}");
-        }
+        catch (Exception ex) { Status?.Invoke($"[BLE] subscription refresh HRESULT=0x{ex.HResult:X8}"); }
+    }
+
+    private Subscription? FindSubscription(string id, GattSession session)
+    {
+        RefreshSubscriptions();
+        lock (_peerGate) return _subscriptions.TryGetValue(id, out var current) &&
+            ReferenceEquals(current.Session, session) && !current.Lifetime.IsDisposed ? current : null;
+    }
+
+    private void RemoveSubscription(string id, Subscription expected)
+    {
+        if (!_subscriptions.TryGetValue(id, out var current) || !ReferenceEquals(current, expected)) return;
+        _subscriptions.Remove(id);
+        current.Lifetime.Dispose();
+        _readyAfter.TryRemove(id, out _);
+        if (_bleReassemblers.TryGetValue(id, out var ble)) lock (ble) ble.ClearPending();
+        if (_clipboardReassemblers.TryGetValue(id, out var wire)) lock (wire) wire.ClearPending();
+        Status?.Invoke($"[BLE][Session {current.Lifetime.Id}] subscription released; pending operations cancelled");
+    }
+
+    private void CleanupServerResources()
+    {
+        _resources.Dispose();
+        _published = false;
+        CancelPendingSends("BLE service cleanup");
+        lock (_peerGate)
+            foreach (var pair in _subscriptions.ToArray()) RemoveSubscription(pair.Key, pair.Value);
+        _readyAfter.Clear();
+        foreach (var ble in _bleReassemblers.Values) lock (ble) ble.ClearPending();
+        foreach (var wire in _clipboardReassemblers.Values) lock (wire) wire.ClearPending();
+        _tx = null; _rx = null; _secret = null; _capabilities = null; _directLink = null;
+        _provider = null;
     }
 
     public bool HasSubscriber(string deviceId) =>
@@ -565,6 +728,13 @@ public sealed class BleClipboardService : IDisposable
         if (_tx is null)
             throw new InvalidOperationException("Clipboard BLE 서비스가 준비되지 않았습니다.");
 
+        var characteristic = _tx ?? throw new InvalidOperationException("Clipboard service unavailable.");
+        var subscription = FindSubscription(deviceId, client.Session)
+            ?? throw new InvalidOperationException("Clipboard subscription expired.");
+        using var linked = CancellationTokenSource.CreateLinkedTokenSource(
+            token, _resources.Token, _sends.Token, subscription.Lifetime.Token);
+        token = linked.Token;
+        token.ThrowIfCancellationRequested();
         var maxGattValue = client.MaxNotificationSize;
         if (maxGattValue <= BleFragmentCodec.HeaderSize)
             throw new InvalidOperationException($"BLE 알림 크기가 너무 작습니다: {maxGattValue}");
@@ -598,6 +768,7 @@ public sealed class BleClipboardService : IDisposable
 
             lock (_ackGate)
             {
+                token.ThrowIfCancellationRequested();
                 if (_ackWaiters.ContainsKey(ackKey))
                     throw new InvalidOperationException(
                         "Clipboard BLE ACK transfer id collision.");
@@ -617,7 +788,7 @@ public sealed class BleClipboardService : IDisposable
                     GattClientNotificationResult result;
                     try
                     {
-                        result = await _tx.NotifyValueAsync(packet.AsBuffer(), client).AsTask(timeout.Token).ConfigureAwait(false);
+                        result = await NotifySerializedAsync(characteristic, packet, client, timeout.Token).ConfigureAwait(false);
                     }
                     catch (Exception ex) when (!cancellation.IsCancellationRequested)
                     {
@@ -773,20 +944,10 @@ public sealed class BleClipboardService : IDisposable
         if (_disposed) return;
         _disposed = true;
 
-        try
-        {
-            if (_provider is not null && Running)
-                _provider.StopAdvertising();
-        }
-        catch
-        {
-        }
-
-        FailAllAcks(
-            new ObjectDisposedException(nameof(BleClipboardService)));
-
-        // Do not dispose _sendGate here: an in-flight SendAsync may still be
-        // unwinding from NotifyValueAsync and must be able to Release() safely.
+        Interlocked.Increment(ref _stopGeneration);
+        CleanupServerResources();
+        ReceiveContentAsync = null;
+        // Managed gates remain usable by cancelled sends unwinding.
         _bleReassemblers.Clear();
         _clipboardReassemblers.Clear();
     }

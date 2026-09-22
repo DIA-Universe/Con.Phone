@@ -502,4 +502,85 @@ using (var recoveryCancellation = new CancellationTokenSource())
     catch (OperationCanceledException) { Check("shutdown cancels HID recovery", true); }
 }
 
+var cleanupOrder = new List<string>();
+var resourceLifetime = new BleResourceLifetime();
+resourceLifetime.Token.Register(() => cleanupOrder.Add("cancel"));
+resourceLifetime.Register(() => cleanupOrder.Add("provider stop"));
+resourceLifetime.Register(() => throw new IOException("already disconnected"));
+resourceLifetime.Register(() => cleanupOrder.Add("detach callback"));
+resourceLifetime.Dispose(); resourceLifetime.Dispose();
+resourceLifetime.Register(() => cleanupOrder.Add("late resource released"));
+Check("BLE cleanup cancels first, survives errors, is idempotent and releases late resources",
+    cleanupOrder.SequenceEqual(new[] { "cancel", "detach callback", "provider stop", "late resource released" }));
+var concurrentCleanup = 0;
+var racedLifetime = new BleResourceLifetime();
+await Task.WhenAll(Enumerable.Range(0, 100).Select(i => Task.Run(() => {
+    racedLifetime.Register(() => Interlocked.Increment(ref concurrentCleanup));
+    if (i % 3 == 0) racedLifetime.Dispose();
+})));
+racedLifetime.Dispose();
+Check("concurrent BLE registration and cleanup releases all 100 resources exactly once", concurrentCleanup == 100);
+var cleanupDespiteLoggingError = 0;
+var badLoggerLifetime = new BleResourceLifetime(_ => throw new IOException("logger unavailable"));
+badLoggerLifetime.Register(() => cleanupDespiteLoggingError++);
+badLoggerLifetime.Dispose();
+Check("diagnostic logging failure cannot interrupt BLE cleanup", cleanupDespiteLoggingError == 1);
+var sharedSession = new TestBleResource();
+var hidLease = SharedBleResource<TestBleResource>.Acquire(sharedSession);
+var clipboardLease = SharedBleResource<TestBleResource>.Acquire(sharedSession);
+clipboardLease.Dispose(); clipboardLease.Dispose();
+Check("clipboard unsubscribe does not dispose a session still owned by HID", sharedSession.Disposals == 0);
+hidLease.Dispose(); hidLease.Dispose();
+Check("last shared GATT owner disposes exactly once", sharedSession.Disposals == 1);
+try { SharedBleResource<TestBleResource>.Acquire(sharedSession); Check("closed GATT cannot be reused", false); }
+catch (ObjectDisposedException) { Check("closed GATT cannot be reused", true); }
+
+var resetContent = ClipboardContent.FromText("재연결 UTF-8🙂 " + new string('x', 1000));
+var resetFrames = ClipboardWireCodec.Enumerate(resetContent, 256).Select(x => ClipboardWireCodec.Decode(x)).ToArray();
+var resetWire = new ClipboardReassembler();
+resetWire.Add(resetFrames[0]); resetWire.ClearPending();
+ClipboardContent? afterReset = null;
+foreach (var frame in resetFrames.Skip(1)) afterReset = resetWire.Add(frame);
+Check("cleanup drops incomplete clipboard chunks", afterReset is null);
+afterReset = resetWire.Add(resetFrames[0]);
+Check("new session can reassemble UTF8 out of order after cleanup", afterReset?.GetText() == resetContent.GetText());
+resetWire.ClearPending();
+try { resetWire.Add(resetFrames[0]); Check("cleanup preserves clipboard replay protection", false); }
+catch (InvalidDataException) { Check("cleanup preserves clipboard replay protection", true); }
+var resetPackets = BleFragmentCodec.Split(new byte[100], 20, 419u).Select(x => BleFragmentCodec.Decode(x)).ToArray();
+var resetBle = new BleFragmentReassembler();
+resetBle.Add(resetPackets[0]); resetBle.ClearPending();
+byte[]? resetFrame = null;
+foreach (var packet in resetPackets.Skip(1)) resetFrame = resetBle.Add(packet);
+Check("cleanup drops incomplete MTU fragments", resetFrame is null);
+Check("MTU assembly resumes without old partial bytes", resetBle.Add(resetPackets[0])?.Length == 100);
+resetBle.ClearPending();
+try { resetBle.Add(resetPackets[0]); Check("cleanup preserves BLE replay protection", false); }
+catch (InvalidDataException) { Check("cleanup preserves BLE replay protection", true); }
+
+var cancellationSender = new ReliableBleSender();
+var cancellableFragment = BleFragmentCodec.Split(new byte[10], 20, 991u).First();
+using (var sendCancellation = new CancellationTokenSource())
+{
+    var submitted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+    var interruptedSend = cancellationSender.SendAsync("test-peer", cancellableFragment,
+        (_, _) => { submitted.TrySetResult(); return Task.CompletedTask; }, sendCancellation.Token);
+    await submitted.Task;
+    sendCancellation.Cancel();
+    try { await interruptedSend; Check("interrupted chunk must cancel", false); }
+    catch (OperationCanceledException) { Check("disconnect cancels an outstanding fragment receipt wait", true); }
+}
+var freshReceiptAccepted = false;
+await cancellationSender.SendAsync("test-peer", cancellableFragment, (packet, _) => {
+    freshReceiptAccepted = cancellationSender.Accept("test-peer", packet[..8]);
+    return Task.CompletedTask;
+}, CancellationToken.None);
+Check("cancelled receipt waiter does not occupy the next session transfer", freshReceiptAccepted);
+
 Console.WriteLine($"{passed} checks passed. No Windows/Bluetooth/phone hardware has been tested by these checks.");
+
+sealed class TestBleResource : IDisposable
+{
+    public int Disposals;
+    public void Dispose() => Interlocked.Increment(ref Disposals);
+}

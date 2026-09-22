@@ -54,6 +54,9 @@ class ClipboardBridgeService : Service() {
         const val ACTION_DRAIN_SHARED = "universe.dia.conphone.DRAIN_SHARED"
         const val ACTION_RETRY_P2P = "universe.dia.conphone.RETRY_P2P"
         const val ACTION_STOP = "universe.dia.conphone.STOP"
+        const val ACTION_DISCONNECT = "universe.dia.conphone.DISCONNECT"
+        const val ACTION_CONNECT = "universe.dia.conphone.CONNECT"
+        private const val USER_DISCONNECTED = "user_disconnected"
 
         const val EXTRA_SHARED_TEXT = "shared_text"
         const val EXTRA_SHARED_IMAGE_PATH = "shared_image_path"
@@ -76,9 +79,7 @@ class ClipboardBridgeService : Service() {
 
     @Volatile private var destroyed = false
     private var handshakeComplete = false
-    private var recoveringGatt: BluetoothGatt? = null
     private var writeGeneration = 0L
-    private var discoveringGatt: BluetoothGatt? = null
     private var readingGatt: BluetoothGatt? = null
     private var readGeneration = 0L
     private var readStartFailures = 0
@@ -94,13 +95,15 @@ class ClipboardBridgeService : Service() {
     }
 
     private fun drainReads() {
-        if (destroyed || recoveringGatt != null || readingGatt != null || bleWriting) return
+        if (destroyed || !bleLifecycle.idle || readingGatt != null || bleWriting) return
         val item = pendingReads.poll() ?: run { writeNextBle(); return }
         val (g, c) = item
         if (gatt !== g) { drainReads(); return }
         readingGatt = g
         val generation = ++readGeneration
-        if (!g.readCharacteristic(c)) {
+        if (!bleLifecycle.beginOperation("read:${c.uuid}")) { readingGatt = null; pendingReads.addFirst(item); return }
+        if (!runCatching { g.readCharacteristic(c) }.getOrDefault(false)) {
+            bleLifecycle.finishOperation("read:${c.uuid}")
             // false means Android did not start the read; the shared GATT
             // transport may simply be busy. Do not tear down a healthy HID
             // connection on the first rejected periodic capabilities poll.
@@ -125,35 +128,91 @@ class ClipboardBridgeService : Service() {
         }, 10_000)
     }
 
-    private fun readCompleted(g: BluetoothGatt) {
-        if (readingGatt === g) {
+    private fun readCompleted(g: BluetoothGatt, c: BluetoothGattCharacteristic): Boolean {
+        if (readingGatt === g && bleLifecycle.finishOperation("read:${c.uuid}")) {
             readingGatt = null
             ++readGeneration
             main.post { drainReads() }
+            return true
         }
+        return false
     }
 
     private fun restartGatt(g: BluetoothGatt, message: String) {
         if (destroyed || gatt !== g) return
-        recoveringGatt = g
         showStatus(message)
-        readingGatt = null
-        readStartFailures = 0
-        pendingReads.clear()
-        ++readGeneration
-        runCatching { g.disconnect() }
-        main.postDelayed({
-            if (gatt === g) gattCallback.onConnectionStateChange(g, 0, BluetoothProfile.STATE_DISCONNECTED)
-        }, 1500)
+        bleLifecycle.cleanup(message, retry = true)
     }
 
     private fun discoverGatt(g: BluetoothGatt) {
-        if (destroyed || gatt !== g || discoveringGatt === g) return
-        discoveringGatt = g
-        if (!g.discoverServices()) restartGatt(g, "PC 서비스 검색 시작 실패 · 재연결")
+        if (destroyed || gatt !== g || !bleLifecycle.beginOperation("discovery")) return
+        bleLog("discovering services")
+        if (!runCatching { g.discoverServices() }.getOrDefault(false))
+            restartGatt(g, "PC 서비스 검색 시작 실패 · 재연결")
     }
 
     private val main = Handler(Looper.getMainLooper())
+    private fun bleLog(message: String): Int = android.util.Log.i("LINKO-BLE",
+        "[BLE][Session ${bleLifecycle.generation}] $message")
+    private val bleLifecycle: BleConnectionLifecycle<BluetoothGatt> = BleConnectionLifecycle(
+        schedule = { delay, action ->
+            val task = Runnable { action() }
+            main.postDelayed(task, delay)
+            BleTimer { main.removeCallbacks(task) }
+        },
+        disableNotifications = { g, canWrite ->
+            val characteristic = tx
+            if (characteristic != null) runCatching { g.setCharacteristicNotification(characteristic, false) }
+            val descriptor = characteristic?.getDescriptor(CCCD_UUID)
+            if (canWrite && descriptor != null) {
+                bleLog("CCCD disable requested")
+                writeCccd(g, descriptor, BluetoothGattDescriptor.DISABLE_NOTIFICATION_VALUE)
+            } else {
+                bleLog("CCCD disable skipped: link unavailable or operation pending")
+                false
+            }
+        },
+        disconnect = { it.disconnect() },
+        close = { it.close() },
+        resetTransport = { resetBleTransport() },
+        reconnect = { ensureSelectedPcConnection() },
+        log = { android.util.Log.i("LINKO-BLE", it) }
+    )
+
+    @Suppress("DEPRECATION")
+    private fun writeCccd(g: BluetoothGatt, descriptor: BluetoothGattDescriptor, value: ByteArray): Boolean =
+        if (Build.VERSION.SDK_INT >= 33) g.writeDescriptor(descriptor, value) == BluetoothStatusCodes.SUCCESS
+        else { descriptor.value = value; g.writeDescriptor(descriptor) }
+
+    private fun resetBleTransport() {
+        gatt = null
+        handshakeComplete = false
+        readingGatt = null
+        readStartFailures = 0
+        ++writeGeneration
+        ++readGeneration
+        pendingReads.clear()
+        bleQueue.clear()
+        bleAckQueue.clear()
+        bleWriting = false
+        bleWritingAck = false
+        ++bleAckGeneration
+        tx = null; rx = null; secretCharacteristic = null
+        capabilitiesCharacteristic = null; directLinkCharacteristic = null
+        capabilitiesPollScheduled = false
+        activeTarget = false
+        mtu = 23
+        bleImageLimitBytes = 512 * 1024
+        bleReassembler.clearPending()
+        bleWireReassembler.clearPending()
+        reliableReceiver.reset()
+        requeueActiveBleTransfer("Bluetooth 연결 정리")
+        if (p2p?.ready != true) {
+            credential = null
+            directConfig = null
+            releaseDirectNetwork()
+        }
+    }
     private val executor = Executors.newCachedThreadPool()
     private val secureRandom = SecureRandom()
     private val bleQueue = ConcurrentLinkedQueue<ByteArray>()
@@ -211,9 +270,16 @@ class ClipboardBridgeService : Service() {
 
     private val bluetoothReconnect = object : android.content.BroadcastReceiver() {
         override fun onReceive(context: android.content.Context?, intent: Intent?) {
-            if (intent?.action == BluetoothDevice.ACTION_ACL_CONNECTED ||
-                intent?.getIntExtra(BluetoothAdapter.EXTRA_STATE, -1) == BluetoothAdapter.STATE_ON)
-                main.post { ensureSelectedPcConnection() }
+            when (intent?.action) {
+                BluetoothAdapter.ACTION_STATE_CHANGED -> when (intent.getIntExtra(BluetoothAdapter.EXTRA_STATE, -1)) {
+                    BluetoothAdapter.STATE_TURNING_OFF, BluetoothAdapter.STATE_OFF -> {
+                        bleLifecycle.radioChanged(false)
+                        showStatus("Bluetooth OFF · 연결 정리 완료")
+                    }
+                    BluetoothAdapter.STATE_ON -> bleLifecycle.radioChanged(true)
+                }
+                BluetoothDevice.ACTION_ACL_CONNECTED -> ensureSelectedPcConnection()
+            }
         }
     }
 
@@ -221,6 +287,8 @@ class ClipboardBridgeService : Service() {
         super.onCreate()
         createNotificationChannel()
         showStatus("연결 준비 중")
+        if (getSharedPreferences(CONNECTION_PREFS, MODE_PRIVATE).getBoolean(USER_DISCONNECTED, false))
+            bleLifecycle.userDisconnect()
         backgroundClipboard.start()
         main.post { drainPersistedShares() }
         val filter = android.content.IntentFilter(BluetoothAdapter.ACTION_STATE_CHANGED)
@@ -232,8 +300,14 @@ class ClipboardBridgeService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action ?: ACTION_START) {
             ACTION_STOP -> {
+                requestUserDisconnect()
                 stopSelf()
                 return START_NOT_STICKY
+            }
+            ACTION_DISCONNECT -> requestUserDisconnect()
+            ACTION_CONNECT -> {
+                getSharedPreferences(CONNECTION_PREFS, MODE_PRIVATE).edit().putBoolean(USER_DISCONNECTED, false).apply()
+                bleLifecycle.resume()
             }
             ACTION_CONNECT_DEVICE -> connectSelectedPc(intent?.getStringExtra(EXTRA_DEVICE_ADDRESS))
             ACTION_SEND -> sendCurrentClipboard()
@@ -250,8 +324,16 @@ class ClipboardBridgeService : Service() {
 
     override fun onBind(intent: Intent?) = null
 
+    private fun requestUserDisconnect() {
+        getSharedPreferences(CONNECTION_PREFS, MODE_PRIVATE).edit().putBoolean(USER_DISCONNECTED, true).apply()
+        p2p?.close(); p2p = null
+        bleLifecycle.userDisconnect()
+        showStatus("연결 해제됨 · 직접 연결할 때까지 자동 재연결 중지")
+    }
+
     private fun ensureSelectedPcConnection() {
-        if (destroyed) return
+        if (Looper.myLooper() != Looper.getMainLooper()) { main.post { ensureSelectedPcConnection() }; return }
+        if (destroyed || !bleLifecycle.desired || bleLifecycle.state != BleConnectionState.DISCONNECTED) return
         if (checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT) != PackageManager.PERMISSION_GRANTED) {
             showStatus("Bluetooth 권한 필요")
             return
@@ -288,13 +370,18 @@ class ClipboardBridgeService : Service() {
         val adapter = getSystemService(BluetoothManager::class.java).adapter ?: return
         val device = adapter.bondedDevices.firstOrNull { it.address == address }
         if (device == null) { showStatus("먼저 휴대폰 Bluetooth 설정에서 PC와 페어링해 주세요"); return }
-        if (gatt?.device?.address == device.address) return
-        p2p?.close()
-        p2p = null
-        gatt?.let { gattCallback.onConnectionStateChange(it, 0, BluetoothProfile.STATE_DISCONNECTED) }
-        getSharedPreferences(CONNECTION_PREFS, MODE_PRIVATE).edit().putString(SAVED_PC_ADDRESS, device.address).apply()
+        // A selection of the current PC is a connect request, not a forced reconnect.
+        if (gatt?.device?.address == device.address || bleLifecycle.state == BleConnectionState.CONNECTING ||
+            bleLifecycle.state == BleConnectionState.DISCOVERING_SERVICES ||
+            bleLifecycle.state == BleConnectionState.DISCONNECTING) return
+        getSharedPreferences(CONNECTION_PREFS, MODE_PRIVATE).edit()
+            .putString(SAVED_PC_ADDRESS, device.address).putBoolean(USER_DISCONNECTED, false).apply()
         rejectedBleDevices.remove(device.address)
-        connectDevice(device)
+        bleLifecycle.resume()
+        if (bleLifecycle.resource != null) {
+            p2p?.close(); p2p = null
+            bleLifecycle.cleanup("selected PC changed", retry = true, graceful = true)
+        } else ensureSelectedPcConnection()
     }
 
     private fun connectDevice(device: BluetoothDevice) {
@@ -304,140 +391,88 @@ class ClipboardBridgeService : Service() {
         if (!AutoConnectPolicy.canConnect(device.address, selectedAddress,
                 device.bondState == BluetoothDevice.BOND_BONDED, gatt != null,
                 rejectedBleDevices.contains(device.address))) return
-        showStatus("${device.name ?: "선택한 PC"} 연결 중 · 클립보드 서비스 확인")
+        showStatus("선택한 PC 연결 중 · 클립보드 서비스 확인")
         handshakeComplete = false
-        recoveringGatt = null
-        gatt = device.connectGatt(this, false, gattCallback, BluetoothDevice.TRANSPORT_LE,
-            BluetoothDevice.PHY_LE_1M_MASK, main)
-        val connecting = gatt
-        main.postDelayed({
-            if (connecting != null && gatt === connecting && !handshakeComplete)
-                restartGatt(connecting, "PC 연결 준비 시간 초과 · PC의 클립보드 동기화/기기 등록을 확인하세요")
-        }, 25_000)
+        bleLifecycle.connect { session ->
+            device.connectGatt(this, false, createGattCallback(session), BluetoothDevice.TRANSPORT_LE,
+                BluetoothDevice.PHY_LE_1M_MASK, main).also { gatt = it }
+        }
     }
 
-    private val gattCallback = object : BluetoothGattCallback() {
+    private fun createGattCallback(session: Long) = object : BluetoothGattCallback() {
         override fun onConnectionStateChange(g: BluetoothGatt, status: Int, newState: Int) {
-            if (destroyed || gatt !== g) { runCatching { g.close() }; return }
-            if (newState == BluetoothProfile.STATE_CONNECTED && status == BluetoothGatt.GATT_SUCCESS) {
-                showStatus("BLE 연결됨 · 서비스 확인")
-                if (checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT) == PackageManager.PERMISSION_GRANTED) {
-                    // HID and clipboard share the link. Keep Android's negotiated
-                    // connection parameters instead of forcing high priority on
-                    // every companion reconnect.
-                    mtu = 23
-                    discoveringGatt = null
-                    if (!g.requestMtu(517)) discoverGatt(g)
-                    main.postDelayed({ discoverGatt(g) }, 2000)
+            bleLog("connection callback session=$session status=$status newState=$newState")
+            if (bleLifecycle.state == BleConnectionState.DISCONNECTING && newState == BluetoothProfile.STATE_DISCONNECTED) {
+                bleLifecycle.finishCleanup(g, session)
+                return
+            }
+            if (!bleLifecycle.accepts(g, session)) return
+            if (status != BluetoothGatt.GATT_SUCCESS || newState == BluetoothProfile.STATE_DISCONNECTED) {
+                showStatus("PC 연결 끊김 (상태 $status) · 재연결 대기")
+                bleLifecycle.cleanup("disconnected status=$status", retry = true)
+            } else if (newState == BluetoothProfile.STATE_CONNECTED && bleLifecycle.state == BleConnectionState.CONNECTING) {
+                bleLifecycle.linkConnected()
+                mtu = 23
+                // Do not overlap MTU and discovery. A missing callback closes the attempt.
+                if (bleLifecycle.beginOperation("mtu")) {
+                    val started = runCatching { g.requestMtu(517) }.getOrDefault(false)
+                    if (!started) { bleLifecycle.finishOperation("mtu"); discoverGatt(g) }
                 }
-            } else if (newState == BluetoothProfile.STATE_DISCONNECTED || status != BluetoothGatt.GATT_SUCCESS) {
-                readingGatt = null
-                readStartFailures = 0
-                recoveringGatt = null
-                discoveringGatt = null
-                handshakeComplete = false
-                ++writeGeneration
-                pendingReads.clear()
-                ++readGeneration
-                bleAckQueue.clear()
-                bleWritingAck = false
-                requeueActiveBleTransfer("Bluetooth 연결 끊김")
-                if (gatt === g) gatt = null
-                tx = null
-                rx = null
-                secretCharacteristic = null
-                capabilitiesCharacteristic = null
-                capabilitiesPollScheduled = false
-                activeTarget = false
-                directLinkCharacteristic = null
-                bleImageLimitBytes = 512 * 1024
-                val dataPlaneAlive = p2p?.ready == true
-                if (!dataPlaneAlive) {
-                    credential = null
-                    directConfig = null
-                    releaseDirectNetwork()
-                }
-
-                showStatus(if (dataPlaneAlive)
-                    "Bluetooth 연결 끊김 (상태 $status) · 기존 P2P Clipboard 채널 유지"
-                else
-                    "PC 연결 끊김 (상태 $status) · 재연결 대기")
-                runCatching { g.close() }
-                main.postDelayed({ ensureSelectedPcConnection() }, 2500)
             }
         }
 
         override fun onMtuChanged(g: BluetoothGatt, value: Int, status: Int) {
-            if (gatt !== g) return
-            if (status == BluetoothGatt.GATT_SUCCESS) mtu = value
+            if (!bleLifecycle.accepts(g, session) || !bleLifecycle.finishOperation("mtu")) return
+            bleLog("MTU status=$status mtu=$value")
+            if (status == BluetoothGatt.GATT_SUCCESS) mtu = value.coerceIn(23, 517)
             discoverGatt(g)
         }
 
         override fun onServicesDiscovered(g: BluetoothGatt, status: Int) {
-            if (gatt !== g || destroyed) return
+            if (!bleLifecycle.accepts(g, session) || !bleLifecycle.finishOperation("discovery")) return
+            bleLog("services discovered status=$status")
             if (status != BluetoothGatt.GATT_SUCCESS) {
-                restartGatt(g, "Clipboard BLE 서비스 확인 실패 · 재연결")
+                restartGatt(g, "Clipboard BLE 서비스 확인 실패 status=$status")
                 return
             }
-
-            val service = g.getService(SERVICE_UUID) ?: run {
-                val address =
-                    if (checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT) ==
-                        PackageManager.PERMISSION_GRANTED)
-                        runCatching { g.device.address }.getOrNull()
-                    else
-                        null
-
-                if (address != null) rejectedBleDevices.add(address)
-
-                if (gatt === g) gatt = null
-                runCatching { g.disconnect() }
-                runCatching { g.close() }
-
-                showStatus("선택한 기기에 LINKO 서비스가 없습니다. LINKO를 실행한 PC를 다시 선택해 주세요.")
-                return
-            }
-
-            tx = service.getCharacteristic(TX_UUID)
-            rx = service.getCharacteristic(RX_UUID)
-            secretCharacteristic = service.getCharacteristic(SECRET_UUID)
-            capabilitiesCharacteristic = service.getCharacteristic(CAPABILITIES_UUID)
-            directLinkCharacteristic = service.getCharacteristic(DIRECT_LINK_UUID)
-
-            val txLocal = tx ?: return
-            if (checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT) != PackageManager.PERMISSION_GRANTED) return
-
-            g.setCharacteristicNotification(txLocal, true)
-            val descriptor = txLocal.getDescriptor(CCCD_UUID)
-            if (descriptor != null) {
-                if (Build.VERSION.SDK_INT >= 33) {
-                    g.writeDescriptor(descriptor, BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE)
-                } else {
-                    @Suppress("DEPRECATION")
-                    run {
-                        descriptor.value = BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
-                        g.writeDescriptor(descriptor)
-                    }
+            try {
+                val service = g.getService(SERVICE_UUID) ?: run {
+                    // This can be a PC restarting its provider. Retry only this bonded PC.
+                    restartGatt(g, "선택한 PC의 LINKO 서비스 대기")
+                    return
                 }
-            } else {
-                secretCharacteristic?.let { readCharacteristic(g, it) }
+                tx = service.getCharacteristic(TX_UUID)
+                rx = service.getCharacteristic(RX_UUID)
+                secretCharacteristic = service.getCharacteristic(SECRET_UUID)
+                capabilitiesCharacteristic = service.getCharacteristic(CAPABILITIES_UUID)
+                directLinkCharacteristic = service.getCharacteristic(DIRECT_LINK_UUID)
+                val txLocal = tx
+                require(txLocal != null && rx != null && secretCharacteristic != null) { "required characteristic missing" }
+                require(txLocal.properties and BluetoothGattCharacteristic.PROPERTY_NOTIFY != 0) { "TX not notifiable" }
+                require(rx!!.properties and BluetoothGattCharacteristic.PROPERTY_WRITE != 0) { "RX not writable" }
+                val descriptor = txLocal.getDescriptor(CCCD_UUID) ?: error("CCCD missing")
+                check(g.setCharacteristicNotification(txLocal, true)) { "notification registration failed" }
+                check(bleLifecycle.beginOperation("cccd"))
+                check(writeCccd(g, descriptor, BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE)) { "CCCD write rejected" }
+                showStatus("BLE Clipboard 준비 중")
+            } catch (ex: Exception) {
+                bleLog("discovery/notification exception=${ex.javaClass.simpleName}")
+                restartGatt(g, "BLE 필수 특성 또는 알림 설정 실패 · 재연결")
             }
-            showStatus("BLE Clipboard 준비 중")
         }
 
-        override fun onDescriptorWrite(
-            g: BluetoothGatt,
-            descriptor: BluetoothGattDescriptor,
-            status: Int
-        ) {
-            if (gatt !== g || destroyed) return
-            if (descriptor.uuid == CCCD_UUID) {
-                if (status == BluetoothGatt.GATT_SUCCESS) {
-                    secretCharacteristic?.let { readCharacteristic(g, it) }
-                } else {
-                    showStatus("BLE Clipboard 알림 구독 실패: $status")
-                }
+        override fun onDescriptorWrite(g: BluetoothGatt, descriptor: BluetoothGattDescriptor, status: Int) {
+            if (descriptor.uuid != CCCD_UUID) return
+            if (bleLifecycle.state == BleConnectionState.DISCONNECTING) {
+                if (bleLifecycle.resource === g && bleLifecycle.generation == session)
+                    bleLog("CCCD disable completed status=$status")
+                bleLifecycle.finishCleanup(g, session)
+                return
             }
+            if (!bleLifecycle.accepts(g, session) || !bleLifecycle.finishOperation("cccd")) return
+            bleLog("notification enabled status=$status")
+            if (status == BluetoothGatt.GATT_SUCCESS) secretCharacteristic?.let { readCharacteristic(g, it) }
+            else restartGatt(g, "BLE 알림 등록 실패 status=$status")
         }
 
         @Suppress("DEPRECATION")
@@ -446,8 +481,8 @@ class ClipboardBridgeService : Service() {
             characteristic: BluetoothGattCharacteristic,
             status: Int
         ) {
-            if (gatt !== g || destroyed) return
-            readCompleted(g)
+            if (!bleLifecycle.accepts(g, session) || !readCompleted(g, characteristic)) return
+            bleLog("read ${characteristic.uuid} status=$status")
             if (status == BluetoothGatt.GATT_SUCCESS)
                 handleCharacteristicRead(characteristic, characteristic.value ?: byteArrayOf())
             else if (characteristic.uuid == SECRET_UUID) {
@@ -478,8 +513,8 @@ class ClipboardBridgeService : Service() {
             value: ByteArray,
             status: Int
         ) {
-            if (gatt !== g || destroyed) return
-            readCompleted(g)
+            if (!bleLifecycle.accepts(g, session) || !readCompleted(g, characteristic)) return
+            bleLog("read ${characteristic.uuid} status=$status")
             if (status == BluetoothGatt.GATT_SUCCESS)
                 handleCharacteristicRead(characteristic, value)
             else if (characteristic.uuid == SECRET_UUID) {
@@ -506,7 +541,7 @@ class ClipboardBridgeService : Service() {
 
         @Suppress("DEPRECATION")
         override fun onCharacteristicChanged(g: BluetoothGatt, characteristic: BluetoothGattCharacteristic) {
-            if (gatt === g && !destroyed)
+            if (bleLifecycle.accepts(g, session) && handshakeComplete)
                 handleCharacteristicChanged(characteristic, characteristic.value ?: byteArrayOf())
         }
 
@@ -515,7 +550,7 @@ class ClipboardBridgeService : Service() {
             characteristic: BluetoothGattCharacteristic,
             value: ByteArray
         ) {
-            if (gatt === g && !destroyed)
+            if (bleLifecycle.accepts(g, session) && handshakeComplete)
                 handleCharacteristicChanged(characteristic, value)
         }
 
@@ -524,25 +559,16 @@ class ClipboardBridgeService : Service() {
             characteristic: BluetoothGattCharacteristic,
             status: Int
         ) {
-            if (gatt !== g || destroyed) return
-            if (characteristic.uuid == RX_UUID) {
-                val wasAck = bleWritingAck
-                bleWriting = false
-                bleWritingAck = false
-
-                if (status == BluetoothGatt.GATT_SUCCESS) {
-                    if (pendingReads.isNotEmpty()) drainReads() else writeNextBle()
-                } else if (wasAck) {
-                    bleAckQueue.clear()
-                    showStatus(
-                        "BLE Clipboard ACK 전송 실패: $status · PC가 재전송 여부를 판단합니다.")
-                    main.postDelayed({ ensureSelectedPcConnection() }, 1000)
-                    writeNextBle()
-                } else {
-                    requeueActiveBleTransfer(
-                        "BLE Clipboard 쓰기 실패: $status")
-                    main.postDelayed({ ensureSelectedPcConnection() }, 1000)
-                }
+            if (!bleLifecycle.accepts(g, session) || characteristic.uuid != RX_UUID ||
+                !bleLifecycle.finishOperation("write")) return
+            bleWriting = false
+            bleWritingAck = false
+            ++writeGeneration
+            if (status == BluetoothGatt.GATT_SUCCESS) {
+                if (pendingReads.isNotEmpty()) drainReads() else writeNextBle()
+            } else {
+                bleLog("write failed status=$status")
+                restartGatt(g, "BLE Clipboard 쓰기 실패 status=$status")
             }
         }
     }
@@ -560,8 +586,12 @@ class ClipboardBridgeService : Service() {
     ) {
         when (characteristic.uuid) {
             SECRET_UUID -> {
-                if (value.size != 64) return
+                if (value.size != 64) {
+                    gatt?.let { restartGatt(it, "BLE 인증 응답 형식 오류") }
+                    return
+                }
                 handshakeComplete = true
+                bleLifecycle.ready()
                 gatt?.device?.let { pc ->
                     getSharedPreferences(CONNECTION_PREFS, MODE_PRIVATE).edit().putString(SAVED_PC_ADDRESS, pc.address).apply()
                 }
@@ -653,9 +683,12 @@ class ClipboardBridgeService : Service() {
 
     private fun scheduleCapabilitiesRead() {
         if (capabilitiesPollScheduled) return
+        val session = bleLifecycle.generation
+        val connection = gatt ?: return
         capabilitiesPollScheduled = true
 
         main.postDelayed({
+            if (!bleLifecycle.accepts(connection, session)) return@postDelayed
             capabilitiesPollScheduled = false
 
             if (gatt != null &&
@@ -687,10 +720,14 @@ class ClipboardBridgeService : Service() {
     }
 
     private fun retryDirectLinkRead() {
+        if (Looper.myLooper() != Looper.getMainLooper()) { main.post { retryDirectLinkRead() }; return }
+        val session = bleLifecycle.generation
+        val connection = gatt ?: return
         directConfigReadAttempts++
         val delay = if (directConfigReadAttempts <= 8) 1200L else 5000L
 
         main.postDelayed({
+            if (!bleLifecycle.accepts(connection, session)) return@postDelayed
             if (activeTarget &&
                 gatt != null &&
                 p2p?.ready != true &&
@@ -1431,6 +1468,8 @@ class ClipboardBridgeService : Service() {
         content: ClipboardContent,
         persistedShareId: String? = null
     ) {
+        if (Looper.myLooper() != Looper.getMainLooper()) { main.post { enqueueBle(content, persistedShareId) }; return }
+        if (destroyed) return
         val g = gatt
         val rxLocal = rx
         if (g == null || rxLocal == null || credential == null) {
@@ -1575,7 +1614,7 @@ class ClipboardBridgeService : Service() {
 
     private fun writeNextBle() {
         if (Looper.myLooper() != Looper.getMainLooper()) { main.post { writeNextBle() }; return }
-        if (destroyed || recoveringGatt != null || readingGatt != null || bleWriting) return
+        if (destroyed || !bleLifecycle.idle || readingGatt != null || bleWriting) return
 
         val g = gatt
         val characteristic = rx
@@ -1668,6 +1707,7 @@ class ClipboardBridgeService : Service() {
             return
         }
 
+        if (!bleLifecycle.beginOperation("write")) return
         bleWriting = true
         bleWritingAck = ackFrame != null
         val writeAttempt = ++writeGeneration
@@ -1676,7 +1716,7 @@ class ClipboardBridgeService : Service() {
                 restartGatt(g, "Bluetooth 쓰기 응답 시간 초과 · 재연결")
         }, 10_000)
 
-        val result =
+        val result = runCatching {
             if (Build.VERSION.SDK_INT >= 33) {
                 g.writeCharacteristic(
                     characteristic,
@@ -1696,26 +1736,10 @@ class ClipboardBridgeService : Service() {
                 }
             }
 
+        }.getOrDefault(BluetoothStatusCodes.ERROR_UNKNOWN)
         if (result != BluetoothStatusCodes.SUCCESS) {
-            val wasAck = bleWritingAck
-            bleWriting = false
-            bleWritingAck = false
-
-            if (wasAck) {
-                bleAckQueue.clear()
-                showStatus(
-                    "BLE Clipboard ACK 쓰기 시작 실패: $result")
-                main.postDelayed(
-                    { ensureSelectedPcConnection() },
-                    1000)
-                writeNextBle()
-            } else {
-                requeueActiveBleTransfer(
-                    "BLE Clipboard 쓰기 시작 실패: $result")
-                main.postDelayed(
-                    { ensureSelectedPcConnection() },
-                    1000)
-            }
+            bleLog("write start failed status=$result")
+            restartGatt(g, "BLE Clipboard 쓰기 시작 실패 status=$result")
         }
     }
 
@@ -1964,9 +1988,10 @@ class ClipboardBridgeService : Service() {
         main.post { Toast.makeText(this, text, Toast.LENGTH_SHORT).show() }
 
     override fun onDestroy() {
-        backgroundClipboard.close()
-        runCatching { unregisterReceiver(bluetoothReconnect) }
         destroyed = true
+        bleLifecycle.shutdown()
+        runCatching { backgroundClipboard.close() }
+        runCatching { unregisterReceiver(bluetoothReconnect) }
         latestStatus = "연결 서비스가 중지됐어요."
         main.removeCallbacksAndMessages(null)
         synchronized(bleSendLock) {
@@ -1983,9 +2008,6 @@ class ClipboardBridgeService : Service() {
         p2p?.close()
         p2p = null
         releaseDirectNetwork()
-        if (checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT) == PackageManager.PERMISSION_GRANTED)
-            runCatching { gatt?.close() }
-        gatt = null
         executor.shutdownNow()
         super.onDestroy()
     }

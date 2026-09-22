@@ -939,12 +939,16 @@ public sealed partial class MainForm : Form
             Log(text);
         });
 
-        _ble.Status += text => Post(() => Log(text));
+        _ble.Status += LogTransport;
+        _ble.RadioAvailabilityChanged += available =>
+        {
+            if (!available) Post(ImmediateLocal);
+            if (_clipboardSync is not null) _ = HandleRadioChangedAsync(available);
+        };
 
         if (_clipboardSync is not null)
         {
-            _clipboardSync.Status +=
-                text => Post(() => Log(text));
+            _clipboardSync.Status += LogTransport;
             _clipboardSync.SetReceiver(
                 ApplyReceivedClipboardAsync);
         }
@@ -1693,9 +1697,16 @@ public sealed partial class MainForm : Form
         Log($"{ex.Message} ({_lastError}{ble})");
     }
 
-    private void Log(string text)
+    private void LogTransport(string text)
     {
+        // Shutdown may end the UI loop before a posted message is processed.
         if (!_previewMode) SessionDiagnostics.Write(text);
+        Post(() => Log(text, persist: false));
+    }
+
+    private void Log(string text, bool persist = true)
+    {
+        if (!_previewMode && persist) SessionDiagnostics.Write(text);
         if (_events.TextLength > 16000)
             _events.Clear();
 
@@ -2453,6 +2464,20 @@ public sealed partial class MainForm : Form
         }
     }
 
+    private async Task HandleRadioChangedAsync(bool available)
+    {
+        try { if (_clipboardSync is not null) await _clipboardSync.RadioChangedAsync(available); }
+        catch (Exception ex) { Post(() => Log($"[BLE] radio transition HRESULT=0x{ex.HResult:X8}")); }
+    }
+
+    internal void EmergencyBleCleanup()
+    {
+        // ProcessExit/SessionEnding can run without a UI message loop.
+        try { _lifetime.Cancel(); } catch { }
+        try { _clipboardSync?.EmergencyCleanup(); } catch { }
+        try { _ble.Dispose(); } catch { }
+    }
+
     private void SessionChanged(object? sender, SessionSwitchEventArgs e)
     {
         if (e.Reason == SessionSwitchReason.SessionLock)
@@ -2463,7 +2488,7 @@ public sealed partial class MainForm : Form
         else if (e.Reason == SessionSwitchReason.SessionLogoff)
         {
             ImmediateLocal();
-            _ble.Stop();
+            EmergencyBleCleanup();
         }
     }
 
@@ -2486,21 +2511,23 @@ public sealed partial class MainForm : Form
         e.Cancel = true;
         if (_closing) return;
         _closing = true;
-
-        await ReturnLocalAsync();
-
-        _lifetime.Cancel();
-        _input.Dispose();
-        _clipboard?.Dispose();
-        if (_clipboardSync is not null)
-            await _clipboardSync.DisposeAsync();
-        _ble.Dispose();
-
-        if (_pump is not null)
+        _healthTimer.Stop();
+        _peerTimer.Stop();
+        try
         {
-            try { await _pump; }
-            catch (OperationCanceledException) { }
+            await ReturnLocalAsync();
+            _lifetime.Cancel();
+            _input.Dispose();
+            _clipboard?.Dispose();
+            if (_pump is not null)
+            {
+                try { await _pump; }
+                catch (OperationCanceledException) { }
+            }
+            if (_clipboardSync is not null) await _clipboardSync.DisposeAsync();
         }
+        catch (Exception ex) { Log($"[BLE] shutdown HRESULT=0x{ex.HResult:X8}"); }
+        finally { EmergencyBleCleanup(); }
 
         SystemEvents.PowerModeChanged -= PowerChanged;
         SystemEvents.SessionSwitch -= SessionChanged;

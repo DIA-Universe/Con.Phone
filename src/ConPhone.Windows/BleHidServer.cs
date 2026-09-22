@@ -7,6 +7,7 @@ using Windows.Devices.Bluetooth;
 using Windows.Devices.Bluetooth.GenericAttributeProfile;
 using Windows.Devices.Enumeration;
 using Windows.Devices.Radios;
+using Windows.Foundation;
 
 namespace ConPhone.Windows;
 
@@ -54,8 +55,16 @@ public sealed class BleHidServer : IDisposable
     private long _autoRecoverySuccesses;
     private long _lastRecoverySuccessUnixMs;
     private bool _everAdvertised;
-    private bool _configured;
     private bool _disposed;
+    private BleResourceLifetime _resources;
+    private Radio? _radio;
+    private int _radioResetNeeded;
+    private readonly Dictionary<GattSession, TypedEventHandler<GattSession, GattSessionStatusChangedEventArgs>> _sessionHandlers = new(ReferenceEqualityComparer.Instance);
+    private readonly System.Runtime.CompilerServices.ConditionalWeakTable<GattSession, object> _releasedSessions = new();
+    private readonly Dictionary<GattSession, IDisposable> _sessionLeases = new(ReferenceEqualityComparer.Instance);
+    private long _stopGeneration;
+    private long _nextSessionId;
+    public event Action<bool>? RadioAvailabilityChanged;
 
     private byte[] _keyboardValue = new byte[Hid.KeyboardReportLength];
     private byte[] _mouseValue = new byte[Hid.MouseReportLength];
@@ -92,6 +101,7 @@ public sealed class BleHidServer : IDisposable
 
     public BleHidServer()
     {
+        _resources = new BleResourceLifetime(text => Status?.Invoke(text));
         _approved = TrustedDeviceStore.Load();
     }
 
@@ -112,8 +122,10 @@ public sealed class BleHidServer : IDisposable
 
     public async Task StartAsync()
     {
+        var stopGeneration = Interlocked.Read(ref _stopGeneration);
         await _startGate.WaitAsync();
-        try { await StartCoreAsync(); }
+        try { if (stopGeneration == Interlocked.Read(ref _stopGeneration)) await StartCoreAsync(); }
+        catch { CleanupServerResources(); throw; }
         finally { _startGate.Release(); }
     }
 
@@ -121,19 +133,33 @@ public sealed class BleHidServer : IDisposable
     {
         ThrowIfDisposed();
         _desiredRunning = true;
+        if (_resources.IsDisposed) {
+            CleanupServerResources();
+            _resources = new BleResourceLifetime(text => Status?.Invoke(text));
+        }
+        var lifetime = _resources;
+        using var startupTimeout = CancellationTokenSource.CreateLinkedTokenSource(lifetime.Token);
+        startupTimeout.CancelAfter(TimeSpan.FromSeconds(15));
+        var startupToken = startupTimeout.Token;
+        using var startupCancellation = startupToken.Register(lifetime.Dispose);
 
         _lastOperation = "BluetoothAdapter.GetDefaultAsync";
-        var adapter = await BluetoothAdapter.GetDefaultAsync();
+        var adapter = await BluetoothAdapter.GetDefaultAsync().AsTask(startupToken);
         if (adapter is null || !adapter.IsLowEnergySupported || !adapter.IsPeripheralRoleSupported)
             throw new NotSupportedException("내장 Bluetooth의 LE Peripheral 역할이 지원되지 않습니다.");
 
         _lastOperation = "BluetoothAdapter.GetRadioAsync";
-        var radio = await adapter.GetRadioAsync();
+        var radio = await adapter.GetRadioAsync().AsTask(startupToken);
+        startupToken.ThrowIfCancellationRequested();
+        if (!ReferenceEquals(_radio, radio)) {
+            if (_radio is not null) _radio.StateChanged -= RadioStateChanged;
+            _radio = radio;
+            if (_radio is not null) _radio.StateChanged += RadioStateChanged;
+        }
         if (radio?.State != RadioState.On)
             throw new InvalidOperationException("Windows Bluetooth를 먼저 켜 주세요.");
 
-        if (_provider is not null && !_configured)
-            throw new InvalidOperationException("이전 HID 서비스 구성이 실패했습니다. 앱을 완전히 종료하고 다시 실행하세요.");
+        startupToken.ThrowIfCancellationRequested();
 
         if (_provider is not null && IsAdvertising(_provider.AdvertisementStatus))
         {
@@ -147,13 +173,16 @@ public sealed class BleHidServer : IDisposable
         if (_provider is null)
         {
             _lastOperation = "GattServiceProvider.CreateAsync";
-            var result = await GattServiceProvider.CreateAsync(Uuid(0x1812));
+            var result = await GattServiceProvider.CreateAsync(Uuid(0x1812)).AsTask(startupToken);
             if (result.Error != BluetoothError.Success)
                 throw new InvalidOperationException($"HID 서비스 생성 실패: {result.Error}");
 
             _provider = result.ServiceProvider;
-            _provider.AdvertisementStatusChanged += (_, args) =>
+            var provider = _provider;
+            lifetime.Register(() => provider.StopAdvertising());
+            TypedEventHandler<GattServiceProvider, GattServiceProviderAdvertisementStatusChangedEventArgs> advertisementChanged = (_, args) =>
             {
+                if (lifetime.IsDisposed || !ReferenceEquals(_provider, provider)) return;
                 if (IsAdvertising(args.Status))
                 {
                     _everAdvertised = true;
@@ -180,6 +209,9 @@ public sealed class BleHidServer : IDisposable
 
                 Changed?.Invoke();
             };
+
+            provider.AdvertisementStatusChanged += advertisementChanged;
+            lifetime.Register(() => provider.AdvertisementStatusChanged -= advertisementChanged);
 
             await Characteristic(0x2A4A, GattCharacteristicProperties.Read, [0x11, 0x01, 0x00, 0x03]);
             await Characteristic(0x2A4B, GattCharacteristicProperties.Read, Hid.ReportMap);
@@ -232,9 +264,9 @@ public sealed class BleHidServer : IDisposable
                 return true;
             });
 
-            _configured = true;
         }
 
+        startupToken.ThrowIfCancellationRequested();
         _running = true;
         _lastOperation = "GattServiceProvider.StartAdvertising";
 
@@ -333,7 +365,7 @@ public sealed class BleHidServer : IDisposable
 
         if (value is not null) p.StaticValue = value.AsBuffer();
 
-        var r = await _provider!.Service.CreateCharacteristicAsync(Uuid(uuid), p);
+        var r = await _provider!.Service.CreateCharacteristicAsync(Uuid(uuid), p).AsTask(_resources.Token);
         if (r.Error != BluetoothError.Success)
             throw new InvalidOperationException($"Characteristic {uuid:X4}: {r.Error}");
 
@@ -357,8 +389,10 @@ public sealed class BleHidServer : IDisposable
             return bytes.Length == reportLength ? bytes.ToArray() : new byte[reportLength];
         });
 
-        c.SubscribedClientsChanged += (_, _) =>
+        var lifetime = _resources;
+        TypedEventHandler<GattLocalCharacteristic, object> subscribed = (_, _) =>
         {
+            if (lifetime.IsDisposed) return;
             try
             {
                 foreach (var client in c.SubscribedClients)
@@ -375,39 +409,87 @@ public sealed class BleHidServer : IDisposable
             Changed?.Invoke();
         };
 
+        c.SubscribedClientsChanged += subscribed;
+        lifetime.Register(() => c.SubscribedClientsChanged -= subscribed);
         return c;
     }
 
     private void TrackSession(string id, GattSession session)
     {
-        // This is a peripheral/server session created by an incoming phone.
-        // Keep its reference, but never ask Windows to initiate a reverse link.
         lock (_sessionGate)
         {
-            if (_sessions.TryGetValue(id, out var existing) && ReferenceEquals(existing, session))
-                return;
+            if (_disposed || _resources.IsDisposed || _releasedSessions.TryGetValue(session, out _)) return;
+            if (_sessions.TryGetValue(id, out var existing)) {
+                if (ReferenceEquals(existing, session)) return;
+                ReleaseSession(existing);
+            }
             _sessions[id] = session;
-            session.SessionStatusChanged += (sender, args) =>
+            try { _sessionLeases[session] = SharedBleResource<GattSession>.Acquire(session); }
+            catch (ObjectDisposedException) { _sessions.TryRemove(id, out _); return; }
+            var generation = _resources.Id;
+            var sessionId = Interlocked.Increment(ref _nextSessionId);
+            TypedEventHandler<GattSession, GattSessionStatusChangedEventArgs> changed = (sender, args) =>
             {
                 lock (_sessionGate)
                 {
-                    // Windows can close an older session after a replacement is
-                    // already subscribed. It must not clear the new link's state.
-                    if (_disposed || !_sessions.TryGetValue(id, out var current) ||
+                    if (_disposed || _resources.Id != generation || !_sessions.TryGetValue(id, out var current) ||
                         !ReferenceEquals(current, sender)) return;
-
                     if (args.Status == GattSessionStatus.Closed)
                     {
                         _sessions.TryRemove(id, out _);
                         _protocol.TryRemove(id, out _);
                         _suspended.TryRemove(id, out _);
+                        ReleaseSession(sender);
                     }
                 }
-
-                Status?.Invoke($"휴대폰 GATT 세션: {args.Status}; 결과: {args.Error}; HID 준비: {Ready}");
+                Status?.Invoke($"[BLE][Session {generation}/HID {sessionId}] session={args.Status} status={args.Error}");
                 Changed?.Invoke();
             };
+            _sessionHandlers.Add(session, changed);
+            session.SessionStatusChanged += changed;
+            Status?.Invoke($"[BLE][Session {generation}/HID {sessionId}] incoming session tracked");
         }
+    }
+
+    private void ReleaseSession(GattSession session)
+    {
+        // Called under _sessionGate; remove ownership before invoking native code.
+        if (_releasedSessions.TryGetValue(session, out _)) return;
+        _releasedSessions.Add(session, new object());
+        if (_sessionHandlers.Remove(session, out var handler))
+            try { session.SessionStatusChanged -= handler; } catch { }
+        try {
+            if (_sessionLeases.Remove(session, out var lease)) lease.Dispose();
+            Status?.Invoke($"[BLE][Session {_resources.Id}] HID session reference released");
+        }
+        catch (Exception ex) { Status?.Invoke($"[BLE] session Dispose HRESULT=0x{ex.HResult:X8}"); }
+    }
+
+    private async void RadioStateChanged(Radio sender, object args)
+    {
+        if (_disposed || !ReferenceEquals(sender, _radio)) return;
+        var on = sender.State == RadioState.On;
+        if (!on)
+        {
+            _running = false;
+            Interlocked.Exchange(ref _radioResetNeeded, 1);
+            _resources.Dispose();
+        }
+        Status?.Invoke($"[BLE][Session {_resources.Id}] radio={sender.State}");
+        RadioAvailabilityChanged?.Invoke(on);
+        await _startGate.WaitAsync();
+        try
+        {
+            if (Interlocked.Exchange(ref _radioResetNeeded, 0) != 0) CleanupServerResources();
+            if (!_disposed && _desiredRunning && _radio?.State == RadioState.On)
+                await StartCoreAsync();
+        }
+        catch (Exception ex) {
+            CleanupServerResources();
+            Status?.Invoke($"[BLE] radio recovery {ex.GetType().Name} HRESULT=0x{ex.HResult:X8}");
+        }
+        finally { _startGate.Release(); }
+        Changed?.Invoke();
     }
 
     private async Task ReadDeviceInfoAsync(string id)
@@ -426,7 +508,7 @@ public sealed class BleHidServer : IDisposable
             var info = await DeviceInformation.CreateFromIdAsync(
                     id, [], DeviceInformationKind.AssociationEndpoint)
                 .AsTask(timeout.Token).ConfigureAwait(false);
-            if (info is not null) _deviceInfo[id] = info;
+            if (info is not null && !_disposed && !_resources.IsDisposed) _deviceInfo[id] = info;
             else _deviceInfo.TryRemove(id, out _);
         }
         catch (Exception ex) when (ex is InvalidOperationException or ObjectDisposedException or
@@ -457,10 +539,14 @@ public sealed class BleHidServer : IDisposable
 
     private async Task CreateBatteryServiceAsync()
     {
-        var result = await GattServiceProvider.CreateAsync(Uuid(0x180F));
+        var result = await GattServiceProvider.CreateAsync(Uuid(0x180F)).AsTask(_resources.Token);
         if (result.Error != BluetoothError.Success) return;
 
         _batteryProvider = result.ServiceProvider;
+        var batteryProvider = _batteryProvider;
+        _resources.Register(() => {
+            if (IsAdvertising(batteryProvider.AdvertisementStatus)) batteryProvider.StopAdvertising();
+        });
 
         var p = new GattLocalCharacteristicParameters
         {
@@ -468,7 +554,7 @@ public sealed class BleHidServer : IDisposable
             ReadProtectionLevel = GattProtectionLevel.Plain
         };
 
-        var level = await _batteryProvider.Service.CreateCharacteristicAsync(Uuid(0x2A19), p);
+        var level = await _batteryProvider.Service.CreateCharacteristicAsync(Uuid(0x2A19), p).AsTask(_resources.Token);
         if (level.Error != BluetoothError.Success) return;
 
         Read(level.Characteristic, _ => [100]);
@@ -484,21 +570,23 @@ public sealed class BleHidServer : IDisposable
             {
                 StaticValue = new byte[] { id, type }.AsBuffer(),
                 ReadProtectionLevel = GattProtectionLevel.EncryptionRequired
-            });
+            }).AsTask(_resources.Token);
 
         if (r.Error != BluetoothError.Success)
             throw new InvalidOperationException($"Report Reference: {r.Error}");
     }
 
-    private static void Read(GattLocalCharacteristic c, Func<string, byte[]> value)
+    private void Read(GattLocalCharacteristic c, Func<string, byte[]> value)
     {
-        c.ReadRequested += async (_, args) =>
+        var lifetime = _resources;
+        TypedEventHandler<GattLocalCharacteristic, GattReadRequestedEventArgs> read = async (_, args) =>
         {
             var deferral = args.GetDeferral();
             try
             {
-                var request = await args.GetRequestAsync();
+                var request = await args.GetRequestAsync().AsTask(lifetime.Token);
                 if (request is null) return;
+                if (lifetime.IsDisposed) { request.RespondWithProtocolError(0x0E); return; }
 
                 var bytes = value(args.Session.DeviceId.Id);
                 if (request.Offset > bytes.Length)
@@ -509,22 +597,28 @@ public sealed class BleHidServer : IDisposable
             catch (Exception) { }
             finally
             {
-                deferral.Complete();
+                try { deferral.Complete(); } catch (Exception ex) { Status?.Invoke($"[BLE] deferral completion HRESULT=0x{ex.HResult:X8}"); }
             }
         };
+        c.ReadRequested += read;
+        lifetime.Register(() => c.ReadRequested -= read);
     }
 
-    private static void Write(GattLocalCharacteristic c, Func<string, byte[], bool> write)
+    private void Write(GattLocalCharacteristic c, Func<string, byte[], bool> write)
     {
-        c.WriteRequested += async (_, args) =>
+        var lifetime = _resources;
+        TypedEventHandler<GattLocalCharacteristic, GattWriteRequestedEventArgs> handler = async (_, args) =>
         {
             var deferral = args.GetDeferral();
             try
             {
-                var request = await args.GetRequestAsync();
+                var request = await args.GetRequestAsync().AsTask(lifetime.Token);
                 if (request is null) return;
+                if (lifetime.IsDisposed) { request.RespondWithProtocolError(0x0E); return; }
 
-                var valid = request.Offset == 0 && write(args.Session.DeviceId.Id, request.Value.ToArray());
+                bool valid;
+                lock (_sessionGate)
+                    valid = !lifetime.IsDisposed && request.Offset == 0 && write(args.Session.DeviceId.Id, request.Value.ToArray());
                 if (request.Option == GattWriteOption.WriteWithResponse)
                 {
                     if (valid) request.Respond();
@@ -534,9 +628,11 @@ public sealed class BleHidServer : IDisposable
             catch (Exception) { }
             finally
             {
-                deferral.Complete();
+                try { deferral.Complete(); } catch (Exception ex) { Status?.Invoke($"[BLE] deferral completion HRESULT=0x{ex.HResult:X8}"); }
             }
         };
+        c.WriteRequested += handler;
+        lifetime.Register(() => c.WriteRequested -= handler);
     }
 
     private static bool IsAdvertising(GattServiceProviderAdvertisementStatus status) =>
@@ -740,6 +836,8 @@ public sealed class BleHidServer : IDisposable
         if (_keyboard is null || keyboardClient is null)
             throw new InvalidOperationException("휴대폰 키보드 HID 구독이 없습니다.");
 
+        using var linked = CancellationTokenSource.CreateLinkedTokenSource(token, _resources.Token);
+        token = linked.Token;
         await _send.WaitAsync(token).ConfigureAwait(false);
         try
         {
@@ -809,6 +907,8 @@ public sealed class BleHidServer : IDisposable
             throw new NotSupportedException(
                 "휴대폰이 미디어 Consumer Control Report를 구독하지 않았습니다. 새 HID 프로필로 다시 페어링해 주세요.");
 
+        using var linked = CancellationTokenSource.CreateLinkedTokenSource(token, _resources.Token);
+        token = linked.Token;
         await _send.WaitAsync(token).ConfigureAwait(false);
         try
         {
@@ -852,6 +952,8 @@ public sealed class BleHidServer : IDisposable
     {
         ThrowIfDisposed();
 
+        using var linked = CancellationTokenSource.CreateLinkedTokenSource(token, _resources.Token);
+        token = linked.Token;
         await _send.WaitAsync(token).ConfigureAwait(false);
         try
         {
@@ -891,40 +993,50 @@ public sealed class BleHidServer : IDisposable
         if (_disposed) return;
 
         _desiredRunning = false;
+        Interlocked.Increment(ref _stopGeneration);
         _running = false;
         _keyboardValue = new byte[Hid.KeyboardReportLength];
         _mouseValue = new byte[Hid.MouseReportLength];
         _systemValue = new byte[Hid.SystemReportLength];
         _consumerValue = new byte[Hid.ConsumerReportLength];
 
-        if (_provider is not null)
-        {
-            try
-            {
-                if (IsAdvertising(_provider.AdvertisementStatus))
-                    _provider.StopAdvertising();
-            }
-            catch (InvalidOperationException ex) when (IsIllegalState(ex))
-            {
-                Status?.Invoke("Bluetooth 서비스가 이미 중지/전환 중이라 중지 요청을 생략했습니다.");
-            }
-        }
-
+        CleanupServerResources();
         _lastOperation = "Stopped";
         Changed?.Invoke();
+    }
+
+    private void CleanupServerResources()
+    {
+        _running = false;
+        _resources.Dispose(); // cancel operations, detach handlers, stop publication
+        lock (_sessionGate)
+        {
+            var sessions = _sessions.Values.ToArray();
+            _sessions.Clear();
+            foreach (var session in sessions) ReleaseSession(session);
+        }
+        _protocol.Clear(); _suspended.Clear(); _deviceInfo.Clear();
+        _keyboard = null; _mouse = null; _system = null; _consumer = null;
+        _provider = null; _batteryProvider = null;
+        _everAdvertised = false;
+        if (_disposed && _radio is not null) {
+            try { _radio.StateChanged -= RadioStateChanged; } catch { }
+            _radio = null;
+        }
     }
 
     public void Dispose()
     {
         if (_disposed) return;
-        Stop();
         _disposed = true;
-
-        _deviceInfo.Clear();
-        _sessions.Clear();
-        _send.Dispose();
-        _deviceGate.Dispose();
-        _recoveryGate.Dispose();
+        _desiredRunning = false;
+        Interlocked.Increment(ref _stopGeneration);
+        if (_radio is not null) {
+            try { _radio.StateChanged -= RadioStateChanged; } catch { }
+            _radio = null;
+        }
+        CleanupServerResources();
+        // Managed semaphores remain usable by cancelled operations unwinding.
     }
 
     private void ThrowIfDisposed()

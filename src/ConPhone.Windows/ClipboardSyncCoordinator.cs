@@ -17,6 +17,7 @@ public sealed class ClipboardSyncCoordinator : IAsyncDisposable
     private Func<string, ClipboardContent, Task<bool>>? _receiver;
     private long _targetGeneration;
     private bool _disposed;
+    private volatile bool _radioAvailable = true;
 
     public event Action<string>? Status;
 
@@ -91,6 +92,7 @@ public sealed class ClipboardSyncCoordinator : IAsyncDisposable
 
     private async Task StartCoreAsync()
     {
+        if (_disposed || !_radioAvailable) return;
         try
         {
             await _p2p.StartAsync()
@@ -151,6 +153,26 @@ public sealed class ClipboardSyncCoordinator : IAsyncDisposable
         _p2p.Deactivate();
         _direct.RotateCredentials();
         Status?.Invoke("활성 휴대폰 변경 · P2P 채널과 Wi-Fi 자격 증명을 새 대상으로 재설정합니다.");
+    }
+
+    public async Task RadioChangedAsync(bool available)
+    {
+        _radioAvailable = available;
+        // Invalidate native work immediately, before waiting behind a slow startup.
+        if (!available) _ble.StopAdvertising();
+        await _lifecycle.WaitAsync().ConfigureAwait(false);
+        try
+        {
+            if (_disposed) return;
+            if (_radioAvailable && _enabled()) await StartCoreAsync().ConfigureAwait(false);
+        }
+        finally { _lifecycle.Release(); }
+    }
+
+    public void EmergencyCleanup()
+    {
+        _shutdown.Cancel();
+        _ble.Dispose();
     }
 
     public async Task SetActiveAsync(bool active)

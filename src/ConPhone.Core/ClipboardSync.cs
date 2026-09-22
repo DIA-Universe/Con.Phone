@@ -204,6 +204,7 @@ public static class ClipboardWireCodec
 
 public sealed class ClipboardReassembler
 {
+    public void ClearPending() => _pending.Clear(); // Preserve completed transfer replay protection.
     private sealed class Pending
     {
         public required ClipboardContentKind Kind;
@@ -363,6 +364,7 @@ public static class BleFragmentCodec
 
 public sealed class BleFragmentReassembler
 {
+    public void ClearPending() => _pending.Clear();
     private sealed class Pending
     {
         public required ushort Count;

@@ -3,6 +3,8 @@ package universe.dia.conphone
 /** Stop-and-wait delivery. Only the last accepted packet can be retried.
  * Cache the application ACK as well, so its loss never reapplies the image. */
 class ReliableBleReceiver {
+    // A cached receipt for a partial assembly must never acknowledge a new link.
+    fun reset() { previous = null; previousResult = null }
     data class Result(val receipt: ByteArray, val applicationAck: ByteArray?)
     private var previous: ByteArray? = null
     private var previousResult: Result? = null

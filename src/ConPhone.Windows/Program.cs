@@ -7,6 +7,15 @@ internal static class Program
     {
         ApplicationConfiguration.Initialize();
 
+        if (args.Length == 1 && args[0] == "--ble-lifecycle-selftest")
+        {
+            using var testMutex = new Mutex(true, @"Local\DIAUniverse.ConPhone", out var canTest);
+            if (!canTest) { Console.Error.WriteLine("Exit LINKO before the native BLE lifecycle test."); Environment.ExitCode = 1; return; }
+            try { BleLifecycleSelfTest.RunAsync().GetAwaiter().GetResult(); }
+            catch (Exception ex) { Console.Error.WriteLine(ex); Environment.ExitCode = 1; }
+            return;
+        }
+
         if (args.Length == 3 && args[0] == "--clipboard-selftest-write")
         {
             try
@@ -114,7 +123,30 @@ internal static class Program
             return;
         }
 
-        Application.Run(new MainForm());
+        using var mainForm = new MainForm();
+        EventHandler exiting = (_, _) => mainForm.EmergencyBleCleanup();
+        UnhandledExceptionEventHandler unhandled = (_, _) => mainForm.EmergencyBleCleanup();
+        Microsoft.Win32.SessionEndingEventHandler sessionEnding = (_, _) => mainForm.EmergencyBleCleanup();
+        ThreadExceptionEventHandler uiFailure = (_, args) => {
+            mainForm.EmergencyBleCleanup();
+            SessionDiagnostics.Write($"Unhandled UI exception: {args.Exception.GetType().Name} HRESULT=0x{args.Exception.HResult:X8}");
+            Application.Exit();
+        };
+        AppDomain.CurrentDomain.ProcessExit += exiting;
+        AppDomain.CurrentDomain.UnhandledException += unhandled;
+        Application.ApplicationExit += exiting;
+        Application.ThreadException += uiFailure;
+        Microsoft.Win32.SystemEvents.SessionEnding += sessionEnding;
+        try { Application.Run(mainForm); }
+        finally
+        {
+            mainForm.EmergencyBleCleanup();
+            AppDomain.CurrentDomain.ProcessExit -= exiting;
+            AppDomain.CurrentDomain.UnhandledException -= unhandled;
+            Application.ApplicationExit -= exiting;
+            Application.ThreadException -= uiFailure;
+            Microsoft.Win32.SystemEvents.SessionEnding -= sessionEnding;
+        }
     }
 
     private static T? FindFirst<T>(Control root) where T : Control
