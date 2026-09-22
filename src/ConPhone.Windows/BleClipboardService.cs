@@ -99,7 +99,7 @@ public sealed class BleClipboardService : IDisposable
     private BleResourceLifetime _sends = new();
     private readonly object _peerGate = new();
     private readonly Dictionary<string, Subscription> _subscriptions = [];
-    private sealed record Subscription(GattSession Session, BleResourceLifetime Lifetime);
+    private sealed record Subscription(SharedBleResource<GattSession>.Lease Lease, BleResourceLifetime Lifetime);
     private long _stopGeneration;
     private volatile bool _published;
 
@@ -123,9 +123,9 @@ public sealed class BleClipboardService : IDisposable
         _directLinkConfig = directLinkConfig;
     }
 
-    public bool Running => _published || _provider?.AdvertisementStatus is
+    public bool Running => _published || BleNativeState.Read(() => _provider?.AdvertisementStatus is
         GattServiceProviderAdvertisementStatus.Started or
-        GattServiceProviderAdvertisementStatus.StartedWithoutAllAdvertisementData;
+        GattServiceProviderAdvertisementStatus.StartedWithoutAllAdvertisementData, false);
 
     public int Subscribers => LiveClients(_tx).Count;
 
@@ -647,17 +647,17 @@ public sealed class BleClipboardService : IDisposable
             {
                 if (_disposed || _resources.IsDisposed) return;
                 foreach (var id in _subscriptions.Keys.ToArray())
-                    if (!live.Any(c => SessionId(c) == id && ReferenceEquals(c.Session, _subscriptions[id].Session)))
+                    if (!_subscriptions[id].Lease.IsActive || !live.Any(c => SessionId(c) == id))
                         RemoveSubscription(id, _subscriptions[id]);
                 foreach (var client in live)
                 {
                     var id = SessionId(client);
                     if (id is null || _subscriptions.ContainsKey(id)) continue;
-                    var session = client.Session;
                     var lifetime = new BleResourceLifetime(text => Status?.Invoke(text));
-                    var lease = SharedBleResource<GattSession>.Acquire(session);
+                    var lease = SharedBleResource<GattSession>.Acquire(id, client.Session, BleNativeState.IsActive);
+                    var session = lease.Resource;
                     lifetime.Register(lease.Dispose);
-                    var subscription = new Subscription(session, lifetime);
+                    var subscription = new Subscription(lease, lifetime);
                     _subscriptions.Add(id, subscription);
                     TypedEventHandler<GattSession, GattSessionStatusChangedEventArgs> changed = (_, args) => {
                         if (args.Status == GattSessionStatus.Closed) {
@@ -667,7 +667,7 @@ public sealed class BleClipboardService : IDisposable
                     };
                     session.SessionStatusChanged += changed;
                     lifetime.Register(() => session.SessionStatusChanged -= changed);
-                    Status?.Invoke($"[BLE][Session {lifetime.Id}] notification subscribed");
+                    Status?.Invoke($"[BLE][Session {lifetime.Id}/Link {lease.Generation}] notification subscribed");
                 }
             }
         }
@@ -676,9 +676,12 @@ public sealed class BleClipboardService : IDisposable
 
     private Subscription? FindSubscription(string id, GattSession session)
     {
+        // Request callbacks and SubscribedClients need not share a managed wrapper.
+        // Reject closed callbacks, then match the live peer and local generation.
+        if (!BleNativeState.IsActive(session) || session.DeviceId.Id != id) return null;
         RefreshSubscriptions();
         lock (_peerGate) return _subscriptions.TryGetValue(id, out var current) &&
-            ReferenceEquals(current.Session, session) && !current.Lifetime.IsDisposed ? current : null;
+            current.Lease.IsActive && !current.Lifetime.IsDisposed ? current : null;
     }
 
     private void RemoveSubscription(string id, Subscription expected)

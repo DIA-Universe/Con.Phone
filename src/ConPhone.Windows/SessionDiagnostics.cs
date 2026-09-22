@@ -22,4 +22,13 @@ internal static class SessionDiagnostics
         }
         catch { /* Diagnostics must not stop HID input. */ }
     }
+
+    public static void WriteException(string operation, Exception error)
+    {
+        // Exception messages/data may contain user payloads. Log only code sites,
+        // types and HRESULTs; omit values, file paths and clipboard text.
+        for (var depth = 0; depth < 4 && error is not null; depth++, error = error.InnerException!)
+            Write($"{operation} [{depth}] {error.GetType().Name} HRESULT=0x{error.HResult:X8}\n" +
+                new System.Diagnostics.StackTrace(error, false));
+    }
 }

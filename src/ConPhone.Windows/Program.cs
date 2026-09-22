@@ -7,6 +7,13 @@ internal static class Program
     {
         ApplicationConfiguration.Initialize();
 
+        if (args.Length == 1 && args[0] == "--ui-lifecycle-selftest")
+        {
+            try { MainForm.RunCloseLifecycleSelfTest(); }
+            catch (Exception ex) { Console.Error.WriteLine(ex); Environment.ExitCode = 1; }
+            return;
+        }
+
         if (args.Length == 1 && args[0] == "--ble-lifecycle-selftest")
         {
             using var testMutex = new Mutex(true, @"Local\DIAUniverse.ConPhone", out var canTest);
@@ -125,13 +132,12 @@ internal static class Program
 
         using var mainForm = new MainForm();
         EventHandler exiting = (_, _) => mainForm.EmergencyBleCleanup();
-        UnhandledExceptionEventHandler unhandled = (_, _) => mainForm.EmergencyBleCleanup();
-        Microsoft.Win32.SessionEndingEventHandler sessionEnding = (_, _) => mainForm.EmergencyBleCleanup();
-        ThreadExceptionEventHandler uiFailure = (_, args) => {
+        UnhandledExceptionEventHandler unhandled = (_, args) => {
+            if (args.ExceptionObject is Exception error) SessionDiagnostics.WriteException("Unhandled process exception", error);
             mainForm.EmergencyBleCleanup();
-            SessionDiagnostics.Write($"Unhandled UI exception: {args.Exception.GetType().Name} HRESULT=0x{args.Exception.HResult:X8}");
-            Application.Exit();
         };
+        Microsoft.Win32.SessionEndingEventHandler sessionEnding = (_, _) => mainForm.EmergencyBleCleanup();
+        ThreadExceptionEventHandler uiFailure = (_, args) => mainForm.HandleUiThreadException(args.Exception);
         AppDomain.CurrentDomain.ProcessExit += exiting;
         AppDomain.CurrentDomain.UnhandledException += unhandled;
         Application.ApplicationExit += exiting;

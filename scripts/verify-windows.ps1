@@ -46,6 +46,10 @@ Write-Host "== Release behavior checks ==" -ForegroundColor Cyan
 dotnet run --project (Join-Path $repo "src/ConPhone.Windows") -c $Configuration -- --release-selftest
 Assert-NativeSuccess "Release self-test"
 
+Write-Host "== UI disconnect and shutdown regression checks ==" -ForegroundColor Cyan
+dotnet run --project (Join-Path $repo "src/ConPhone.Windows") -c $Configuration -- --ui-lifecycle-selftest
+Assert-NativeSuccess "UI lifecycle self-test"
+
 Write-Host "== Real Windows clipboard roundtrip ==" -ForegroundColor Cyan
 dotnet run --project (Join-Path $repo "src/ConPhone.Windows") -c $Configuration -- --clipboard-selftest
 Assert-NativeSuccess "Clipboard self-test"

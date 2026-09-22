@@ -526,14 +526,65 @@ badLoggerLifetime.Register(() => cleanupDespiteLoggingError++);
 badLoggerLifetime.Dispose();
 Check("diagnostic logging failure cannot interrupt BLE cleanup", cleanupDespiteLoggingError == 1);
 var sharedSession = new TestBleResource();
-var hidLease = SharedBleResource<TestBleResource>.Acquire(sharedSession);
-var clipboardLease = SharedBleResource<TestBleResource>.Acquire(sharedSession);
+var hidLease = SharedBleResource<TestBleResource>.Acquire("same-peer", sharedSession, x => x.Active);
+var clipboardLease = SharedBleResource<TestBleResource>.Acquire("same-peer", sharedSession, x => x.Active);
 clipboardLease.Dispose(); clipboardLease.Dispose();
 Check("clipboard unsubscribe does not dispose a session still owned by HID", sharedSession.Disposals == 0);
 hidLease.Dispose(); hidLease.Dispose();
 Check("last shared GATT owner disposes exactly once", sharedSession.Disposals == 1);
-try { SharedBleResource<TestBleResource>.Acquire(sharedSession); Check("closed GATT cannot be reused", false); }
+try { SharedBleResource<TestBleResource>.Acquire("same-peer", sharedSession, x => x.Active); Check("closed GATT cannot be reused", false); }
 catch (ObjectDisposedException) { Check("closed GATT cannot be reused", true); }
+
+// WinRT returns distinct managed wrappers for keyboard/mouse/consumer/clipboard.
+// Disposing any of these wrappers closes the shared native link.
+var nativeLink = new TestBleNativeLink();
+var wrappers = Enumerable.Range(0, 4).Select(_ => new TestBleResource(nativeLink)).ToArray();
+var wrapperLeases = wrappers.Select(x => SharedBleResource<TestBleResource>.Acquire("four-characteristics", x, r => r.Active)).ToArray();
+Check("four characteristic wrappers share one connection generation", wrapperLeases.Select(x => x.Generation).Distinct().Count() == 1);
+Check("four characteristic wrappers retain one canonical session", wrapperLeases.All(x => ReferenceEquals(x.Resource, wrappers[0])));
+foreach (var lease in wrapperLeases.Skip(1)) lease.Dispose();
+Check("adding/removing sibling characteristic wrappers never closes active HID", nativeLink.CloseCount == 0 && wrapperLeases[0].IsActive);
+wrapperLeases[0].Dispose();
+Check("shared native link closes exactly once at final cleanup", nativeLink.CloseCount == 1 && wrappers.Sum(x => x.Disposals) == 1);
+
+var oldNative = new TestBleNativeLink();
+var oldOwner = SharedBleResource<TestBleResource>.Acquire("reconnecting-peer", new TestBleResource(oldNative), x => x.Active);
+var oldGeneration = oldOwner.Generation;
+oldNative.Active = false;
+var newNative = new TestBleNativeLink();
+var newOwner = SharedBleResource<TestBleResource>.Acquire("reconnecting-peer", new TestBleResource(newNative), x => x.Active);
+Check("closed connection creates a new generation for the same peer", oldGeneration != newOwner.Generation);
+oldOwner.Dispose();
+var nextOwner = SharedBleResource<TestBleResource>.Acquire("reconnecting-peer", new TestBleResource(newNative), x => x.Active);
+Check("late old cleanup cannot remove or close the new link", nextOwner.Generation == newOwner.Generation && newNative.CloseCount == 0);
+newOwner.Dispose(); nextOwner.Dispose();
+Check("both connection generations close exactly once", oldNative.CloseCount == 1 && newNative.CloseCount == 1);
+
+var closingLink = new TestBleNativeLink();
+var closingResource = new TestBleResource(closingLink);
+var acquiredDuringClose = false;
+closingResource.OnDisposing = () => {
+    try {
+        using var unexpected = SharedBleResource<TestBleResource>.Acquire("closing-peer", new TestBleResource(closingLink), x => x.Active);
+        acquiredDuringClose = true;
+    }
+    catch (ObjectDisposedException) { }
+};
+SharedBleResource<TestBleResource>.Acquire("closing-peer", closingResource, x => x.Active).Dispose();
+Check("native close completes before another wrapper can reacquire the same link", !acquiredDuringClose);
+
+var concurrentLink = new TestBleNativeLink();
+var concurrentOwners = Enumerable.Range(0, 100).Select(_ =>
+    SharedBleResource<TestBleResource>.Acquire("concurrent-peer", new TestBleResource(concurrentLink), x => x.Active)).ToArray();
+await Task.WhenAll(concurrentOwners.Select(lease => Task.Run(() => { lease.Dispose(); lease.Dispose(); })));
+Check("100 concurrent wrapper releases close the native link once", concurrentLink.CloseCount == 1);
+var repeatedLinks = new List<TestBleNativeLink>();
+for (var cycle = 0; cycle < 20; cycle++) {
+    var link = new TestBleNativeLink(); repeatedLinks.Add(link);
+    using var keyboard = SharedBleResource<TestBleResource>.Acquire("twenty-cycles", new TestBleResource(link), x => x.Active);
+    using var mouse = SharedBleResource<TestBleResource>.Acquire("twenty-cycles", new TestBleResource(link), x => x.Active);
+}
+Check("20 fake peer reconnect cycles leave no resource ownership behind", repeatedLinks.All(x => x.CloseCount == 1));
 
 var resetContent = ClipboardContent.FromText("재연결 UTF-8🙂 " + new string('x', 1000));
 var resetFrames = ClipboardWireCodec.Enumerate(resetContent, 256).Select(x => ClipboardWireCodec.Decode(x)).ToArray();
@@ -579,8 +630,22 @@ Check("cancelled receipt waiter does not occupy the next session transfer", fres
 
 Console.WriteLine($"{passed} checks passed. No Windows/Bluetooth/phone hardware has been tested by these checks.");
 
-sealed class TestBleResource : IDisposable
+sealed class TestBleNativeLink
 {
+    public bool Active = true;
+    public int CloseCount;
+}
+
+sealed class TestBleResource(TestBleNativeLink? native = null) : IDisposable
+{
+    private readonly TestBleNativeLink _native = native ?? new TestBleNativeLink();
     public int Disposals;
-    public void Dispose() => Interlocked.Increment(ref Disposals);
+    public bool Active => _native.Active;
+    public Action? OnDisposing;
+    public void Dispose() {
+        OnDisposing?.Invoke();
+        Interlocked.Increment(ref Disposals);
+        Interlocked.Increment(ref _native.CloseCount);
+        _native.Active = false;
+    }
 }

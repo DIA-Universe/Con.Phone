@@ -4,7 +4,7 @@ PC의 키보드와 마우스를 Bluetooth로 휴대폰에서 사용하세요.
 
 **Windows / Android 1.0.6** · [다운로드](https://github.com/DIA-Universe/Con.Phone/releases/tag/v1.0.6)
 
-검증 빌드 **1.0.7**: [다운로드](https://github.com/DIA-Universe/Con.Phone/releases/tag/v1.0.7) · [BLE 연결·해제 분석과 검증 범위](docs/BLE-LIFECYCLE.md). 휴대폰 실기기 검사는 아직 남아 있습니다.
+연결 오류 수정 빌드 **1.0.8**: [다운로드](https://github.com/DIA-Universe/Con.Phone/releases/tag/v1.0.8) · [원인과 검증 범위](docs/LINKO-1.0.8.md). 1.0.7은 연결 시 정상 GATT 세션을 닫는 결함이 확인되어 사용을 권장하지 않습니다. 1.0.8의 휴대폰 실기기 재검증은 아직 남아 있습니다.
 
 ## 시작하기
 

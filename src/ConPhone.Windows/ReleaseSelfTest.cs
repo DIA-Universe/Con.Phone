@@ -6,6 +6,17 @@ internal static class ReleaseSelfTest
 {
     public static async Task RunAsync()
     {
+        foreach (var hresult in new[] { 0x80010108u, 0x8000000Eu, 0x80000013u })
+        {
+            if (BleNativeState.Read<bool>(() => throw new System.Runtime.InteropServices.COMException("peer unavailable", unchecked((int)hresult)), false))
+                throw new InvalidOperationException("A disconnected WinRT object was reported as live.");
+        }
+        try {
+            BleNativeState.Read<bool>(() => throw new InvalidOperationException("unrelated bug"), false);
+            throw new Exception("Unrelated programming errors must not be hidden.");
+        }
+        catch (InvalidOperationException) { }
+        Console.WriteLine("PASS: RPC_E_DISCONNECTED/closed native snapshots are isolated without hiding unrelated errors.");
         if (!AppleLockShortcut.Report(new HotkeyBinding { Key = (int)Keys.F12 }).SequenceEqual(new byte[] {0,0,0x45,0,0,0,0,0}))
             throw new InvalidOperationException("iOS F12 lock report is incorrect.");
         if (!AppleLockShortcut.Report(new HotkeyBinding { Key = (int)Keys.Q, Modifiers = HotkeyModifiers.Control | HotkeyModifiers.Windows }).SequenceEqual(new byte[] {9,0,0x14,0,0,0,0,0}))

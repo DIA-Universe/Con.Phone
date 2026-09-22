@@ -38,7 +38,7 @@ public sealed class BleHidServer : IDisposable
 
     private readonly ConcurrentDictionary<string, byte> _protocol = new();
     private readonly ConcurrentDictionary<string, bool> _suspended = new();
-    private readonly ConcurrentDictionary<string, GattSession> _sessions = new();
+    private readonly ConcurrentDictionary<string, SharedBleResource<GattSession>.Lease> _sessions = new();
     private readonly object _sessionGate = new();
     private readonly ConcurrentDictionary<string, DeviceInformation> _deviceInfo = new();
     private readonly SemaphoreSlim _send = new(1, 1);
@@ -59,9 +59,7 @@ public sealed class BleHidServer : IDisposable
     private BleResourceLifetime _resources;
     private Radio? _radio;
     private int _radioResetNeeded;
-    private readonly Dictionary<GattSession, TypedEventHandler<GattSession, GattSessionStatusChangedEventArgs>> _sessionHandlers = new(ReferenceEqualityComparer.Instance);
-    private readonly System.Runtime.CompilerServices.ConditionalWeakTable<GattSession, object> _releasedSessions = new();
-    private readonly Dictionary<GattSession, IDisposable> _sessionLeases = new(ReferenceEqualityComparer.Instance);
+    private readonly Dictionary<SharedBleResource<GattSession>.Lease, TypedEventHandler<GattSession, GattSessionStatusChangedEventArgs>> _sessionHandlers = new();
     private long _stopGeneration;
     private long _nextSessionId;
     public event Action<bool>? RadioAvailabilityChanged;
@@ -74,7 +72,7 @@ public sealed class BleHidServer : IDisposable
     public event Action? Changed;
     public event Action<string>? Status;
 
-    public string Advertisement => _provider?.AdvertisementStatus.ToString() ?? "NotStarted";
+    public string Advertisement => BleNativeState.Read(() => _provider?.AdvertisementStatus.ToString() ?? "NotStarted", "NotStarted");
     public string LastOperation => _lastOperation;
     public bool DesiredRunning => _desiredRunning;
     public long AutoRecoveryAttempts => Interlocked.Read(ref _autoRecoveryAttempts);
@@ -291,7 +289,7 @@ public sealed class BleHidServer : IDisposable
         if (_disposed || !_desiredRunning)
             return false;
 
-        if (_provider is not null && IsAdvertising(_provider.AdvertisementStatus))
+        if (Advertisement is "Started" or "StartedWithoutAllAdvertisementData")
         {
             _running = true;
             return true;
@@ -317,7 +315,7 @@ public sealed class BleHidServer : IDisposable
             try
             {
                 await StartAsync().ConfigureAwait(false);
-                if (_provider is not null && IsAdvertising(_provider.AdvertisementStatus))
+                if (Advertisement is "Started" or "StartedWithoutAllAdvertisementData")
                 {
                     Interlocked.Increment(ref _autoRecoverySuccesses);
                     Interlocked.Exchange(
@@ -330,7 +328,7 @@ public sealed class BleHidServer : IDisposable
             catch (Exception ex) when (
                 ex is InvalidOperationException or
                 NotSupportedException or
-                ObjectDisposedException)
+                ObjectDisposedException || BleNativeState.IsUnavailable(ex))
             {
                 _running = false;
                 _lastOperation = $"AutoRecovery:{ex.GetType().Name}:0x{ex.HResult:X8}";
@@ -401,8 +399,8 @@ public sealed class BleHidServer : IDisposable
                     TrackSession(id, session);
                 }
             }
-            catch (InvalidOperationException ex) when (IsIllegalState(ex)) { }
-            catch (ObjectDisposedException) { }
+            catch (Exception ex) when (BleNativeState.IsUnavailable(ex))
+            { Status?.Invoke($"[BLE] subscription changed during disconnect HRESULT=0x{ex.HResult:X8}"); }
 
             Status?.Invoke(
                 $"HID 구독 · 키보드:{LiveClientCount(_keyboard)} 마우스:{LiveClientCount(_mouse)} 잠금:{LiveClientCount(_system)} ({label} 변경)");
@@ -418,48 +416,49 @@ public sealed class BleHidServer : IDisposable
     {
         lock (_sessionGate)
         {
-            if (_disposed || _resources.IsDisposed || _releasedSessions.TryGetValue(session, out _)) return;
+            if (_disposed || _resources.IsDisposed || !BleNativeState.IsActive(session)) return;
             if (_sessions.TryGetValue(id, out var existing)) {
-                if (ReferenceEquals(existing, session)) return;
+                // Keyboard/mouse/consumer subscriptions return different wrappers
+                // for the same live link. Keep its canonical owner until Closed.
+                if (existing.IsActive) return;
+                _sessions.TryRemove(id, out _);
                 ReleaseSession(existing);
             }
-            _sessions[id] = session;
-            try { _sessionLeases[session] = SharedBleResource<GattSession>.Acquire(session); }
-            catch (ObjectDisposedException) { _sessions.TryRemove(id, out _); return; }
+            var lease = SharedBleResource<GattSession>.Acquire(id, session, BleNativeState.IsActive);
+            session = lease.Resource;
+            _sessions[id] = lease;
             var generation = _resources.Id;
             var sessionId = Interlocked.Increment(ref _nextSessionId);
             TypedEventHandler<GattSession, GattSessionStatusChangedEventArgs> changed = (sender, args) =>
             {
                 lock (_sessionGate)
                 {
-                    if (_disposed || _resources.Id != generation || !_sessions.TryGetValue(id, out var current) ||
-                        !ReferenceEquals(current, sender)) return;
+                    if (_disposed || _resources.IsDisposed || _resources.Id != generation || !_sessions.TryGetValue(id, out var current) ||
+                        !ReferenceEquals(current, lease)) return;
                     if (args.Status == GattSessionStatus.Closed)
                     {
                         _sessions.TryRemove(id, out _);
                         _protocol.TryRemove(id, out _);
                         _suspended.TryRemove(id, out _);
-                        ReleaseSession(sender);
+                        ReleaseSession(lease);
                     }
                 }
                 Status?.Invoke($"[BLE][Session {generation}/HID {sessionId}] session={args.Status} status={args.Error}");
                 Changed?.Invoke();
             };
-            _sessionHandlers.Add(session, changed);
+            _sessionHandlers.Add(lease, changed);
             session.SessionStatusChanged += changed;
-            Status?.Invoke($"[BLE][Session {generation}/HID {sessionId}] incoming session tracked");
+            Status?.Invoke($"[BLE][Session {generation}/HID {sessionId}/Link {lease.Generation}] incoming session tracked");
         }
     }
 
-    private void ReleaseSession(GattSession session)
+    private void ReleaseSession(SharedBleResource<GattSession>.Lease lease)
     {
         // Called under _sessionGate; remove ownership before invoking native code.
-        if (_releasedSessions.TryGetValue(session, out _)) return;
-        _releasedSessions.Add(session, new object());
-        if (_sessionHandlers.Remove(session, out var handler))
-            try { session.SessionStatusChanged -= handler; } catch { }
+        if (_sessionHandlers.Remove(lease, out var handler))
+            try { lease.Resource.SessionStatusChanged -= handler; } catch { }
         try {
-            if (_sessionLeases.Remove(session, out var lease)) lease.Dispose();
+            lease.Dispose();
             Status?.Invoke($"[BLE][Session {_resources.Id}] HID session reference released");
         }
         catch (Exception ex) { Status?.Invoke($"[BLE] session Dispose HRESULT=0x{ex.HResult:X8}"); }
@@ -533,8 +532,7 @@ public sealed class BleHidServer : IDisposable
                 if (TryActiveSession(client, out _, out _)) count++;
             return count;
         }
-        catch (InvalidOperationException ex) when (IsIllegalState(ex)) { return 0; }
-        catch (ObjectDisposedException) { return 0; }
+        catch (Exception ex) when (BleNativeState.IsUnavailable(ex)) { return 0; }
     }
 
     private async Task CreateBatteryServiceAsync()
@@ -653,13 +651,12 @@ public sealed class BleHidServer : IDisposable
         try
         {
             session = client.Session;
-            if (session.SessionStatus != GattSessionStatus.Active) return false;
+            if (!BleNativeState.IsActive(session)) return false;
 
             id = session.DeviceId.Id;
             return !string.IsNullOrWhiteSpace(id);
         }
-        catch (InvalidOperationException ex) when (IsIllegalState(ex)) { return false; }
-        catch (ObjectDisposedException) { return false; }
+        catch (Exception ex) when (BleNativeState.IsUnavailable(ex)) { return false; }
     }
 
     private static GattSubscribedClient? Client(GattLocalCharacteristic? c, string id)
@@ -672,8 +669,7 @@ public sealed class BleHidServer : IDisposable
                 if (TryActiveSession(client, out _, out var clientId) && clientId == id)
                     return client;
         }
-        catch (InvalidOperationException ex) when (IsIllegalState(ex)) { }
-        catch (ObjectDisposedException) { }
+        catch (Exception ex) when (BleNativeState.IsUnavailable(ex)) { }
 
         return null;
     }
@@ -705,8 +701,7 @@ public sealed class BleHidServer : IDisposable
                     ids.Add(id);
                 }
             }
-            catch (InvalidOperationException ex) when (IsIllegalState(ex)) { }
-            catch (ObjectDisposedException) { }
+            catch (Exception ex) when (BleNativeState.IsUnavailable(ex)) { }
         }
 
         // Remembered devices should stay visible even while temporarily disconnected.

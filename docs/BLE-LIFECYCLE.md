@@ -1,5 +1,9 @@
 # BLE lifecycle audit and validation
 
+2026-09-22 추가: 1.0.7 실사용 로그에서 Windows 세션 소유권 회귀가 확인되었습니다.
+아래 1.0.7 검증 기록은 당시 실행 범위이며 실기기 성공을 뜻하지 않습니다.
+수정 내용과 후속 검증은 [LINKO-1.0.8.md](LINKO-1.0.8.md)를 참고하세요.
+
 Baseline: `b61904f` (LINKO 1.0.6). This audit precedes the lifecycle changes.
 
 ## Roles and existing paths

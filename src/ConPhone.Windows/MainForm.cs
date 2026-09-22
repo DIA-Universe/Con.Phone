@@ -874,11 +874,7 @@ public sealed partial class MainForm : Form
             Activate();
         });
         menu.Items.Add("노트북으로 복귀", null, (_, _) => DispatchCritical(ReturnLocalAsync));
-        menu.Items.Add("종료", null, (_, _) =>
-        {
-            _exitRequested = true;
-            Close();
-        });
+        menu.Items.Add("종료", null, (_, _) => RequestExit());
 
         _tray.ContextMenuStrip = menu;
         _tray.DoubleClick += (_, _) =>
@@ -2478,6 +2474,31 @@ public sealed partial class MainForm : Form
         try { _ble.Dispose(); } catch { }
     }
 
+    internal void HandleUiThreadException(Exception error, Action<string>? showFatalError = null)
+    {
+        SessionDiagnostics.WriteException("UI exception", error);
+        if (_closing || _closed) return;
+        ImmediateLocal();
+        if (BleNativeState.IsUnavailable(error))
+        {
+            // A peer can disappear between a native snapshot and a property read.
+            // Keep the server and UI alive so its next connection can succeed.
+            Log($"Bluetooth 연결 상태가 변경되어 입력을 노트북으로 복귀했습니다. 재연결을 기다립니다. (0x{error.HResult:X8})");
+            return;
+        }
+
+        var notice = $"오류로 LINKO를 종료합니다. 다시 실행해 주세요.\r\n{error.GetType().Name} · 0x{error.HResult:X8}\r\n진단 로그: {SessionDiagnostics.LogPath}";
+        if (showFatalError is not null) showFatalError(notice);
+        else MessageBox.Show(this, notice, "LINKO 오류", MessageBoxButtons.OK, MessageBoxIcon.Error);
+        RequestExit();
+    }
+
+    private void RequestExit()
+    {
+        _exitRequested = true;
+        Close();
+    }
+
     private void SessionChanged(object? sender, SessionSwitchEventArgs e)
     {
         if (e.Reason == SessionSwitchReason.SessionLock)
@@ -2494,6 +2515,9 @@ public sealed partial class MainForm : Form
 
     private async void ClosingAsync(object? sender, FormClosingEventArgs e)
     {
+        // The final Close() after awaited cleanup reports UserClosing again.
+        // It must finish shutdown, not hide an already-disposed app in the tray.
+        if (_closed) return;
         if (!_exitRequested && e.CloseReason == CloseReason.UserClosing)
         {
             e.Cancel = true;
@@ -2506,11 +2530,11 @@ public sealed partial class MainForm : Form
             return;
         }
 
-        if (_closed) return;
-
         e.Cancel = true;
         if (_closing) return;
+        _exitRequested = true;
         _closing = true;
+        _timer.Stop();
         _healthTimer.Stop();
         _peerTimer.Stop();
         try

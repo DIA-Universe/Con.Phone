@@ -1,38 +1,72 @@
-using System.Runtime.CompilerServices;
-
 namespace ConPhone.Core;
 
-/// <summary>HID and clipboard can receive the same WinRT session wrapper.</summary>
+/// <summary>
+/// Own one active native BLE session per peer. WinRT may return different managed
+/// wrappers for keyboard, mouse, clipboard and request callbacks on the same link.
+/// A borrowed wrapper is never closed merely because its reference differs.
+/// </summary>
 public static class SharedBleResource<T> where T : class, IDisposable
 {
-    private sealed class Entry { public int References; public bool Closed; }
-    private static readonly ConditionalWeakTable<T, Entry> Entries = new();
+    internal sealed class Entry(string peer, T resource, Func<T, bool> active)
+    {
+        public readonly string Peer = peer;
+        public readonly T Resource = resource;
+        public readonly Func<T, bool> Active = active;
+        public readonly long Generation = Interlocked.Increment(ref _nextGeneration);
+        public int References;
+        public bool Closing;
+    }
 
-    public static IDisposable Acquire(T resource)
+    private static long _nextGeneration;
+    private static readonly Dictionary<string, Entry> Entries = new(StringComparer.Ordinal);
+
+    public static Lease Acquire(string peer, T resource, Func<T, bool> active)
     {
         lock (Entries)
         {
-            var entry = Entries.GetOrCreateValue(resource);
-            ObjectDisposedException.ThrowIf(entry.Closed, resource);
+            if (!active(resource)) throw new ObjectDisposedException(nameof(resource));
+            Entries.TryGetValue(peer, out var entry);
+            if (entry?.Closing == true) throw new ObjectDisposedException(nameof(resource));
+            if (entry is null || !entry.Active(entry.Resource))
+            {
+                entry = new Entry(peer, resource, active);
+                Entries[peer] = entry;
+            }
             entry.References++;
+            return new Lease(entry);
         }
-        return new Lease(resource);
     }
 
-    private sealed class Lease(T resource) : IDisposable
+    public sealed class Lease : IDisposable
     {
-        private T? _resource = resource;
+        private Entry? _entry;
+        internal Lease(Entry entry) => _entry = entry;
+        public T Resource => Volatile.Read(ref _entry)?.Resource
+            ?? throw new ObjectDisposedException(nameof(Lease));
+        public long Generation => Volatile.Read(ref _entry)?.Generation ?? 0;
+        public bool IsActive => Volatile.Read(ref _entry) is { } entry && entry.Active(entry.Resource);
+
         public void Dispose()
         {
-            var current = Interlocked.Exchange(ref _resource, null);
-            if (current is null) return;
+            var entry = Interlocked.Exchange(ref _entry, null);
+            if (entry is null) return;
             lock (Entries)
             {
-                var entry = Entries.GetOrCreateValue(current);
                 if (--entry.References != 0) return;
-                entry.Closed = true;
+                entry.Closing = true;
             }
-            current.Dispose();
+            try { entry.Resource.Dispose(); }
+            finally
+            {
+                lock (Entries)
+                {
+                    // Keep a closing entry until native Close completes. Otherwise
+                    // another wrapper could reacquire the link just before Close.
+                    // An old connection's delayed cleanup must not remove a new one.
+                    if (Entries.TryGetValue(entry.Peer, out var current) && ReferenceEquals(current, entry))
+                        Entries.Remove(entry.Peer);
+                }
+            }
         }
     }
 }
