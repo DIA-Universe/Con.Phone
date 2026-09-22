@@ -5,6 +5,7 @@ using System.Text;
 using ConPhone.Core;
 using Windows.Devices.Bluetooth;
 using Windows.Devices.Bluetooth.GenericAttributeProfile;
+using Windows.Devices.Enumeration;
 using Windows.Devices.Radios;
 
 namespace ConPhone.Windows;
@@ -38,8 +39,7 @@ public sealed class BleHidServer : IDisposable
     private readonly ConcurrentDictionary<string, bool> _suspended = new();
     private readonly ConcurrentDictionary<string, GattSession> _sessions = new();
     private readonly object _sessionGate = new();
-    private readonly ConcurrentDictionary<string, BluetoothLEDevice> _devices = new();
-    private readonly ConcurrentDictionary<string, int> _connectionIntervalMs = new();
+    private readonly ConcurrentDictionary<string, DeviceInformation> _deviceInfo = new();
     private readonly SemaphoreSlim _send = new(1, 1);
     private readonly SemaphoreSlim _deviceGate = new(1, 1);
     private readonly SemaphoreSlim _recoveryGate = new(1, 1);
@@ -88,10 +88,7 @@ public sealed class BleHidServer : IDisposable
     public int TrustedDeviceCount => TrustedDeviceStore.LoadAll().Count;
     public bool IsTrustedDevice(string id) => TrustedDeviceStore.Contains(id);
     public bool Ready => _running && _approved is { } id && IsReady(id);
-    public int MousePacingIntervalMs =>
-        _approved is { } id && _connectionIntervalMs.TryGetValue(id, out var value)
-            ? value
-            : PointerPacing.FallbackIntervalMs;
+    public int MousePacingIntervalMs => PointerPacing.FallbackIntervalMs;
 
     public BleHidServer()
     {
@@ -110,7 +107,7 @@ public sealed class BleHidServer : IDisposable
                $"Bluetooth LE: {adapter.IsLowEnergySupported}\r\n" +
                $"Peripheral 역할: {adapter.IsPeripheralRoleSupported}\r\n" +
                $"무선 상태: {radio?.State.ToString() ?? "Unknown"}\r\n" +
-               "연결된 GATT 세션에 MaintainConnection을 요청하고 장치 객체를 재사용합니다.";
+               "휴대폰에서 시작한 HID 연결만 처리합니다. PC에서 상대 기기로 연결/페어링을 요청하지 않습니다.";
     }
 
     public async Task StartAsync()
@@ -368,7 +365,6 @@ public sealed class BleHidServer : IDisposable
                 {
                     if (!TryActiveSession(client, out var session, out var id) || session is null) continue;
                     TrackSession(id, session);
-                    _ = EnsureDeviceAsync(id);
                 }
             }
             catch (InvalidOperationException ex) when (IsIllegalState(ex)) { }
@@ -384,16 +380,8 @@ public sealed class BleHidServer : IDisposable
 
     private void TrackSession(string id, GattSession session)
     {
-        try
-        {
-            if (session.CanMaintainConnection)
-                session.MaintainConnection = true;
-        }
-        catch (Exception ex) when (ex is InvalidOperationException or ObjectDisposedException)
-        {
-            Status?.Invoke("GATT 연결 유지 요청을 적용하지 못했습니다. 기본 연결 정책을 사용합니다.");
-        }
-
+        // This is a peripheral/server session created by an incoming phone.
+        // Keep its reference, but never ask Windows to initiate a reverse link.
         lock (_sessionGate)
         {
             if (_sessions.TryGetValue(id, out var existing) && ReferenceEquals(existing, session))
@@ -413,11 +401,6 @@ public sealed class BleHidServer : IDisposable
                         _sessions.TryRemove(id, out _);
                         _protocol.TryRemove(id, out _);
                         _suspended.TryRemove(id, out _);
-                        _connectionIntervalMs.TryRemove(id, out _);
-                    }
-                    else if (_desiredRunning)
-                    {
-                        TryMaintainConnection(sender);
                     }
                 }
 
@@ -427,85 +410,35 @@ public sealed class BleHidServer : IDisposable
         }
     }
 
-    private void TryMaintainConnection(GattSession session)
+    private async Task ReadDeviceInfoAsync(string id)
     {
-        try
-        {
-            if (session.CanMaintainConnection)
-                session.MaintainConnection = true;
-        }
-        catch (Exception ex) when (ex is InvalidOperationException or ObjectDisposedException) { }
-    }
-
-    private async Task EnsureDeviceAsync(string id)
-    {
-        if (_devices.ContainsKey(id)) return;
-
         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
-        await _deviceGate.WaitAsync(timeout.Token).ConfigureAwait(false);
+        var entered = false;
         try
         {
-            if (_devices.ContainsKey(id)) return;
+            await _deviceGate.WaitAsync(timeout.Token).ConfigureAwait(false);
+            entered = true;
+            if (_disposed) return;
 
-            _lastOperation = "BluetoothLEDevice.FromIdAsync";
-            var device = await BluetoothLEDevice.FromIdAsync(id).AsTask(timeout.Token).ConfigureAwait(false);
-            if (device is null) return;
-
-            device.ConnectionStatusChanged += (sender, _) =>
-            {
-                if (sender.ConnectionStatus == BluetoothConnectionStatus.Connected)
-                {
-                    RefreshConnectionInterval(id, sender);
-                }
-
-                Status?.Invoke($"휴대폰 링크 상태: {sender.ConnectionStatus}");
-                Changed?.Invoke();
-            };
-
-            if (!_devices.TryAdd(id, device))
-            {
-                device.Dispose();
-            }
-            else
-            {
-                RefreshConnectionInterval(id, device);
-            }
+            // Read OS metadata only. BluetoothLEDevice.FromIdAsync can prompt
+            // for access and must not run in the 5-second background refresh.
+            _lastOperation = "DeviceInformation.CreateFromIdAsync";
+            var info = await DeviceInformation.CreateFromIdAsync(
+                    id, [], DeviceInformationKind.AssociationEndpoint)
+                .AsTask(timeout.Token).ConfigureAwait(false);
+            if (info is not null) _deviceInfo[id] = info;
+            else _deviceInfo.TryRemove(id, out _);
         }
-        catch (Exception ex) when (ex is InvalidOperationException or ObjectDisposedException)
+        catch (Exception ex) when (ex is InvalidOperationException or ObjectDisposedException or
+            OperationCanceledException or ArgumentException or UnauthorizedAccessException)
         {
-            Status?.Invoke("휴대폰 연결 상태 확인이 일시적으로 실패했습니다.");
+            _deviceInfo.TryRemove(id, out _);
         }
         finally
         {
-            _deviceGate.Release();
+            if (entered) _deviceGate.Release();
         }
     }
-
-    public void SetInteractiveMode(bool enabled)
-    {
-        // Keep the phone/OS negotiated connection parameters. Requesting and
-        // disposing ThroughputOptimized on every F8/F9 transition renegotiates
-        // the shared Bluetooth link and can disrupt other GATT connections.
-        var id = _approved;
-        if (enabled && id is not null && _devices.TryGetValue(id, out var device))
-            RefreshConnectionInterval(id, device);
-    }
-
-    private void RefreshConnectionInterval(string id, BluetoothLEDevice device)
-    {
-        var interval = PointerPacing.FallbackIntervalMs;
-
-        if (BleConnectionTuning.TryGetConnectionIntervalUnits(
-                device,
-                out var intervalUnits))
-            interval = PointerPacing.FromBleConnectionInterval(intervalUnits);
-
-        _connectionIntervalMs[id] = interval;
-    }
-
-    private bool IsConnected(string id) =>
-        !_devices.TryGetValue(id, out var device) ||
-        device.ConnectionStatus == BluetoothConnectionStatus.Connected;
 
     private static int LiveClientCount(GattLocalCharacteristic? characteristic)
     {
@@ -674,7 +607,6 @@ public sealed class BleHidServer : IDisposable
                         continue;
 
                     ids.Add(id);
-                    await EnsureDeviceAsync(id).ConfigureAwait(false);
                 }
             }
             catch (InvalidOperationException ex) when (IsIllegalState(ex)) { }
@@ -682,13 +614,13 @@ public sealed class BleHidServer : IDisposable
         }
 
         // Remembered devices should stay visible even while temporarily disconnected.
-        foreach (var trustedId in trustedIds)
-            await EnsureDeviceAsync(trustedId).ConfigureAwait(false);
+        foreach (var id in ids)
+            await ReadDeviceInfoAsync(id).ConfigureAwait(false);
 
         var peers = new List<Peer>();
         foreach (var id in ids)
         {
-            _devices.TryGetValue(id, out var device);
+            _deviceInfo.TryGetValue(id, out var device);
             var fingerprint = Convert.ToHexString(
                 SHA256.HashData(Encoding.UTF8.GetBytes(id)))[..8];
 
@@ -704,8 +636,8 @@ public sealed class BleHidServer : IDisposable
                 Client(_keyboard, id) is not null,
                 Client(_mouse, id) is not null,
                 Client(_system, id) is not null,
-                device?.DeviceInformation.Pairing.IsPaired == true,
-                device?.ConnectionStatus == BluetoothConnectionStatus.Connected,
+                device?.Pairing.IsPaired == true,
+                Client(_keyboard, id) is not null || Client(_mouse, id) is not null,
                 trusted,
                 active,
                 Client(_consumer, id) is not null));
@@ -722,10 +654,10 @@ public sealed class BleHidServer : IDisposable
     public async Task ApproveAsync(string id)
     {
         ThrowIfDisposed();
-        await EnsureDeviceAsync(id).ConfigureAwait(false);
+        await ReadDeviceInfoAsync(id).ConfigureAwait(false);
 
-        if (!_devices.TryGetValue(id, out var device) ||
-            device.DeviceInformation.Pairing.IsPaired != true)
+        if (!_deviceInfo.TryGetValue(id, out var device) ||
+            device.Pairing.IsPaired != true)
             throw new InvalidOperationException("Windows에서 페어링된 기기만 등록할 수 있습니다.");
 
         if (!_running)
@@ -759,8 +691,6 @@ public sealed class BleHidServer : IDisposable
         if (!TrustedDeviceStore.Contains(id))
             throw new InvalidOperationException("먼저 이 기기를 신뢰 기기로 등록해 주세요.");
 
-        await EnsureDeviceAsync(id).ConfigureAwait(false);
-
         if (!_running)
             throw new InvalidOperationException("Bluetooth HID 서비스가 실행 중이 아닙니다.");
 
@@ -768,7 +698,6 @@ public sealed class BleHidServer : IDisposable
             throw new InvalidOperationException(
                 "선택한 기기의 키보드·마우스 HID 연결이 현재 준비되지 않았습니다.");
 
-        SetInteractiveMode(false);
         _keyboardValue = new byte[Hid.KeyboardReportLength];
         _mouseValue = new byte[Hid.MouseReportLength];
         _systemValue = new byte[Hid.SystemReportLength];
@@ -776,14 +705,6 @@ public sealed class BleHidServer : IDisposable
 
         _approved = id;
         TrustedDeviceStore.SetActive(id);
-
-        if (_devices.TryGetValue(id, out var device))
-        {
-            RefreshConnectionInterval(id, device);
-        }
-
-        if (_sessions.TryGetValue(id, out var session))
-            TryMaintainConnection(session);
 
         Status?.Invoke(
             $"활성 입력 대상 전환 · {Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(id)))[..8]}");
@@ -795,11 +716,8 @@ public sealed class BleHidServer : IDisposable
         var target = deviceId ?? _approved;
         if (target is null) return null;
 
-        if (string.Equals(_approved, target, StringComparison.Ordinal))
-            SetInteractiveMode(false);
-
         TrustedDeviceStore.Remove(target);
-        _connectionIntervalMs.TryRemove(target, out _);
+        _deviceInfo.TryRemove(target, out _);
 
         if (string.Equals(_approved, target, StringComparison.Ordinal))
             _approved = TrustedDeviceStore.LoadActive();
@@ -974,21 +892,10 @@ public sealed class BleHidServer : IDisposable
 
         _desiredRunning = false;
         _running = false;
-        SetInteractiveMode(false);
         _keyboardValue = new byte[Hid.KeyboardReportLength];
         _mouseValue = new byte[Hid.MouseReportLength];
         _systemValue = new byte[Hid.SystemReportLength];
         _consumerValue = new byte[Hid.ConsumerReportLength];
-
-        foreach (var session in _sessions.Values)
-        {
-            try
-            {
-                if (session.CanMaintainConnection)
-                    session.MaintainConnection = false;
-            }
-            catch (Exception ex) when (ex is InvalidOperationException or ObjectDisposedException) { }
-        }
 
         if (_provider is not null)
         {
@@ -1013,14 +920,8 @@ public sealed class BleHidServer : IDisposable
         Stop();
         _disposed = true;
 
-        foreach (var device in _devices.Values)
-        {
-            try { device.Dispose(); } catch { }
-        }
-
-        _devices.Clear();
+        _deviceInfo.Clear();
         _sessions.Clear();
-        _connectionIntervalMs.Clear();
         _send.Dispose();
         _deviceGate.Dispose();
         _recoveryGate.Dispose();

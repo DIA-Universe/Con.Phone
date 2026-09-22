@@ -1710,7 +1710,6 @@ public sealed partial class MainForm : Form
     {
         _input.Deactivate();
         _input.RefreshHooks();
-        _ble.SetInteractiveMode(false);
         Interlocked.Exchange(ref _bleNotReadySinceTicks, 0);
         _pointerScaler.Reset();
         Interlocked.Exchange(ref _lastPointerSentTicks, 0);
@@ -1775,7 +1774,6 @@ public sealed partial class MainForm : Form
         if (epoch != Volatile.Read(ref _epoch) || !_ble.Ready) return;
         _pointerScaler.Reset();
         Interlocked.Exchange(ref _bleNotReadySinceTicks, 0);
-        _ble.SetInteractiveMode(true);
         _input.Activate();
 
         Log(
@@ -2059,7 +2057,6 @@ public sealed partial class MainForm : Form
         if (wasRemote && _ble.Ready)
         {
             _pointerScaler.Reset();
-            _ble.SetInteractiveMode(true);
             _input.Activate(preserveLocalModifierUps: false);
 
             _ = SyncLatestClipboardToPhoneSafeAsync(

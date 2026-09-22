@@ -6,10 +6,6 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.Service
 import android.bluetooth.*
-import android.bluetooth.le.ScanCallback
-import android.bluetooth.le.ScanFilter
-import android.bluetooth.le.ScanResult
-import android.bluetooth.le.ScanSettings
 import android.content.*
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
@@ -70,7 +66,6 @@ class ClipboardBridgeService : Service() {
         private const val PENDING_TTL_MS = 60_000L
 
         private val SERVICE_UUID = UUID.fromString("67A7F001-7E5B-4A2E-9B8B-1C9A5B6D1001")
-        private val HID_SERVICE_UUID = UUID.fromString("00001812-0000-1000-8000-00805f9b34fb")
         private val TX_UUID = UUID.fromString("67A7F002-7E5B-4A2E-9B8B-1C9A5B6D1001")
         private val RX_UUID = UUID.fromString("67A7F003-7E5B-4A2E-9B8B-1C9A5B6D1001")
         private val SECRET_UUID = UUID.fromString("67A7F004-7E5B-4A2E-9B8B-1C9A5B6D1001")
@@ -166,7 +161,7 @@ class ClipboardBridgeService : Service() {
     private val bleReassembler = BleReassembler()
     private val bleWireReassembler = ClipboardWireReassembler()
     private val p2pWireReassembler = ClipboardWireReassembler()
-    private val rejectedBleDevices = ConcurrentHashMap<String, Long>()
+    private val rejectedBleDevices = ConcurrentHashMap.newKeySet<String>()
     private val sharedStore by lazy { AndroidSharedPayloadStore(this) }
     private val backgroundClipboard by lazy { BackgroundClipboardMonitor(this) { drainPersistedShares() } }
     private val loadedPersistentShareIds = HashSet<String>()
@@ -199,7 +194,6 @@ class ClipboardBridgeService : Service() {
     private val pendingQueue = java.util.ArrayDeque<PendingSend>()
     private var pendingBytes = 0L
     private var nextPendingId = 0L
-    @Volatile private var scanning = false
     @Volatile private var p2pNetwork: Network? = null
     @Volatile private var directNetworkCallback: ConnectivityManager.NetworkCallback? = null
     @Volatile private var directConfigReadAttempts = 0
@@ -219,7 +213,7 @@ class ClipboardBridgeService : Service() {
         override fun onReceive(context: android.content.Context?, intent: Intent?) {
             if (intent?.action == BluetoothDevice.ACTION_ACL_CONNECTED ||
                 intent?.getIntExtra(BluetoothAdapter.EXTRA_STATE, -1) == BluetoothAdapter.STATE_ON)
-                main.post { beginScan() }
+                main.post { ensureSelectedPcConnection() }
         }
     }
 
@@ -248,18 +242,17 @@ class ClipboardBridgeService : Service() {
             ACTION_SEND_SHARED_IMAGE -> showStatus("이미지는 전달되지 않습니다.")
             ACTION_DRAIN_SHARED -> drainPersistedShares()
             ACTION_RETRY_P2P -> retryP2PNow()
-            else -> beginScan()
+            else -> ensureSelectedPcConnection()
         }
-        beginScan() // Sharing or draining must also establish a connection on a cold start.
+        ensureSelectedPcConnection() // Sharing or draining must also establish a connection on a cold start.
         return START_STICKY
     }
 
     override fun onBind(intent: Intent?) = null
 
-    private fun beginScan() {
+    private fun ensureSelectedPcConnection() {
         if (destroyed) return
-        if (checkSelfPermission(Manifest.permission.BLUETOOTH_SCAN) != PackageManager.PERMISSION_GRANTED ||
-            checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT) != PackageManager.PERMISSION_GRANTED) {
+        if (checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT) != PackageManager.PERMISSION_GRANTED) {
             showStatus("Bluetooth 권한 필요")
             return
         }
@@ -275,40 +268,19 @@ class ClipboardBridgeService : Service() {
             return
         }
 
-        if (scanning || gatt != null) return
+        if (gatt != null) return
         val savedAddress = getSharedPreferences(CONNECTION_PREFS, MODE_PRIVATE).getString(SAVED_PC_ADDRESS, null)
-        val savedPc = adapter.bondedDevices.firstOrNull {
-            it.address == savedAddress && (rejectedBleDevices[it.address] ?: 0) <= System.currentTimeMillis()
-        }
-        if (savedPc != null) { connectDevice(savedPc); return }
-        val scanner = adapter.bluetoothLeScanner ?: run {
-            showStatus("BLE 스캐너 사용 불가")
+        if (savedAddress.isNullOrBlank()) {
+            showStatus("연결할 PC를 선택해 주세요. 선택한 PC에만 자동 연결합니다.")
             return
         }
-
-        val filters = listOf(
-            ScanFilter.Builder()
-                .setServiceUuid(ParcelUuid(SERVICE_UUID))
-                .build(),
-            ScanFilter.Builder()
-                .setServiceUuid(ParcelUuid(HID_SERVICE_UUID))
-                .build()
-        )
-        val settings = ScanSettings.Builder()
-            .setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY)
-            .build()
-
-        scanning = true
-        showStatus("LINKO PC 검색 중 · Clipboard/HID UUID")
-        scanner.startScan(filters, settings, scanCallback)
-        main.postDelayed({
-            if (scanning && gatt == null && !destroyed) {
-                runCatching { scanner.stopScan(scanCallback) }
-                scanning = false
-                showStatus("PC 검색 지연 · 5초 후 재검색합니다. ‘페어링된 PC 직접 선택’으로도 연결할 수 있어요")
-                main.postDelayed({ if (!destroyed && gatt == null && !scanning) beginScan() }, 5000)
-            }
-        }, 15_000)
+        val savedPc = adapter.bondedDevices.firstOrNull { it.address.equals(savedAddress, ignoreCase = true) }
+        if (savedPc == null) {
+            showStatus("선택한 PC의 페어링이 해제됐어요. Bluetooth 설정에서 PC를 연결해 주세요.")
+            return
+        }
+        if (rejectedBleDevices.contains(savedPc.address)) return
+        connectDevice(savedPc)
     }
 
     private fun connectSelectedPc(address: String?) {
@@ -316,6 +288,7 @@ class ClipboardBridgeService : Service() {
         val adapter = getSystemService(BluetoothManager::class.java).adapter ?: return
         val device = adapter.bondedDevices.firstOrNull { it.address == address }
         if (device == null) { showStatus("먼저 휴대폰 Bluetooth 설정에서 PC와 페어링해 주세요"); return }
+        if (gatt?.device?.address == device.address) return
         p2p?.close()
         p2p = null
         gatt?.let { gattCallback.onConnectionStateChange(it, 0, BluetoothProfile.STATE_DISCONNECTED) }
@@ -326,9 +299,11 @@ class ClipboardBridgeService : Service() {
 
     private fun connectDevice(device: BluetoothDevice) {
         if (destroyed || gatt != null) return
-        val adapter = getSystemService(BluetoothManager::class.java).adapter ?: return
-        runCatching { adapter.bluetoothLeScanner?.stopScan(scanCallback) }
-        scanning = false
+        if (checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT) != PackageManager.PERMISSION_GRANTED) return
+        val selectedAddress = getSharedPreferences(CONNECTION_PREFS, MODE_PRIVATE).getString(SAVED_PC_ADDRESS, null)
+        if (!AutoConnectPolicy.canConnect(device.address, selectedAddress,
+                device.bondState == BluetoothDevice.BOND_BONDED, gatt != null,
+                rejectedBleDevices.contains(device.address))) return
         showStatus("${device.name ?: "선택한 PC"} 연결 중 · 클립보드 서비스 확인")
         handshakeComplete = false
         recoveringGatt = null
@@ -339,28 +314,6 @@ class ClipboardBridgeService : Service() {
             if (connecting != null && gatt === connecting && !handshakeComplete)
                 restartGatt(connecting, "PC 연결 준비 시간 초과 · PC의 클립보드 동기화/기기 등록을 확인하세요")
         }, 25_000)
-    }
-
-    private val scanCallback = object : ScanCallback() {
-        override fun onScanResult(callbackType: Int, result: ScanResult) {
-            if (destroyed || !scanning || gatt != null) return
-            if (checkSelfPermission(Manifest.permission.BLUETOOTH_SCAN) != PackageManager.PERMISSION_GRANTED ||
-                checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT) != PackageManager.PERMISSION_GRANTED) return
-
-            val now = System.currentTimeMillis()
-            rejectedBleDevices.entries.removeIf { it.value <= now }
-            val address = runCatching { result.device.address }.getOrNull()
-            if (address != null && rejectedBleDevices[address]?.let { it > now } == true)
-                return
-
-            connectDevice(result.device)
-        }
-
-        override fun onScanFailed(errorCode: Int) {
-            scanning = false
-            showStatus("BLE 검색 실패: $errorCode")
-            main.postDelayed({ beginScan() }, 3000)
-        }
     }
 
     private val gattCallback = object : BluetoothGattCallback() {
@@ -410,7 +363,7 @@ class ClipboardBridgeService : Service() {
                 else
                     "PC 연결 끊김 (상태 $status) · 재연결 대기")
                 runCatching { g.close() }
-                main.postDelayed({ beginScan() }, 2500)
+                main.postDelayed({ ensureSelectedPcConnection() }, 2500)
             }
         }
 
@@ -435,16 +388,13 @@ class ClipboardBridgeService : Service() {
                     else
                         null
 
-                if (address != null)
-                    rejectedBleDevices[address] =
-                        System.currentTimeMillis() + 30_000L
+                if (address != null) rejectedBleDevices.add(address)
 
                 if (gatt === g) gatt = null
                 runCatching { g.disconnect() }
                 runCatching { g.close() }
 
-                showStatus("다른 HID 기기를 건너뛰고 LINKO PC를 계속 검색합니다.")
-                main.postDelayed({ beginScan() }, 250)
+                showStatus("선택한 기기에 LINKO 서비스가 없습니다. LINKO를 실행한 PC를 다시 선택해 주세요.")
                 return
             }
 
@@ -586,12 +536,12 @@ class ClipboardBridgeService : Service() {
                     bleAckQueue.clear()
                     showStatus(
                         "BLE Clipboard ACK 전송 실패: $status · PC가 재전송 여부를 판단합니다.")
-                    main.postDelayed({ beginScan() }, 1000)
+                    main.postDelayed({ ensureSelectedPcConnection() }, 1000)
                     writeNextBle()
                 } else {
                     requeueActiveBleTransfer(
                         "BLE Clipboard 쓰기 실패: $status")
-                    main.postDelayed({ beginScan() }, 1000)
+                    main.postDelayed({ ensureSelectedPcConnection() }, 1000)
                 }
             }
         }
@@ -938,7 +888,7 @@ class ClipboardBridgeService : Service() {
         }
 
         showStatus("P2P 설정을 다시 가져오기 위해 Bluetooth 연결을 확인합니다.")
-        beginScan()
+        ensureSelectedPcConnection()
     }
 
     private fun requestDirectNetwork() {
@@ -1336,7 +1286,7 @@ class ClipboardBridgeService : Service() {
         )
 
         main.post {
-            beginScan()
+            ensureSelectedPcConnection()
 
             if (!bleAllowed &&
                 activeTarget &&
@@ -1486,7 +1436,7 @@ class ClipboardBridgeService : Service() {
         if (g == null || rxLocal == null || credential == null) {
             if (setPendingContent(content, persistedShareId)) {
                 showStatus("PC 연결 후 Clipboard 전송 대기")
-                main.post { beginScan() }
+                main.post { ensureSelectedPcConnection() }
             }
             return
         }
@@ -1756,14 +1706,14 @@ class ClipboardBridgeService : Service() {
                 showStatus(
                     "BLE Clipboard ACK 쓰기 시작 실패: $result")
                 main.postDelayed(
-                    { beginScan() },
+                    { ensureSelectedPcConnection() },
                     1000)
                 writeNextBle()
             } else {
                 requeueActiveBleTransfer(
                     "BLE Clipboard 쓰기 시작 실패: $result")
                 main.postDelayed(
-                    { beginScan() },
+                    { ensureSelectedPcConnection() },
                     1000)
             }
         }
@@ -2019,8 +1969,6 @@ class ClipboardBridgeService : Service() {
         destroyed = true
         latestStatus = "연결 서비스가 중지됐어요."
         main.removeCallbacksAndMessages(null)
-        if (checkSelfPermission(Manifest.permission.BLUETOOTH_SCAN) == PackageManager.PERMISSION_GRANTED)
-            runCatching { getSystemService(BluetoothManager::class.java).adapter?.bluetoothLeScanner?.stopScan(scanCallback) }
         synchronized(bleSendLock) {
             bleActiveContent = null
             bleActivePersistentShareId = null
@@ -2032,7 +1980,6 @@ class ClipboardBridgeService : Service() {
             bleQueue.clear()
         }
         clearPendingContent()
-        scanning = false
         p2p?.close()
         p2p = null
         releaseDirectNetwork()

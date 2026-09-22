@@ -126,7 +126,8 @@ class MainActivity : Activity() {
         val connect = card(home, "PC 연결", "PC에서 LINKO를 실행해 주세요.")
         statusText = text(FriendlyStatus.summary(ClipboardBridgeService.latestStatus), 14f)
         connect.addView(statusText)
-        connect.addView(text("페어링한 PC에 자동으로 연결합니다.", 14f))
+        connect.addView(text("선택한 PC에만 자동으로 연결합니다.", 14f))
+        button(connect, "연결할 PC 선택") { choosePairedPc() }
 
         val send = card(home, "클립보드", "휴대폰에서 복사한 뒤 이 화면을 열면 PC로 보냅니다.")
         button(send, "PC로 보내기", true) { sendFocusedClipboard(true) }
@@ -266,8 +267,7 @@ class MainActivity : Activity() {
     }
 
     private fun hasBluetoothPermissions(): Boolean =
-        checkSelfPermission(Manifest.permission.BLUETOOTH_SCAN) == PackageManager.PERMISSION_GRANTED &&
-            checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT) == PackageManager.PERMISSION_GRANTED
+        checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT) == PackageManager.PERMISSION_GRANTED
 
     private fun hasNearbyWifiPermission(): Boolean =
         if (android.os.Build.VERSION.SDK_INT >= 33)
@@ -287,7 +287,6 @@ class MainActivity : Activity() {
 
     private fun requestPermissions() {
         val permissions = mutableListOf(
-            Manifest.permission.BLUETOOTH_SCAN,
             Manifest.permission.BLUETOOTH_CONNECT
         )
 

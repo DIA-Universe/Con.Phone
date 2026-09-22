@@ -86,8 +86,7 @@ class BackgroundClipboardActivity : Activity() {
     private fun enable() {
         BackgroundClipboardMonitor.setEnabled(this, true)
         toggle.isChecked = true
-        if (checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT) == PackageManager.PERMISSION_GRANTED &&
-            checkSelfPermission(Manifest.permission.BLUETOOTH_SCAN) == PackageManager.PERMISSION_GRANTED)
+        if (checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT) == PackageManager.PERMISSION_GRANTED)
             startForegroundService(Intent(this, ClipboardBridgeService::class.java).setAction(ClipboardBridgeService.ACTION_START))
         else startActivity(Intent(this, MainActivity::class.java))
     }
