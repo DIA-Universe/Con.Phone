@@ -46,6 +46,10 @@ Write-Host "== Release behavior checks ==" -ForegroundColor Cyan
 dotnet run --project (Join-Path $repo "src/ConPhone.Windows") -c $Configuration -- --release-selftest
 Assert-NativeSuccess "Release self-test"
 
+Write-Host "== Local/remote hotkey ownership regression ==" -ForegroundColor Cyan
+dotnet run --project (Join-Path $repo "src/ConPhone.Windows") -c $Configuration -- --hotkey-scope-selftest
+Assert-NativeSuccess "Hotkey scope self-test"
+
 Write-Host "== UI disconnect and shutdown regression checks ==" -ForegroundColor Cyan
 dotnet run --project (Join-Path $repo "src/ConPhone.Windows") -c $Configuration -- --ui-lifecycle-selftest
 Assert-NativeSuccess "UI lifecycle self-test"

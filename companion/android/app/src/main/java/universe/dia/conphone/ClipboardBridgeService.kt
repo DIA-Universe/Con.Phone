@@ -82,7 +82,10 @@ class ClipboardBridgeService : Service() {
     private var writeGeneration = 0L
     private var readingGatt: BluetoothGatt? = null
     private var readGeneration = 0L
-    private var readStartFailures = 0
+    private val readStartBackoff = BleRequestBackoff()
+    private val writeStartBackoff = BleRequestBackoff()
+    private var deferredBleWrite: Pair<ByteArray, Boolean>? = null
+    private var writeRetryPending = false
     private val pendingReads = java.util.ArrayDeque<Pair<BluetoothGatt, BluetoothGattCharacteristic>>()
 
     private fun readCharacteristic(g: BluetoothGatt, c: BluetoothGattCharacteristic) {
@@ -107,25 +110,19 @@ class ClipboardBridgeService : Service() {
             // false means Android did not start the read; the shared GATT
             // transport may simply be busy. Do not tear down a healthy HID
             // connection on the first rejected periodic capabilities poll.
-            if (++readStartFailures < 4) {
-                pendingReads.addFirst(item)
-                main.postDelayed({
-                    if (!destroyed && gatt === g && readingGatt === g && readGeneration == generation) {
-                        readingGatt = null
-                        drainReads()
-                    }
-                }, 250)
-                return
-            }
-            readingGatt = null
-            restartGatt(g, "Bluetooth 읽기 요청 실패 · 재연결")
+            pendingReads.addFirst(item)
+            val delay = readStartBackoff.rejected()
+            bleLog("read not started; keeping link, retry in ${delay}ms")
+            main.postDelayed({
+                if (!destroyed && gatt === g && readingGatt === g && readGeneration == generation) {
+                    readingGatt = null
+                    drainReads()
+                }
+            }, delay)
             return
         }
-        readStartFailures = 0
-        main.postDelayed({
-            if (gatt === g && readingGatt === g && readGeneration == generation)
-                restartGatt(g, "Bluetooth 응답 시간 초과 · 재연결")
-        }, 10_000)
+        readStartBackoff.accepted()
+        // The lifecycle owns the single timeout for an operation actually submitted to Android.
     }
 
     private fun readCompleted(g: BluetoothGatt, c: BluetoothGattCharacteristic): Boolean {
@@ -176,7 +173,8 @@ class ClipboardBridgeService : Service() {
         close = { it.close() },
         resetTransport = { resetBleTransport() },
         reconnect = { ensureSelectedPcConnection() },
-        log = { android.util.Log.i("LINKO-BLE", it) }
+        log = { android.util.Log.i("LINKO-BLE", it) },
+        recoveryPaused = { showStatus("반복 연결 실패 · 자동 재연결을 멈췄어요. PC의 LINKO 상태를 확인한 뒤 연결을 눌러 주세요.") }
     )
 
     @Suppress("DEPRECATION")
@@ -188,7 +186,10 @@ class ClipboardBridgeService : Service() {
         gatt = null
         handshakeComplete = false
         readingGatt = null
-        readStartFailures = 0
+        readStartBackoff.accepted()
+        writeStartBackoff.accepted()
+        deferredBleWrite = null
+        writeRetryPending = false
         ++writeGeneration
         ++readGeneration
         pendingReads.clear()
@@ -413,19 +414,16 @@ class ClipboardBridgeService : Service() {
             } else if (newState == BluetoothProfile.STATE_CONNECTED && bleLifecycle.state == BleConnectionState.CONNECTING) {
                 bleLifecycle.linkConnected()
                 mtu = 23
-                // Do not overlap MTU and discovery. A missing callback closes the attempt.
-                if (bleLifecycle.beginOperation("mtu")) {
-                    val started = runCatching { g.requestMtu(517) }.getOrDefault(false)
-                    if (!started) { bleLifecycle.finishOperation("mtu"); discoverGatt(g) }
-                }
+                // HID and the companion share ATT. The wire protocol works at MTU 23;
+                // do not make an optional MTU negotiation a reconnect prerequisite.
+                discoverGatt(g)
             }
         }
 
         override fun onMtuChanged(g: BluetoothGatt, value: Int, status: Int) {
-            if (!bleLifecycle.accepts(g, session) || !bleLifecycle.finishOperation("mtu")) return
+            if (!bleLifecycle.accepts(g, session)) return
             bleLog("MTU status=$status mtu=$value")
             if (status == BluetoothGatt.GATT_SUCCESS) mtu = value.coerceIn(23, 517)
-            discoverGatt(g)
         }
 
         override fun onServicesDiscovered(g: BluetoothGatt, status: Int) {
@@ -471,7 +469,11 @@ class ClipboardBridgeService : Service() {
             }
             if (!bleLifecycle.accepts(g, session) || !bleLifecycle.finishOperation("cccd")) return
             bleLog("notification enabled status=$status")
-            if (status == BluetoothGatt.GATT_SUCCESS) secretCharacteristic?.let { readCharacteristic(g, it) }
+            if (status == BluetoothGatt.GATT_SUCCESS) {
+                // Waiting for the user to approve this phone is not a failed BLE handshake.
+                bleLifecycle.servicesConfigured()
+                secretCharacteristic?.let { readCharacteristic(g, it) }
+            }
             else restartGatt(g, "BLE 알림 등록 실패 status=$status")
         }
 
@@ -568,16 +570,24 @@ class ClipboardBridgeService : Service() {
                 if (pendingReads.isNotEmpty()) drainReads() else writeNextBle()
             } else {
                 bleLog("write failed status=$status")
-                restartGatt(g, "BLE Clipboard 쓰기 실패 status=$status")
+                // A completed ATT error (for example a target/approval change) does not
+                // prove the physical link failed. Let status polling recover the channel.
+                bleAckQueue.clear()
+                activeTarget = false
+                requeueActiveBleTransfer("BLE Clipboard 쓰기 거절 status=$status · 연결 유지")
+                scheduleCapabilitiesRead()
+                if (pendingReads.isNotEmpty()) drainReads()
             }
         }
     }
 
     private fun retrySecretRead(g: BluetoothGatt) {
+        val session = bleLifecycle.generation
         main.postDelayed({
+            if (!bleLifecycle.accepts(g, session)) return@postDelayed
             if (checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT) == PackageManager.PERMISSION_GRANTED)
                 secretCharacteristic?.let { readCharacteristic(g, it) }
-        }, 2000)
+        }, 5000)
     }
 
     private fun handleCharacteristicRead(
@@ -587,7 +597,8 @@ class ClipboardBridgeService : Service() {
         when (characteristic.uuid) {
             SECRET_UUID -> {
                 if (value.size != 64) {
-                    gatt?.let { restartGatt(it, "BLE 인증 응답 형식 오류") }
+                    showStatus("PC의 LINKO 인증 응답을 확인할 수 없어요 · HID 연결 유지")
+                    gatt?.let { retrySecretRead(it) }
                     return
                 }
                 handshakeComplete = true
@@ -1556,7 +1567,7 @@ class ClipboardBridgeService : Service() {
                 matched = true
                 bleContentAckReceived = true
 
-                if (!bleWriting && bleQueue.isEmpty()) {
+                if (!bleWriting && deferredBleWrite == null && bleQueue.isEmpty()) {
                     completed = true
                     persistedId = bleActivePersistentShareId
                     bleActiveContent = null
@@ -1588,6 +1599,9 @@ class ClipboardBridgeService : Service() {
     }
 
     private fun requeueActiveBleTransfer(reason: String) {
+        deferredBleWrite = null
+        writeRetryPending = false
+        ++writeGeneration
         val active = synchronized(bleSendLock) {
             val current = bleActiveContent ?: return
             val persistedId = bleActivePersistentShareId
@@ -1614,7 +1628,8 @@ class ClipboardBridgeService : Service() {
 
     private fun writeNextBle() {
         if (Looper.myLooper() != Looper.getMainLooper()) { main.post { writeNextBle() }; return }
-        if (destroyed || !bleLifecycle.idle || readingGatt != null || bleWriting) return
+        if (destroyed || !handshakeComplete || !activeTarget || !bleLifecycle.idle ||
+            readingGatt != null || bleWriting || writeRetryPending) return
 
         val g = gatt
         val characteristic = rx
@@ -1632,9 +1647,12 @@ class ClipboardBridgeService : Service() {
             return
         }
 
-        val ackFrame = bleAckQueue.poll()
+        val deferred = deferredBleWrite
+        deferredBleWrite = null
+        val ackFrame = if (deferred != null) { if (deferred.second) deferred.first else null } else bleAckQueue.poll()
         val contentFrame =
-            if (ackFrame == null) bleQueue.poll()
+            if (deferred != null && !deferred.second) deferred.first
+            else if (ackFrame == null) bleQueue.poll()
             else null
         val next = ackFrame ?: contentFrame
 
@@ -1711,10 +1729,6 @@ class ClipboardBridgeService : Service() {
         bleWriting = true
         bleWritingAck = ackFrame != null
         val writeAttempt = ++writeGeneration
-        main.postDelayed({
-            if (gatt === g && bleWriting && writeGeneration == writeAttempt)
-                restartGatt(g, "Bluetooth 쓰기 응답 시간 초과 · 재연결")
-        }, 10_000)
 
         val result = runCatching {
             if (Build.VERSION.SDK_INT >= 33) {
@@ -1739,8 +1753,19 @@ class ClipboardBridgeService : Service() {
         }.getOrDefault(BluetoothStatusCodes.ERROR_UNKNOWN)
         if (result != BluetoothStatusCodes.SUCCESS) {
             bleLog("write start failed status=$result")
-            restartGatt(g, "BLE Clipboard 쓰기 시작 실패 status=$result")
-        }
+            bleLifecycle.finishOperation("write")
+            bleWriting = false
+            bleWritingAck = false
+            // This frame was never submitted. Keep it ahead of later frames and ACKs.
+            deferredBleWrite = next to (ackFrame != null)
+            writeRetryPending = true
+            main.postDelayed({
+                if (!destroyed && gatt === g && writeGeneration == writeAttempt) {
+                    writeRetryPending = false
+                    if (pendingReads.isNotEmpty()) drainReads() else writeNextBle()
+                }
+            }, writeStartBackoff.rejected())
+        } else writeStartBackoff.accepted()
     }
 
     private fun sampleSizeForNormalization(

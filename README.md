@@ -4,14 +4,14 @@ PC의 키보드와 마우스를 Bluetooth로 휴대폰에서 사용하세요.
 
 **Windows / Android 1.0.6** · [다운로드](https://github.com/DIA-Universe/Con.Phone/releases/tag/v1.0.6)
 
-연결 오류 수정 빌드 **1.0.8**: [다운로드](https://github.com/DIA-Universe/Con.Phone/releases/tag/v1.0.8) · [원인과 검증 범위](docs/LINKO-1.0.8.md). 1.0.7은 연결 시 정상 GATT 세션을 닫는 결함이 확인되어 사용을 권장하지 않습니다. 1.0.8의 휴대폰 실기기 재검증은 아직 남아 있습니다.
+연결 호환성 수정 빌드 **1.0.9**: [다운로드](https://github.com/DIA-Universe/Con.Phone/releases/tag/v1.0.9) · [수정 내용과 검증 범위](docs/LINKO-1.0.9.md). 재연결 반복, 마우스 전송, 노트북에서 비상 복귀 키가 가로채지던 문제를 수정했습니다. **Windows EXE와 Android APK를 함께 업데이트하세요.** 실제 휴대폰에서 화면 새로고침과 마우스 체감 개선 확인은 남아 있습니다. 1.0.7은 활성 GATT 세션을 닫는 결함이 확인된 버전입니다.
 
 ## 시작하기
 
 1. Windows에서 `LINKO.exe`를 실행합니다.
 2. 휴대폰 Bluetooth 설정에서 이 PC를 연결합니다. 표시되는 이름은 Windows PC 이름일 수 있습니다.
 3. LINKO에서 기기를 선택하고 **이 기기 사용**을 누릅니다.
-4. **F8**로 휴대폰을 조작하고 **F9**로 PC로 돌아옵니다.
+4. **F8**로 휴대폰을 조작하고 **F9**로 PC로 돌아옵니다. 1.0.9에서는 PC 사용 중 F9가 일반 키로 동작합니다.
 
 ## iPhone · iPad
 

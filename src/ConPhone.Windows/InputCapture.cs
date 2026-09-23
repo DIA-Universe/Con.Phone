@@ -183,6 +183,7 @@ public sealed class InputCapture : IDisposable
             _pan = 0;
             _remote = true;
         }
+        UpdateRemoteShortcutFallbacks();
     }
 
     public void Deactivate()
@@ -195,6 +196,17 @@ public sealed class InputCapture : IDisposable
             _wheel = 0;
             _pan = 0;
         }
+        UpdateRemoteShortcutFallbacks();
+    }
+
+    private void UpdateRemoteShortcutFallbacks()
+    {
+        // Synchronous on the owning input thread: local return must release the OS
+        // registration before the next key press, even if the UI/Bluetooth is busy.
+        // Never call while holding _gate from another thread.
+        if (_sink is not { } sink || sink.Handle == 0) return;
+        if (Thread.CurrentThread == _thread) { sink.UpdateRemoteShortcuts(); return; }
+        SendMessage(sink.Handle, 0x8003, 0, 0);
     }
 
     public async void RefreshHooks()
@@ -557,6 +569,7 @@ public sealed class InputCapture : IDisposable
     private sealed class Sink : NativeWindow
     {
         private readonly InputCapture _owner;
+        private const int EmergencyId = 0x4350, LockId = 0x4353;
 
         public Sink(InputCapture owner)
         {
@@ -570,6 +583,20 @@ public sealed class InputCapture : IDisposable
             {
                 if (m.Msg == 0xFF) _owner.Raw(m.LParam);
                 if (m.Msg == 0x8001) Application.ExitThread();
+                if (m.Msg == 0x8003) UpdateRemoteShortcuts();
+                if (m.Msg == 0x0312 && _owner._remote && !_owner.IsCapturingHotkey)
+                {
+                    if ((int)m.WParam == EmergencyId)
+                    {
+                        _owner.Deactivate();
+                        _owner.Emergency?.Invoke();
+                    }
+                    else if ((int)m.WParam == LockId)
+                    {
+                        _owner.Deactivate();
+                        _owner.LockAndReturn?.Invoke();
+                    }
+                }
                 if (m.Msg == 0x8002)
                 {
                     while (_owner._hookRefreshes.TryDequeue(out var completion))
@@ -588,7 +615,35 @@ public sealed class InputCapture : IDisposable
             base.WndProc(ref m);
         }
 
-        public void Destroy() => DestroyHandle();
+        public void UpdateRemoteShortcuts()
+        {
+            UnregisterHotKey(Handle, EmergencyId);
+            UnregisterHotKey(Handle, LockId);
+            lock (_owner._gate)
+            {
+                if (!_owner._remote) return;
+                Register(EmergencyId, _owner._emergencyHotkey);
+                Register(LockId, _owner._lockAndReturnHotkey);
+            }
+        }
+
+        private void Register(int id, HotkeyBinding binding)
+        {
+            uint modifiers = 0x4000;
+            if (binding.Modifiers.HasFlag(HotkeyModifiers.Alt)) modifiers |= 1;
+            if (binding.Modifiers.HasFlag(HotkeyModifiers.Control)) modifiers |= 2;
+            if (binding.Modifiers.HasFlag(HotkeyModifiers.Shift)) modifiers |= 4;
+            if (binding.Modifiers.HasFlag(HotkeyModifiers.Windows)) modifiers |= 8;
+            // The low-level hook still handles remote return if another app owns the chord.
+            RegisterHotKey(Handle, id, modifiers, (uint)binding.Key);
+        }
+
+        public void Destroy()
+        {
+            UnregisterHotKey(Handle, EmergencyId);
+            UnregisterHotKey(Handle, LockId);
+            DestroyHandle();
+        }
     }
 
     public void Dispose()
@@ -649,4 +704,11 @@ public sealed class InputCapture : IDisposable
     [DllImport("user32.dll")]
     [return: MarshalAs(UnmanagedType.Bool)]
     private static extern bool PostMessage(nint window, uint message, nint wParam, nint lParam);
+
+    [DllImport("user32.dll")]
+    private static extern nint SendMessage(nint window, uint message, nint wParam, nint lParam);
+    [DllImport("user32.dll")]
+    private static extern bool RegisterHotKey(nint window, int id, uint modifiers, uint key);
+    [DllImport("user32.dll")]
+    private static extern bool UnregisterHotKey(nint window, int id);
 }

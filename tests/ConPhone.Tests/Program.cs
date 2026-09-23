@@ -128,6 +128,15 @@ Check("negative delta cannot merge outside HID range", box.Count == 2);
 Check("negative extreme still encodes", Hid.Encode((await box.TakeAsync(default)).Packet).Count() == 1);
 box.Clear();
 var map = Hid.ReportMap;
+box.TryAdd(new(7, new PointerPacket(0, Wheel: 1)));
+box.TryAdd(new(7, new PointerPacket(0, Wheel: -1)));
+Check("opposite wheel events cannot cancel each other in backlog", box.Count == 2);
+Check("wheel up retains ordering", (await box.TakeAsync(default)).Packet == new PointerPacket(0, Wheel: 1));
+Check("wheel down retains ordering", (await box.TakeAsync(default)).Packet == new PointerPacket(0, Wheel: -1));
+box.TryAdd(new(7, new PointerPacket(0, 10)));
+box.TryAdd(new(7, new PointerPacket(0, 20, Pan: 1)));
+Check("motion cannot absorb a horizontal scroll event", box.Count == 2);
+box.Clear();
 int reportId = 0, reportSize = 0, reportCount = 0, depth = 0;
 var bits = new Dictionary<(int, int), int>();
 for (int i = 0; i < map.Length;)
@@ -152,7 +161,7 @@ Check("descriptor pointer input 56 bits", bits[(2, 0x80)] == 56);
 Check("descriptor system-control input 8 bits", bits[(3, 0x80)] == 8);
 Check("descriptor consumer-control input 8 bits", bits[(4, 0x80)] == 8);
 
-Check("pointer pacing fallback 16ms", PointerPacing.FromBleConnectionInterval(0) == 16);
+Check("pointer pacing fallback permits 125Hz without queuing concurrent sends", PointerPacing.FromBleConnectionInterval(0) == 8);
 Check("pointer pacing 12 units = 15ms", PointerPacing.FromBleConnectionInterval(12) == 15);
 Check("pointer pacing 24 units = 30ms", PointerPacing.FromBleConnectionInterval(24) == 30);
 Check("pointer pacing lower clamp", PointerPacing.FromBleConnectionInterval(6) == 8);

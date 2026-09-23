@@ -955,9 +955,11 @@ public sealed class BleHidServer : IDisposable
             if (!current()) return true;
 
             var id = _approved;
-            if (id is null || !_running || !IsReady(id))
+            if (id is null || !_running || _suspended.GetValueOrDefault(id))
                 return false;
 
+            // Validate the characteristic actually being sent. Enumerating both
+            // keyboard and mouse here repeated three native snapshots per move.
             var characteristic = report.Keyboard ? _keyboard : _mouse;
             var client = Client(characteristic, id);
             if (characteristic is null || client is null)

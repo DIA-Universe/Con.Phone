@@ -4,10 +4,8 @@ namespace ConPhone.Windows;
 
 public sealed partial class MainForm
 {
-    private const int EmergencyHotkeyId = 0x4350;
     private const int ToggleHotkeyId = 0x4351;
     private const int NextHotkeyId = 0x4352;
-    private const int LockHotkeyId = 0x4353;
 
     protected override void OnHandleCreated(EventArgs e)
     {
@@ -18,10 +16,9 @@ public sealed partial class MainForm
     private void RegisterShortcutFallbacks()
     {
         if (_previewMode || !IsHandleCreated) return;
-        RegisterShortcut(EmergencyHotkeyId, _settings.EmergencyHotkey);
+        // Remote-only shortcuts belong to InputCapture's thread and lifetime.
         RegisterShortcut(ToggleHotkeyId, _settings.ToggleHotkey);
         RegisterShortcut(NextHotkeyId, _settings.NextDeviceHotkey);
-        RegisterShortcut(LockHotkeyId, _settings.LockAndReturnHotkey);
     }
 
     private void RegisterShortcut(int id, HotkeyBinding binding)
@@ -42,18 +39,11 @@ public sealed partial class MainForm
         {
             switch ((int)m.WParam)
             {
-                case EmergencyHotkeyId:
-                    ImmediateLocal();
-                    _ = ReleaseAsync();
-                    return;
                 case ToggleHotkeyId:
                     DispatchCritical(ToggleAsync);
                     return;
                 case NextHotkeyId:
                     DispatchCritical(SelectNextTrustedTargetAsync);
-                    return;
-                case LockHotkeyId:
-                    DispatchCritical(LockPhoneAndReturnAsync);
                     return;
             }
         }
@@ -63,7 +53,7 @@ public sealed partial class MainForm
     protected override void OnHandleDestroyed(EventArgs e)
     {
         if (!_previewMode)
-            foreach (var id in new[] { EmergencyHotkeyId, ToggleHotkeyId, NextHotkeyId, LockHotkeyId })
+            foreach (var id in new[] { ToggleHotkeyId, NextHotkeyId })
                 UnregisterHotKey(Handle, id);
         base.OnHandleDestroyed(e);
     }

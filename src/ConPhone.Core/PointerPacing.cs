@@ -2,7 +2,9 @@ namespace ConPhone.Core;
 
 public static class PointerPacing
 {
-    public const int FallbackIntervalMs = 16;
+    // One outstanding notification plus start-to-start pacing. A slow radio still
+    // applies backpressure; fast 7.5/15 ms links are no longer limited to 16 ms.
+    public const int FallbackIntervalMs = 8;
 
     // BluetoothLEConnectionParameters.ConnectionInterval uses 1.25 ms units.
     public static int FromBleConnectionInterval(ushort intervalUnits)

@@ -42,9 +42,9 @@ internal static class Program
             return;
         }
 
-        if (args.Length == 1 && args[0] == "--input-selftest")
+        if (args.Length == 1 && args[0] is "--input-selftest" or "--hotkey-scope-selftest")
         {
-            try { InputSelfTest.Run(); }
+            try { InputSelfTest.Run(injectOsInput: args[0] == "--input-selftest"); }
             catch (Exception ex)
             {
                 Console.Error.WriteLine(ex);

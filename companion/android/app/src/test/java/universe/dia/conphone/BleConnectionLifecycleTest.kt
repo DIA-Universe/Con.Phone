@@ -124,17 +124,89 @@ class BleConnectionLifecycleTest {
         }
     }
 
-    @Test fun reconnectBackoffCapsAndUserDisconnectCancelsIt() {
+    @Test fun reconnectBudgetStopsStormAndManualRequestResumes() {
         val h = Harness(); h.connect()
-        for (delay in listOf(1000L, 2000L, 4000L, 8000L, 10000L, 10000L)) {
+        for (delay in listOf(1000L, 2000L, 4000L, 8000L, 16000L)) {
             val count = h.links.size
             h.owner.cleanup("status=133", retry = true)
             h.advance(delay - 1); assertEquals(count, h.links.size)
             h.advance(1); assertEquals(count + 1, h.links.size)
         }
         h.owner.cleanup("status=8", retry = true)
+        assertEquals(BleConnectionState.RECOVERY_PAUSED, h.owner.state)
+        h.advance(300_000); assertEquals(6, h.links.size)
+        assertFalse(h.connect()) // Activity/ACL/START cannot bypass the pause.
+        h.owner.resume(); assertTrue(h.connect())
+        assertEquals(7, h.links.size)
+        h.owner.cleanup("status=8", retry = true)
         h.owner.userDisconnect(); h.advance(60_000)
         assertEquals(7, h.links.size)
+    }
+
+    @Test fun approvalWaitDoesNotCloseHealthyHidLink() {
+        val h = Harness(); h.connect(); h.owner.linkConnected()
+        assertTrue(h.owner.beginOperation("cccd")); h.owner.finishOperation("cccd")
+        h.owner.servicesConfigured()
+        repeat(60) {
+            assertTrue(h.owner.beginOperation("read:secret"))
+            h.owner.finishOperation("read:secret") // Includes an explicit authorization denial.
+            h.advance(5000)
+        }
+        assertEquals(BleConnectionState.WAITING_AUTHORIZATION, h.owner.state)
+        assertEquals(1, h.links.size); assertEquals(0, h.links.single().closes)
+        h.owner.ready()
+        assertEquals(BleConnectionState.CONNECTED, h.owner.state)
+    }
+
+    @Test fun rejectedStartsBackOffWithoutClosingAndAcceptedTimeoutStillCleansUp() {
+        val h = Harness(); h.connected()
+        val backoff = BleRequestBackoff()
+        for (delay in listOf(250L, 500L, 1000L, 2000L, 4000L, 5000L, 5000L)) {
+            assertTrue(h.owner.beginOperation("read:capabilities"))
+            h.owner.finishOperation("read:capabilities") // API returned false: no outstanding ATT.
+            assertEquals(delay, backoff.rejected())
+            h.advance(delay)
+        }
+        assertEquals(0, h.links.single().closes)
+        backoff.accepted(); assertEquals(250L, backoff.rejected())
+        h.owner.beginOperation("write") // Accepted, but no callback.
+        h.advance(BleConnectionLifecycle.BLE_OPERATION_TIMEOUT_MS)
+        assertEquals(1, h.links.single().closes)
+    }
+
+    @Test fun briefSuccessesDoNotResetReconnectBudget() {
+        val h = Harness(); h.connected()
+        for (delay in listOf(1000L, 2000L, 4000L, 8000L, 16000L)) {
+            h.advance(1000)
+            h.owner.cleanup("flapping", retry = true)
+            h.advance(delay)
+            h.owner.linkConnected(); h.owner.ready()
+        }
+        h.owner.cleanup("flapping", retry = true)
+        assertEquals(BleConnectionState.RECOVERY_PAUSED, h.owner.state)
+        h.advance(300_000); assertEquals(6, h.links.size)
+    }
+
+    @Test fun stableConnectionAndRadioCycleRestoreRecoveryBudget() {
+        val h = Harness(); h.connected()
+        h.owner.cleanup("disconnect", retry = true); h.advance(1000)
+        h.owner.linkConnected(); h.owner.ready()
+        h.advance(BleConnectionLifecycle.BLE_STABLE_CONNECTION_MS)
+        h.owner.cleanup("disconnect", retry = true)
+        h.advance(1000); assertEquals(3, h.links.size)
+        h.owner.radioChanged(false); h.owner.radioChanged(true)
+        h.advance(1000); assertEquals(4, h.links.size)
+    }
+
+    @Test fun explicitDisconnectThenConnectGetsFreshRetryBudget() {
+        val h = Harness(); h.connect()
+        for (delay in listOf(1000L, 2000L, 4000L, 8000L, 16000L)) {
+            h.owner.cleanup("unavailable", retry = true); h.advance(delay)
+        }
+        h.owner.userDisconnect(); h.owner.resume(); h.connect()
+        h.owner.cleanup("unavailable", retry = true)
+        assertEquals(BleConnectionState.RECONNECT_WAIT, h.owner.state)
+        h.advance(1000); assertEquals(8, h.links.size)
     }
 
     @Test fun radioOffClosesAndOnRestoresUnlessUserStopped() {

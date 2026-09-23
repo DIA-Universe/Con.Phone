@@ -2,8 +2,8 @@ package universe.dia.conphone
 
 /** All methods/callbacks run on the service's main Handler. No sleeping or OS autoConnect. */
 enum class BleConnectionState {
-    DISCONNECTED, SCANNING, CONNECTING, DISCOVERING_SERVICES, CONNECTED,
-    DISCONNECTING, RECONNECT_WAIT
+    DISCONNECTED, SCANNING, CONNECTING, DISCOVERING_SERVICES, WAITING_AUTHORIZATION, CONNECTED,
+    DISCONNECTING, RECONNECT_WAIT, RECOVERY_PAUSED
 }
 
 internal fun interface BleTimer { fun cancel() }
@@ -15,13 +15,16 @@ internal class BleConnectionLifecycle<G : Any>(
     private val close: (G) -> Unit,
     private val resetTransport: () -> Unit,
     private val reconnect: () -> Unit,
-    private val log: (String) -> Unit
+    private val log: (String) -> Unit,
+    private val recoveryPaused: () -> Unit = {}
 ) {
     companion object {
         const val BLE_CONNECT_TIMEOUT_MS = 15_000L
         const val BLE_OPERATION_TIMEOUT_MS = 10_000L
         const val BLE_CLEANUP_TIMEOUT_MS = 750L
-        const val BLE_RECONNECT_MAX_MS = 10_000L
+        const val BLE_RECONNECT_MAX_MS = 30_000L
+        const val BLE_RECONNECT_LIMIT = 5
+        const val BLE_STABLE_CONNECTION_MS = 60_000L
     }
 
     var state = BleConnectionState.DISCONNECTED
@@ -40,10 +43,11 @@ internal class BleConnectionLifecycle<G : Any>(
     private var operationTimer: BleTimer? = null
     private var cleanupTimer: BleTimer? = null
     private var retryTimer: BleTimer? = null
+    private var stableTimer: BleTimer? = null
     private var operation: String? = null
     private var operationSequence = 0L
     val idle get() = operation == null && state in setOf(
-        BleConnectionState.DISCOVERING_SERVICES, BleConnectionState.CONNECTED)
+        BleConnectionState.DISCOVERING_SERVICES, BleConnectionState.WAITING_AUTHORIZATION, BleConnectionState.CONNECTED)
 
     fun connect(open: (Long) -> G?): Boolean {
         if (stopped || !desired || !radioOn || state != BleConnectionState.DISCONNECTED) {
@@ -57,7 +61,7 @@ internal class BleConnectionLifecycle<G : Any>(
         try {
             resource = open(session) ?: error("connectGatt returned null")
             connectTimer = schedule(BLE_CONNECT_TIMEOUT_MS) {
-                if (generation == session && state != BleConnectionState.CONNECTED)
+                if (generation == session && state in setOf(BleConnectionState.CONNECTING, BleConnectionState.DISCOVERING_SERVICES))
                     cleanup("connection timeout", retry = true)
             }
         } catch (ex: Exception) {
@@ -70,17 +74,27 @@ internal class BleConnectionLifecycle<G : Any>(
     fun accepts(g: G, session: Long): Boolean =
         resource === g && generation == session && !stopped && state in setOf(
             BleConnectionState.CONNECTING, BleConnectionState.DISCOVERING_SERVICES,
-            BleConnectionState.CONNECTED)
+            BleConnectionState.WAITING_AUTHORIZATION, BleConnectionState.CONNECTED)
 
     fun linkConnected() {
         if (state == BleConnectionState.CONNECTING) transition(BleConnectionState.DISCOVERING_SERVICES)
     }
 
-    fun ready() {
+    fun servicesConfigured() {
         if (state != BleConnectionState.DISCOVERING_SERVICES) return
         connectTimer?.cancel(); connectTimer = null
-        retries = 0
+        transition(BleConnectionState.WAITING_AUTHORIZATION)
+    }
+
+    fun ready() {
+        if (state !in setOf(BleConnectionState.DISCOVERING_SERVICES, BleConnectionState.WAITING_AUTHORIZATION)) return
+        connectTimer?.cancel(); connectTimer = null
         transition(BleConnectionState.CONNECTED)
+        // Brief successes must not turn a flapping connection into an endless 1-second loop.
+        val session = generation
+        stableTimer = schedule(BLE_STABLE_CONNECTION_MS) {
+            if (generation == session && state == BleConnectionState.CONNECTED) retries = 0
+        }
     }
 
     fun beginOperation(name: String): Boolean {
@@ -108,8 +122,9 @@ internal class BleConnectionLifecycle<G : Any>(
         if (stopped) return
         desired = true
         // Manual requests may bypass backoff, but never interrupt an active attempt.
-        if (state == BleConnectionState.RECONNECT_WAIT) {
+        if (state in setOf(BleConnectionState.DISCONNECTED, BleConnectionState.RECONNECT_WAIT, BleConnectionState.RECOVERY_PAUSED)) {
             retryTimer?.cancel(); retryTimer = null
+            retries = 0
             transition(BleConnectionState.DISCONNECTED)
         }
     }
@@ -120,9 +135,13 @@ internal class BleConnectionLifecycle<G : Any>(
     }
 
     fun radioChanged(on: Boolean) {
+        val wasOn = radioOn
         radioOn = on
         if (!on) cleanup("Bluetooth OFF", retry = false)
-        else if (desired && !stopped && state == BleConnectionState.DISCONNECTED) scheduleReconnect()
+        else if (!wasOn && desired && !stopped && state == BleConnectionState.DISCONNECTED) {
+            retries = 0
+            scheduleReconnect()
+        }
     }
 
     fun shutdown() {
@@ -134,6 +153,7 @@ internal class BleConnectionLifecycle<G : Any>(
     /** CCCD is best effort and bounded; disconnect and close execute even if either throws. */
     fun cleanup(reason: String, retry: Boolean, graceful: Boolean = false) {
         retryTimer?.cancel(); retryTimer = null
+        stableTimer?.cancel(); stableTimer = null
         retryAfterCleanup = retry && desired && radioOn && !stopped
         if (state == BleConnectionState.DISCONNECTING) {
             if (!graceful) finishCleanup(resource, generation)
@@ -181,8 +201,13 @@ internal class BleConnectionLifecycle<G : Any>(
 
     private fun scheduleReconnect() {
         if (!desired || !radioOn || stopped || retryTimer != null) return
-        val delay = minOf(1000L shl retries.coerceAtMost(4), BLE_RECONNECT_MAX_MS)
-        retries = (retries + 1).coerceAtMost(4)
+        if (retries >= BLE_RECONNECT_LIMIT) {
+            transition(BleConnectionState.RECOVERY_PAUSED)
+            recoveryPaused()
+            return
+        }
+        val delay = minOf(1000L shl retries, BLE_RECONNECT_MAX_MS)
+        retries++
         val session = generation
         transition(BleConnectionState.RECONNECT_WAIT)
         log("[BLE][Session $session] reconnect scheduled: ${delay}ms")

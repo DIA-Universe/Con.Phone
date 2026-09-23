@@ -19,7 +19,8 @@ public sealed class Outbox
         lock (_gate)
         {
             if (_items.Last is { } last && last.Value.Epoch == item.Epoch &&
-                last.Value.Packet is PointerPacket a && item.Packet is PointerPacket b && a.Buttons == b.Buttons)
+                last.Value.Packet is PointerPacket a && item.Packet is PointerPacket b && a.Buttons == b.Buttons &&
+                a.Wheel == 0 && a.Pan == 0 && b.Wheel == 0 && b.Pan == 0)
             {
                 long x = (long)a.X + b.X;
                 long y = (long)a.Y + b.Y;

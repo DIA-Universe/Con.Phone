@@ -23,11 +23,12 @@ internal static class PrecisionDelay
         }
         using var signal = new EventWaitHandle(false, EventResetMode.AutoReset);
         signal.SafeWaitHandle = timer;
-        await Task.Run(() =>
-        {
-            if (WaitHandle.WaitAny([signal, token.WaitHandle]) == 1)
-                token.ThrowIfCancellationRequested();
-        }, token).ConfigureAwait(false);
+        var completed = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var wait = ThreadPool.RegisterWaitForSingleObject(signal,
+            (_, _) => completed.TrySetResult(), null, Timeout.Infinite, executeOnlyOnce: true);
+        using var cancellation = token.Register(() => completed.TrySetCanceled(token));
+        try { await completed.Task.ConfigureAwait(false); }
+        finally { wait.Unregister(null); }
     }
 
     [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
