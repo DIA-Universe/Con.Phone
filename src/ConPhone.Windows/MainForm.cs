@@ -434,6 +434,10 @@ public sealed partial class MainForm : Form
                 await RefreshPeersInBackgroundAsync();
                 Log("키보드·마우스 연결을 다시 확인했습니다. 휴대폰 Bluetooth 설정에서 PC를 선택하세요.");
             })));
+        connect.Controls.Add(Row(ActionButton("연결 복구 (앱 다시 시작)", RestartConnectionAsync)));
+        connect.Controls.Add(Help(
+            "휴대폰에서 ‘연결할 수 없음’이 반복되면 연결 복구를 누르세요. LINKO가 종료 후 다시 열리며 연결은 잠시 끊깁니다. 다시 열린 뒤 휴대폰 Bluetooth 설정에서 이 PC를 선택하세요. 페어링과 등록 정보는 유지됩니다.",
+            Secondary));
         flow.Controls.Add(connect);
 
         var devices = AutoSection();
@@ -1704,6 +1708,7 @@ public sealed partial class MainForm : Form
             : "";
 
         Log($"{ex.Message} ({_lastError}{ble})");
+        if (ex is InputTransitionBlockedException) _feedback.Text = ex.Message;
     }
 
     private void LogTransport(string text)
@@ -1794,7 +1799,7 @@ public sealed partial class MainForm : Form
         if (epoch != Volatile.Read(ref _epoch) || !_ble.Ready) return;
         _pointerScaler.Reset();
         Interlocked.Exchange(ref _bleNotReadySinceTicks, 0);
-        _input.Activate();
+        if (!await ActivateInputWhenReleasedAsync(epoch)) return;
 
         Log(
             $"휴대폰 입력 시작 · 마우스 pacing {_ble.MousePacingIntervalMs}ms · " +
@@ -1804,6 +1809,17 @@ public sealed partial class MainForm : Form
         _ = SyncLatestClipboardToPhoneSafeAsync(
             Volatile.Read(ref _epoch),
             _ble.ApprovedId);
+    }
+
+    private async Task<bool> ActivateInputWhenReleasedAsync(long epoch, bool preserveLocalModifierUps = true)
+    {
+        var target = _ble.ApprovedId;
+        var activated = await _input.ActivateWhenReleasedAsync(
+            () => !_closing && epoch == Volatile.Read(ref _epoch) && _ble.Ready && target == _ble.ApprovedId,
+            message => { Log(message); _feedback.Text = message; },
+            _lifetime.Token, preserveLocalModifierUps);
+        if (!activated && !_closing) _feedback.Text = "입력 전환을 취소했습니다. 연결 상태를 확인하세요.";
+        return activated;
     }
 
     private async Task SyncLatestClipboardToPhoneSafeAsync(
@@ -2077,7 +2093,7 @@ public sealed partial class MainForm : Form
         if (wasRemote && _ble.Ready)
         {
             _pointerScaler.Reset();
-            _input.Activate(preserveLocalModifierUps: false);
+            if (!await ActivateInputWhenReleasedAsync(Volatile.Read(ref _epoch), preserveLocalModifierUps: false)) return;
 
             _ = SyncLatestClipboardToPhoneSafeAsync(
                 Volatile.Read(ref _epoch),
@@ -2524,6 +2540,22 @@ public sealed partial class MainForm : Form
         if (showFatalError is not null) showFatalError(notice);
         else MessageBox.Show(this, notice, "LINKO 오류", MessageBoxButtons.OK, MessageBoxIcon.Error);
         RequestExit();
+    }
+
+    private Task RestartConnectionAsync() => RestartConnectionAsync(ConnectionRestart.Launch);
+
+    private Task RestartConnectionAsync(Action launch)
+    {
+        if (_closing || _exitRequested) return Task.CompletedTask;
+        // Start the waiting child before requesting shutdown. A launch failure
+        // leaves this app available, and the child cannot publish before we exit.
+        launch();
+        ImmediateLocal();
+        Log($"연결 복구 요청 · HID={_ble.Advertisement} · {_ble.DescribeSubscriptions()}");
+        _feedback.Text = "LINKO를 다시 시작합니다. 다시 열린 뒤 휴대폰 Bluetooth에서 이 PC를 연결하세요.";
+        _exitRequested = true;
+        BeginInvoke(Close);
+        return Task.CompletedTask;
     }
 
     private void RequestExit()

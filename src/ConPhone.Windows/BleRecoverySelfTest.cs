@@ -84,6 +84,36 @@ internal static class BleRecoverySelfTest
             "Explicit stop still releases both service lifetimes");
         Check(!await hid.EnsureAdvertisingAsync() && !hid.DesiredRunning,
             "Health check cannot restart explicitly stopped services");
+        await CheckExpiredServiceAsync();
         Console.WriteLine("PASS: Native advertisement fault recovery. Physical phone reconnection NOT tested.");
+    }
+
+    private static async Task CheckExpiredServiceAsync()
+    {
+        GattServiceProvider? expiredProvider = null;
+        using var server = new BleHidServer((provider, parameters) => provider.StartAdvertising(parameters),
+            provider => ReferenceEquals(provider, expiredProvider)
+                ? GattServiceProviderAdvertisementStatus.Started : provider.AdvertisementStatus);
+        server.Status += Console.WriteLine;
+        await server.StartAsync();
+        expiredProvider = Field<GattServiceProvider>(server, "_provider");
+        var expiredLifetime = Field<BleResourceLifetime>(server, "_resources");
+        // Cancellation and the OS's advertisement status update are asynchronous.
+        // Model a cancelled service whose last native status still reads Started.
+        expiredLifetime.Dispose();
+        Check(!server.ServiceAvailable && server.Advertisement == "Started",
+            "Expired service can coexist with a stale Started advertisement snapshot");
+        await server.EnsureAdvertisingAsync();
+        var replacement = Field<GattServiceProvider>(server, "_provider");
+        Check(server.ServiceAvailable && !ReferenceEquals(replacement, expiredProvider),
+            "Health check rebuilds an expired service instead of trusting stale Started status");
+        var deadline = DateTime.UtcNow.AddSeconds(5);
+        while (server.Advertisement is not ("Started" or "StartedWithoutAllAdvertisementData") && DateTime.UtcNow < deadline)
+            await Task.Delay(100);
+        Check(server.Advertisement is "Started" or "StartedWithoutAllAdvertisementData",
+            "Replacement native service reaches an advertising state");
+        await server.StartAsync();
+        Check(ReferenceEquals(replacement, Field<GattServiceProvider>(server, "_provider")),
+            "Repeated start keeps the recovered live provider intact");
     }
 }

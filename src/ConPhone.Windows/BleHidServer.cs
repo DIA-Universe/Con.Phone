@@ -330,7 +330,9 @@ public sealed class BleHidServer : IDisposable
         if (_disposed || !_desiredRunning)
             return false;
 
-        if (Advertisement is "Started" or "StartedWithoutAllAdvertisementData")
+        // OS advertisement status can lag behind resource cancellation (for
+        // example a radio transition). It cannot prove the service is still alive.
+        if (ServiceAvailable && Advertisement is "Started" or "StartedWithoutAllAdvertisementData")
         {
             return true;
         }
@@ -355,7 +357,7 @@ public sealed class BleHidServer : IDisposable
             try
             {
                 await StartAsync().ConfigureAwait(false);
-                if (Advertisement is "Started" or "StartedWithoutAllAdvertisementData")
+                if (ServiceAvailable && Advertisement is "Started" or "StartedWithoutAllAdvertisementData")
                 {
                     Interlocked.Increment(ref _autoRecoverySuccesses);
                     Interlocked.Exchange(

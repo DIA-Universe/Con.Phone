@@ -9,6 +9,7 @@ public sealed partial class MainForm
         RunCloseLifecycleScenario("application exit");
         RunCloseLifecycleScenario("fatal UI error");
         RunCloseLifecycleScenario("user close then tray exit");
+        RunCloseLifecycleScenario("connection recovery");
     }
 
     private static void RunCloseLifecycleScenario(string scenario)
@@ -27,6 +28,7 @@ public sealed partial class MainForm
         Application.ThreadException += captureError;
         var forced = false;
         var fatalNotices = 0;
+        var restartLaunches = 0;
         using var completePump = new System.Windows.Forms.Timer { Interval = 150 };
         completePump.Tick += (_, _) => { completePump.Stop(); pump.TrySetResult(); };
         using var watchdog = new System.Windows.Forms.Timer { Interval = 3000 };
@@ -46,6 +48,21 @@ public sealed partial class MainForm
             Console.WriteLine("PASS: RPC_E_DISCONNECTED keeps the window and server lifetime alive.");
             switch (scenario)
             {
+                case "connection recovery":
+                    try {
+                        form.RestartConnectionAsync(() => throw new InvalidOperationException("synthetic launch failure")).GetAwaiter().GetResult();
+                        throw new Exception("Expected launch failure");
+                    }
+                    catch (InvalidOperationException) {
+                        if (form._exitRequested || form._closing || !form.Visible)
+                            throw new InvalidOperationException("A failed restart launch closed the existing app.");
+                        Console.WriteLine("PASS: Failed recovery launch keeps the existing window available.");
+                    }
+                    form.RestartConnectionAsync(() => restartLaunches++).GetAwaiter().GetResult();
+                    form.RestartConnectionAsync(() => restartLaunches++).GetAwaiter().GetResult();
+                    if (restartLaunches != 1)
+                        throw new InvalidOperationException("Repeated recovery click launched another successor.");
+                    break;
                 case "fatal UI error":
                     form.HandleUiThreadException(new InvalidOperationException("synthetic UI bug"), _ => fatalNotices++);
                     break;

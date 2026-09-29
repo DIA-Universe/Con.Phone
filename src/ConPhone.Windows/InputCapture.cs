@@ -11,6 +11,7 @@ public sealed class InputCapture : IDisposable
     private readonly KeyboardState _keys = new();
     private readonly Thread _thread;
     private readonly TaskCompletionSource _started = new(TaskCreationOptions.RunContinuationsAsynchronously);
+    private readonly Func<int, short> _readKeyState;
 
     private Hook? _keyboardDelegate, _mouseDelegate;
     private nint _keyboardHook, _mouseHook;
@@ -46,8 +47,11 @@ public sealed class InputCapture : IDisposable
     public bool IsCapturingHotkey { get { lock (_gate) return _captureCallback is not null; } }
     public Task Started => _started.Task;
 
-    public InputCapture()
+    public InputCapture() : this(GetAsyncKeyState) { }
+
+    internal InputCapture(Func<int, short> readKeyState)
     {
+        _readKeyState = readKeyState;
         _thread = new Thread(Run) { IsBackground = true, Name = "Con.Phone.Input" };
         _thread.SetApartmentState(ApartmentState.STA);
         _thread.Start();
@@ -151,8 +155,34 @@ public sealed class InputCapture : IDisposable
 
     public void Activate(bool preserveLocalModifierUps = true)
     {
+        if (!TryActivate(preserveLocalModifierUps, out var blocked))
+            throw new InputTransitionBlockedException(blocked);
+    }
+
+    public async Task<bool> ActivateWhenReleasedAsync(
+        Func<bool> isCurrent, Action<string>? waiting, CancellationToken token,
+        bool preserveLocalModifierUps = true)
+    {
+        var deadline = Environment.TickCount64 + 2000;
+        string? previous = null;
+        while (true)
+        {
+            token.ThrowIfCancellationRequested();
+            if (!isCurrent()) return false;
+            if (TryActivate(preserveLocalModifierUps, out var blocked)) return true;
+            if (Environment.TickCount64 >= deadline)
+                throw new InputTransitionBlockedException(blocked);
+            var message = $"전환 대기 · {InputTransitionBlockedException.Describe(blocked)}을(를) 놓으면 전환합니다.";
+            if (message != previous) { previous = message; waiting?.Invoke(message); }
+            await Task.Delay(25, token);
+        }
+    }
+
+    private bool TryActivate(bool preserveLocalModifierUps, out int[] blocked)
+    {
         lock (_gate)
         {
+            ObjectDisposedException.ThrowIf(_disposed, this);
             if (!_started.Task.IsCompletedSuccessfully)
                 throw new InvalidOperationException("입력 수집이 준비되지 않았습니다.");
 
@@ -160,14 +190,17 @@ public sealed class InputCapture : IDisposable
                 HotkeyPhysicalKeys(_toggleHotkey));
             allowed.UnionWith(
                 HotkeyPhysicalKeys(_nextDeviceHotkey));
-            _localPassthroughUntilUp.Clear();
-
+            var pressed = new List<int>();
             for (int vk = 1; vk < 255; vk++)
-            {
-                if ((GetAsyncKeyState(vk) & 0x8000) == 0) continue;
-                if (!allowed.Contains(vk))
-                    throw new InvalidOperationException("입력 전환 단축키 외의 키와 마우스 버튼을 모두 놓아 주세요.");
+                if ((_readKeyState(vk) & 0x8000) != 0) pressed.Add(vk);
+            blocked = pressed.Where(vk => !allowed.Contains(vk)).ToArray();
+            if (blocked.Length != 0) return false;
 
+            // Commit mode/keyup bookkeeping only after a complete successful
+            // snapshot. A blocked attempt leaves input local and state intact.
+            _localPassthroughUntilUp.Clear();
+            foreach (var vk in pressed)
+            {
                 // Modifier down events were delivered to Windows while input was local. Once remote
                 // mode starts their key-up events must still reach Windows or Ctrl/Alt can appear stuck.
                 if (preserveLocalModifierUps &&
@@ -184,6 +217,7 @@ public sealed class InputCapture : IDisposable
             _remote = true;
         }
         UpdateRemoteShortcutFallbacks();
+        return true;
     }
 
     public void Deactivate()
@@ -239,8 +273,8 @@ public sealed class InputCapture : IDisposable
         {
             // A missed key-up must not permanently hide subsequent shortcut presses.
             _downKeys.Clear();
-            _suppressUntilUp.RemoveWhere(key => (GetAsyncKeyState(key) & 0x8000) == 0);
-            _localPassthroughUntilUp.RemoveWhere(key => (GetAsyncKeyState(key) & 0x8000) == 0);
+            _suppressUntilUp.RemoveWhere(key => (_readKeyState(key) & 0x8000) == 0);
+            _localPassthroughUntilUp.RemoveWhere(key => (_readKeyState(key) & 0x8000) == 0);
         }
     }
 

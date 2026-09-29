@@ -7,6 +7,43 @@ internal static class Program
     {
         ApplicationConfiguration.Initialize();
 
+        if (args.Length == 3 && args[0] == "--restart-after" &&
+            int.TryParse(args[1], out var parentId) && long.TryParse(args[2], out var parentStarted))
+        {
+            try {
+                if (!ConnectionRestart.WaitForExitAsync(parentId, parentStarted, TimeSpan.FromSeconds(30)).GetAwaiter().GetResult())
+                    throw new InvalidOperationException("기존 LINKO가 아직 종료되지 않았거나 종료 확인에 실패했습니다. 트레이에서 LINKO를 종료한 뒤 다시 실행해 주세요.");
+                SessionDiagnostics.Write("연결 복구 · 이전 프로세스 종료 확인, 새 Bluetooth 서비스 시작");
+                args = [];
+            }
+            catch (Exception ex) {
+                SessionDiagnostics.WriteException("Connection restart", ex);
+                MessageBox.Show(ex.Message, "LINKO 연결 복구", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                Environment.ExitCode = 1;
+                return;
+            }
+        }
+
+        if (args.Length == 1 && args[0] == "--connection-restart-selftest")
+        {
+            try { ConnectionRestartSelfTest.RunAsync().GetAwaiter().GetResult(); }
+            catch (Exception ex) { Console.Error.WriteLine(ex); Environment.ExitCode = 1; }
+            return;
+        }
+        if (args.Length == 1 && args[0] == "--connection-restart-test-parent")
+        {
+            // A bounded child owned by the restart test; never starts an app or BLE.
+            Thread.Sleep(2000);
+            return;
+        }
+
+        if (args.Length == 1 && args[0] == "--input-activation-selftest")
+        {
+            try { InputActivationSelfTest.RunAsync().GetAwaiter().GetResult(); }
+            catch (Exception ex) { Console.Error.WriteLine(ex); Environment.ExitCode = 1; }
+            return;
+        }
+
         if (args.Length == 1 && args[0] == "--peer-catalog-selftest")
         {
             try {
