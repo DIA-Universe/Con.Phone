@@ -595,6 +595,45 @@ for (var cycle = 0; cycle < 20; cycle++) {
 }
 Check("20 fake peer reconnect cycles leave no resource ownership behind", repeatedLinks.All(x => x.CloseCount == 1));
 
+// Unlike the earlier tests, Windows may reuse the SAME native session object.
+var reusedNative = new TestBleNativeLink();
+var reusedResource = new TestBleResource(reusedNative);
+var previousHid = SharedBleResource<TestBleResource>.Acquire("reused-session", reusedResource, x => x.Active);
+var previousClipboard = SharedBleResource<TestBleResource>.Acquire("reused-session", reusedResource, x => x.Active);
+var retiredGeneration = previousHid.Generation;
+reusedNative.Active = false;
+previousHid.Retire();
+Check("retiring disconnected generation invalidates every sibling observer", !previousHid.IsActive && !previousClipboard.IsActive);
+reusedNative.Active = true; // Reconnection races cleanup of old callback/CCCD state.
+var resumedHid = SharedBleResource<TestBleResource>.Acquire("reused-session", reusedResource, x => x.Active);
+Check("reactivated native object gets a fresh connection generation", resumedHid.Generation != retiredGeneration && resumedHid.IsActive);
+previousHid.Detach(); previousClipboard.Dispose(); previousClipboard.Retire();
+Check("late releases cannot Close a reactivated native object", reusedNative.Active && reusedNative.CloseCount == 0);
+var resumedClipboard = SharedBleResource<TestBleResource>.Acquire("reused-session", reusedResource, x => x.Active);
+Check("late previous cleanup cannot remove replacement generation", resumedClipboard.Generation == resumedHid.Generation);
+resumedClipboard.Detach(); resumedHid.Dispose();
+Check("incoming unsubscribe releases observations without native Close", reusedNative.Active && reusedNative.CloseCount == 0);
+
+var pollingResource = new TestBleResource();
+long priorPollingGeneration = 0;
+var pollingGenerations = new HashSet<long>();
+for (var cycle = 0; cycle < 20; cycle++) {
+    var observed = SharedBleResource<TestBleResource>.Acquire("subscription-poll", pollingResource, x => x.Active);
+    pollingGenerations.Add(observed.Generation);
+    priorPollingGeneration = observed.Generation;
+    observed.Detach(); // No Closed callback: the successful full subscriber snapshot is empty.
+}
+using (var observed = SharedBleResource<TestBleResource>.Acquire("subscription-poll", pollingResource, x => x.Active)) {
+    Check("20 absent subscription snapshots release stale ownership without closing live session",
+        pollingGenerations.Count == 20 && observed.Generation != priorPollingGeneration && pollingResource.Disposals == 0);
+}
+
+var detachedResource = new TestBleResource();
+var detachedOwners = Enumerable.Range(0, 100).Select(_ =>
+    SharedBleResource<TestBleResource>.Acquire("detach-race", detachedResource, x => x.Active)).ToArray();
+await Task.WhenAll(detachedOwners.Select(lease => Task.Run(() => { lease.Retire(); lease.Detach(); lease.Dispose(); })));
+Check("100 concurrent stale observer releases never close incoming native session", detachedResource.Disposals == 0);
+
 var resetContent = ClipboardContent.FromText("재연결 UTF-8🙂 " + new string('x', 1000));
 var resetFrames = ClipboardWireCodec.Enumerate(resetContent, 256).Select(x => ClipboardWireCodec.Decode(x)).ToArray();
 var resetWire = new ClipboardReassembler();

@@ -4,6 +4,8 @@ namespace ConPhone.Core;
 /// Own one active native BLE session per peer. WinRT may return different managed
 /// wrappers for keyboard, mouse, clipboard and request callbacks on the same link.
 /// A borrowed wrapper is never closed merely because its reference differs.
+/// Retire/Detach release incoming observations without native Close; Dispose is
+/// reserved for explicit teardown of an owned, non-retired generation.
 /// </summary>
 public static class SharedBleResource<T> where T : class, IDisposable
 {
@@ -15,6 +17,8 @@ public static class SharedBleResource<T> where T : class, IDisposable
         public readonly long Generation = Interlocked.Increment(ref _nextGeneration);
         public int References;
         public bool Closing;
+        public bool Retired;
+        public bool SuppressClose;
     }
 
     private static long _nextGeneration;
@@ -27,7 +31,7 @@ public static class SharedBleResource<T> where T : class, IDisposable
             if (!active(resource)) throw new ObjectDisposedException(nameof(resource));
             Entries.TryGetValue(peer, out var entry);
             if (entry?.Closing == true) throw new ObjectDisposedException(nameof(resource));
-            if (entry is null || !entry.Active(entry.Resource))
+            if (entry is null || entry.Retired || !entry.Active(entry.Resource))
             {
                 entry = new Entry(peer, resource, active);
                 Entries[peer] = entry;
@@ -44,18 +48,45 @@ public static class SharedBleResource<T> where T : class, IDisposable
         public T Resource => Volatile.Read(ref _entry)?.Resource
             ?? throw new ObjectDisposedException(nameof(Lease));
         public long Generation => Volatile.Read(ref _entry)?.Generation ?? 0;
-        public bool IsActive => Volatile.Read(ref _entry) is { } entry && entry.Active(entry.Resource);
+        public bool IsActive => Volatile.Read(ref _entry) is { } entry &&
+            !Volatile.Read(ref entry.Retired) && entry.Active(entry.Resource);
 
-        public void Dispose()
+        /// <summary>
+        /// Invalidate this connection generation without closing a native session
+        /// that Windows may already have reactivated for the same bonded peer.
+        /// Delayed releases from this generation cannot close its replacement.
+        /// </summary>
+        public void Retire()
+        {
+            var entry = Volatile.Read(ref _entry);
+            if (entry is null) return;
+            lock (Entries)
+            {
+                if (entry.Closing) return;
+                entry.Retired = true;
+                entry.SuppressClose = true;
+                if (Entries.TryGetValue(entry.Peer, out var current) && ReferenceEquals(current, entry))
+                    Entries.Remove(entry.Peer);
+            }
+        }
+
+        /// <summary>Release an observation of an incoming session, without native Close.</summary>
+        public void Detach() => Release(close: false);
+
+        public void Dispose() => Release(close: true);
+
+        private void Release(bool close)
         {
             var entry = Interlocked.Exchange(ref _entry, null);
             if (entry is null) return;
             lock (Entries)
             {
+                if (!close) entry.SuppressClose = true;
                 if (--entry.References != 0) return;
                 entry.Closing = true;
+                close = !entry.SuppressClose;
             }
-            try { entry.Resource.Dispose(); }
+            try { if (close) entry.Resource.Dispose(); }
             finally
             {
                 lock (Entries)

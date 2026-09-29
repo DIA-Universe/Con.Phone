@@ -4,7 +4,7 @@ PC의 키보드와 마우스를 Bluetooth로 휴대폰에서 사용하세요.
 
 **Windows / Android 1.0.6** · [다운로드](https://github.com/DIA-Universe/Con.Phone/releases/tag/v1.0.6)
 
-연결 끊김 후속 수정 빌드 **1.0.10**: [다운로드](https://github.com/DIA-Universe/Con.Phone/releases/tag/v1.0.10) · [수정 내용과 검증 범위](docs/LINKO-1.0.10.md). 1.0.9에 남아 있던 클립보드 timeout의 연결 종료, Windows 검색 신호 복구 실패의 HID 서비스 폐기, 검색 신호 오류 시 기기 목록 갱신 중단을 수정했습니다. **Windows EXE와 Android APK를 함께 업데이트하세요.** 실기기에서 끊김과 재연결 문제가 해소됐는지는 아직 확인하지 못했습니다. 1.0.7은 활성 GATT 세션을 닫는 결함이 확인된 버전입니다.
+재연결 세션 수정 빌드 **1.0.11**: [다운로드](https://github.com/DIA-Universe/Con.Phone/releases/tag/v1.0.11) · [수정 내용과 검증 범위](docs/LINKO-1.0.11.md). 이전 연결의 늦은 정리가 재활성화된 세션을 닫지 않도록 수정하고, 종료 알림을 놓쳐도 현재 구독 목록에서 오래된 연결 기록을 정리합니다. ‘연결 확인 중’ 대신 키보드·마우스 중 연결되지 않은 입력을 표시합니다. 1.0.10의 광고/클립보드 실패 격리도 포함합니다. **Windows EXE와 Android APK를 함께 업데이트하세요.** 사용자 기기에서 재연결 문제 해소 여부는 아직 확인하지 못했습니다.
 
 ## 시작하기
 

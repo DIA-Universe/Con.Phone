@@ -64,6 +64,7 @@ public sealed class BleHidServer : IDisposable
     private readonly Dictionary<SharedBleResource<GattSession>.Lease, TypedEventHandler<GattSession, GattSessionStatusChangedEventArgs>> _sessionHandlers = new();
     private long _stopGeneration;
     private long _nextSessionId;
+    private long _sessionObservationRevision;
     public event Action<bool>? RadioAvailabilityChanged;
 
     private byte[] _keyboardValue = new byte[Hid.KeyboardReportLength];
@@ -407,14 +408,7 @@ public sealed class BleHidServer : IDisposable
         TypedEventHandler<GattLocalCharacteristic, object> subscribed = (_, _) =>
         {
             if (lifetime.IsDisposed) return;
-            try
-            {
-                foreach (var client in c.SubscribedClients)
-                {
-                    if (!TryActiveSession(client, out var session, out var id) || session is null) continue;
-                    TrackSession(id, session);
-                }
-            }
+            try { RefreshSessionObservations(); }
             catch (Exception ex) when (BleNativeState.IsUnavailable(ex))
             { Status?.Invoke($"[BLE] subscription changed during disconnect HRESULT=0x{ex.HResult:X8}"); }
 
@@ -438,7 +432,9 @@ public sealed class BleHidServer : IDisposable
                 // for the same live link. Keep its canonical owner until Closed.
                 if (existing.IsActive) return;
                 _sessions.TryRemove(id, out _);
-                ReleaseSession(existing);
+                existing.Retire();
+                ReleaseSession(existing, detach: true);
+                ResetPeerInputState(id);
             }
             var lease = SharedBleResource<GattSession>.Acquire(id, session, BleNativeState.IsActive);
             session = lease.Resource;
@@ -453,13 +449,20 @@ public sealed class BleHidServer : IDisposable
                         !ReferenceEquals(current, lease)) return;
                     if (args.Status == GattSessionStatus.Closed)
                     {
+                        // A queued Closed event can arrive after Windows has
+                        // already reactivated this same native session.
+                        if (lease.IsActive || BleNativeState.IsActive(sender)) {
+                            Status?.Invoke($"[BLE][Session {generation}/HID {sessionId}] late Closed callback; retire old observation without closing Active native session");
+                        }
+                        _sessionObservationRevision++;
                         _sessions.TryRemove(id, out _);
-                        _protocol.TryRemove(id, out _);
-                        _suspended.TryRemove(id, out _);
-                        ReleaseSession(lease);
+                        lease.Retire();
+                        ReleaseSession(lease, detach: true);
+                        ResetPeerInputState(id);
                     }
                 }
                 Status?.Invoke($"[BLE][Session {generation}/HID {sessionId}] session={args.Status} status={args.Error}");
+                if (args.Status == GattSessionStatus.Closed) RefreshSessionObservations();
                 Changed?.Invoke();
             };
             _sessionHandlers.Add(lease, changed);
@@ -468,16 +471,73 @@ public sealed class BleHidServer : IDisposable
         }
     }
 
-    private void ReleaseSession(SharedBleResource<GattSession>.Lease lease)
+    private void ReleaseSession(SharedBleResource<GattSession>.Lease lease, bool detach = false)
     {
         // Called under _sessionGate; remove ownership before invoking native code.
         if (_sessionHandlers.Remove(lease, out var handler))
             try { lease.Resource.SessionStatusChanged -= handler; } catch { }
         try {
-            lease.Dispose();
+            if (detach) lease.Detach();
+            else lease.Dispose();
             Status?.Invoke($"[BLE][Session {_resources.Id}] HID session reference released");
         }
         catch (Exception ex) { Status?.Invoke($"[BLE] session Dispose HRESULT=0x{ex.HResult:X8}"); }
+    }
+
+    private void ResetPeerInputState(string id)
+    {
+        _protocol.TryRemove(id, out _);
+        _suspended.TryRemove(id, out _);
+        if (id != _approved) return;
+        _keyboardValue = new byte[Hid.KeyboardReportLength];
+        _mouseValue = new byte[Hid.MouseReportLength];
+        _systemValue = new byte[Hid.SystemReportLength];
+        _consumerValue = new byte[Hid.ConsumerReportLength];
+    }
+
+    private void RefreshSessionObservations()
+    {
+        var lifetime = _resources;
+        var revision = Interlocked.Read(ref _sessionObservationRevision);
+        var incoming = new Dictionary<string, GattSession>(StringComparer.Ordinal);
+        var complete = true;
+        foreach (var characteristic in new[] { _keyboard, _mouse, _system, _consumer })
+        {
+            if (characteristic is null) { complete = false; continue; }
+            try {
+                foreach (var client in characteristic.SubscribedClients) {
+                    try {
+                        var session = client.Session;
+                        if (session.SessionStatus == GattSessionStatus.Active)
+                            incoming[session.DeviceId.Id] = session;
+                    }
+                    catch (Exception ex) when (BleNativeState.IsUnavailable(ex)) { complete = false; }
+                }
+            }
+            catch (Exception ex) when (BleNativeState.IsUnavailable(ex)) { complete = false; }
+        }
+        lock (_sessionGate)
+        {
+            if (_disposed || lifetime.IsDisposed || !ReferenceEquals(_resources, lifetime) ||
+                revision != _sessionObservationRevision) return;
+            _sessionObservationRevision++;
+            foreach (var pair in _sessions.ToArray())
+            {
+                var inactive = !pair.Value.IsActive;
+                if (!inactive && (!complete || incoming.ContainsKey(pair.Key))) continue;
+                _sessions.TryRemove(pair.Key, out _);
+                if (inactive) pair.Value.Retire();
+                ReleaseSession(pair.Value, detach: true);
+                ResetPeerInputState(pair.Key);
+                Status?.Invoke($"[BLE][Session {lifetime.Id}] stale HID observation removed; inactive={inactive}");
+            }
+            foreach (var pair in incoming) {
+                try { TrackSession(pair.Key, pair.Value); }
+                catch (Exception ex) when (BleNativeState.IsUnavailable(ex)) {
+                    Status?.Invoke($"[BLE][Session {lifetime.Id}] incoming session changed during refresh HRESULT=0x{ex.HResult:X8}");
+                }
+            }
+        }
     }
 
     private async void RadioStateChanged(Radio sender, object args)
@@ -549,6 +609,30 @@ public sealed class BleHidServer : IDisposable
             return count;
         }
         catch (Exception ex) when (BleNativeState.IsUnavailable(ex)) { return 0; }
+    }
+
+    public string DescribeSubscriptions()
+    {
+        string Describe(string label, GattLocalCharacteristic? characteristic)
+        {
+            if (characteristic is null) return $"{label}: 서비스 없음";
+            try {
+                var clients = characteristic.SubscribedClients.ToArray();
+                var live = 0; var selected = 0;
+                foreach (var client in clients)
+                    if (TryActiveSession(client, out _, out var id)) {
+                        live++;
+                        if (id == _approved) selected++;
+                    }
+                return $"{label}: OS 구독 {clients.Length}, 활성 {live}, 선택 기기 {selected}";
+            }
+            catch (Exception ex) when (BleNativeState.IsUnavailable(ex)) {
+                return $"{label}: 조회 중 연결 변경 (0x{ex.HResult:X8})";
+            }
+        }
+        return string.Join(Environment.NewLine,
+            Describe("키보드", _keyboard), Describe("마우스", _mouse),
+            $"추적 중 세션 {_sessions.Count} · 선택 기기 준비 {Ready}");
     }
 
     private async Task CreateBatteryServiceAsync()
@@ -698,6 +782,7 @@ public sealed class BleHidServer : IDisposable
     public async Task<IReadOnlyList<Peer>> GetPeersAsync()
     {
         ThrowIfDisposed();
+        RefreshSessionObservations();
         _lastOperation = "EnumerateSubscribedClients";
 
         var trustedIds = TrustedDeviceStore.LoadAll();
@@ -733,6 +818,10 @@ public sealed class BleHidServer : IDisposable
 
             var trusted = trustedIds.Contains(id, StringComparer.Ordinal);
             var active = string.Equals(_approved, id, StringComparison.Ordinal);
+            // Each field in this row must use the same observation. Re-querying
+            // Connected separately could combine old and new subscription states.
+            var keyboard = Client(_keyboard, id) is not null;
+            var mouse = Client(_mouse, id) is not null;
 
             peers.Add(new Peer(
                 id,
@@ -740,11 +829,11 @@ public sealed class BleHidServer : IDisposable
                     ? (trusted ? "저장된 기기 (오프라인)" : "이름 확인 불가")
                     : device.Name,
                 fingerprint,
-                Client(_keyboard, id) is not null,
-                Client(_mouse, id) is not null,
+                keyboard,
+                mouse,
                 Client(_system, id) is not null,
                 device?.Pairing.IsPaired == true,
-                Client(_keyboard, id) is not null || Client(_mouse, id) is not null,
+                keyboard || mouse,
                 trusted,
                 active,
                 Client(_consumer, id) is not null));

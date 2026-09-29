@@ -78,8 +78,9 @@ public sealed partial class MainForm
             e.Graphics.FillRectangle(brush, e.Bounds);
             using var titleFont = new Font(Font, FontStyle.Bold);
             var name = (peer.Active ? "●  " : "○  ") + peer.Name;
-            var detail = !peer.Connected ? "연결 끊김 · 휴대폰의 Bluetooth를 확인하세요"
-                : !peer.Keyboard || !peer.Mouse ? "연결 확인 중 · 키보드와 마우스 준비를 기다리고 있어요"
+            var detail = !peer.Connected ? "키보드·마우스 입력 연결 없음 · 휴대폰 Bluetooth를 확인하세요"
+                : !peer.Keyboard ? "마우스 연결됨 · 키보드 입력 연결이 복구되지 않았어요"
+                : !peer.Mouse ? "키보드 연결됨 · 마우스 입력 연결이 복구되지 않았어요"
                 : peer.Active ? "현재 사용 기기 · 키보드와 마우스 준비됨"
                 : peer.Trusted ? "등록된 기기 · 선택해서 전환할 수 있어요"
                 : "새 기기 · ‘이 기기 사용’을 눌러 등록하세요";

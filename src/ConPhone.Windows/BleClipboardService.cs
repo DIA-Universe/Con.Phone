@@ -656,7 +656,8 @@ public sealed class BleClipboardService : IDisposable
                 if (_disposed || _resources.IsDisposed) return;
                 foreach (var id in _subscriptions.Keys.ToArray())
                     if (!_subscriptions[id].Lease.IsActive || !live.Any(c => SessionId(c) == id))
-                        RemoveSubscription(id, _subscriptions[id]);
+                        RemoveSubscription(id, _subscriptions[id], detach: true,
+                            retire: !_subscriptions[id].Lease.IsActive);
                 foreach (var client in live)
                 {
                     var id = SessionId(client);
@@ -667,9 +668,13 @@ public sealed class BleClipboardService : IDisposable
                     lifetime.Register(lease.Dispose);
                     var subscription = new Subscription(lease, lifetime);
                     _subscriptions.Add(id, subscription);
-                    TypedEventHandler<GattSession, GattSessionStatusChangedEventArgs> changed = (_, args) => {
+                    TypedEventHandler<GattSession, GattSessionStatusChangedEventArgs> changed = (sender, args) => {
                         if (args.Status == GattSessionStatus.Closed) {
-                            lock (_peerGate) RemoveSubscription(id, subscription);
+                            if (lease.IsActive || BleNativeState.IsActive(sender)) {
+                                Status?.Invoke($"[BLE][Session {lifetime.Id}] late clipboard Closed callback; retire old observation without closing Active native session");
+                            }
+                            lock (_peerGate) RemoveSubscription(id, subscription, detach: true, retire: true);
+                            RefreshSubscriptions();
                         }
                         Status?.Invoke($"[BLE][Session {lifetime.Id}] clipboard session={args.Status} status={args.Error}");
                     };
@@ -692,10 +697,12 @@ public sealed class BleClipboardService : IDisposable
             current.Lease.IsActive && !current.Lifetime.IsDisposed ? current : null;
     }
 
-    private void RemoveSubscription(string id, Subscription expected)
+    private void RemoveSubscription(string id, Subscription expected, bool detach = false, bool retire = false)
     {
         if (!_subscriptions.TryGetValue(id, out var current) || !ReferenceEquals(current, expected)) return;
         _subscriptions.Remove(id);
+        if (retire) current.Lease.Retire();
+        if (detach) current.Lease.Detach();
         current.Lifetime.Dispose();
         _readyAfter.TryRemove(id, out _);
         if (_bleReassemblers.TryGetValue(id, out var ble)) lock (ble) ble.ClearPending();

@@ -11,8 +11,8 @@ android {
         applicationId = "universe.dia.conphone"
         minSdk = 31
         targetSdk = 35
-        versionCode = 20
-        versionName = "1.0.10"
+        versionCode = 21
+        versionName = "1.0.11"
         testInstrumentationRunner = "universe.dia.conphone.ImageProviderSmoke"
     }
 

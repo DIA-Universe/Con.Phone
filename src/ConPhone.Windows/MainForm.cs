@@ -649,7 +649,7 @@ public sealed partial class MainForm : Form
         status.Controls.Add(SectionTitle("Bluetooth 진단"));
         status.Controls.Add(_diagnosis);
         status.Controls.Add(ActionButton("Bluetooth 다시 검사", async () =>
-            _diagnosis.Text = await BleHidServer.DiagnoseAsync()));
+            _diagnosis.Text = await BleHidServer.DiagnoseAsync() + Environment.NewLine + _ble.DescribeSubscriptions()));
         AddDisclosure(flow, "Bluetooth 진단 보기", status);
 
         var update = AutoSection(InfoWeak);
@@ -2394,6 +2394,7 @@ public sealed partial class MainForm : Form
             MouseSubscribers = _ble.MouseSubscribers,
             SystemSubscribers = _ble.SystemSubscribers,
             ConsumerSubscribers = _ble.ConsumerSubscribers,
+            SubscriptionDetails = _ble.DescribeSubscriptions(),
             ApprovedAndSubscribed = _ble.Ready,
             ServicesPausedByUser = _servicesPaused,
             TrustedDeviceCount = _ble.TrustedDeviceCount,
