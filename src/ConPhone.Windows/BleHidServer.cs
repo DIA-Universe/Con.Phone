@@ -49,6 +49,8 @@ public sealed class BleHidServer : IDisposable
     private volatile string? _approved;
     private volatile string _lastOperation = "Idle";
     private volatile bool _running;
+    private readonly Action<GattServiceProvider, GattServiceProviderAdvertisingParameters> _startAdvertising;
+    private readonly Func<GattServiceProvider, GattServiceProviderAdvertisementStatus> _advertisementStatus;
     private volatile bool _desiredRunning;
     private long _lastRecoveryAttemptTicks;
     private long _autoRecoveryAttempts;
@@ -72,7 +74,8 @@ public sealed class BleHidServer : IDisposable
     public event Action? Changed;
     public event Action<string>? Status;
 
-    public string Advertisement => BleNativeState.Read(() => _provider?.AdvertisementStatus.ToString() ?? "NotStarted", "NotStarted");
+    public string Advertisement => BleNativeState.Read(() => _provider is { } provider
+        ? _advertisementStatus(provider).ToString() : "NotStarted", "NotStarted");
     public string LastOperation => _lastOperation;
     public bool DesiredRunning => _desiredRunning;
     public long AutoRecoveryAttempts => Interlocked.Read(ref _autoRecoveryAttempts);
@@ -94,11 +97,17 @@ public sealed class BleHidServer : IDisposable
     public string? ApprovedId => _approved;
     public int TrustedDeviceCount => TrustedDeviceStore.LoadAll().Count;
     public bool IsTrustedDevice(string id) => TrustedDeviceStore.Contains(id);
-    public bool Ready => _running && _approved is { } id && IsReady(id);
+    internal bool ServiceAvailable => _running && _desiredRunning && !_resources.IsDisposed;
+    public bool Ready => ServiceAvailable && _approved is { } id && IsReady(id);
     public int MousePacingIntervalMs => PointerPacing.FallbackIntervalMs;
 
-    public BleHidServer()
+    public BleHidServer() : this((provider, parameters) => provider.StartAdvertising(parameters)) { }
+
+    internal BleHidServer(Action<GattServiceProvider, GattServiceProviderAdvertisingParameters> startAdvertising,
+        Func<GattServiceProvider, GattServiceProviderAdvertisementStatus>? advertisementStatus = null)
     {
+        _startAdvertising = startAdvertising;
+        _advertisementStatus = advertisementStatus ?? (provider => provider.AdvertisementStatus);
         _resources = new BleResourceLifetime(text => Status?.Invoke(text));
         _approved = TrustedDeviceStore.Load();
     }
@@ -123,7 +132,12 @@ public sealed class BleHidServer : IDisposable
         var stopGeneration = Interlocked.Read(ref _stopGeneration);
         await _startGate.WaitAsync();
         try { if (stopGeneration == Interlocked.Read(ref _stopGeneration)) await StartCoreAsync(); }
-        catch { CleanupServerResources(); throw; }
+        catch {
+            // An advertisement error must not remove a constructed HID service
+            // or close its sessions and change the peer's GATT table mid-link.
+            if (!_running || _resources.IsDisposed) CleanupServerResources();
+            throw;
+        }
         finally { _startGate.Release(); }
     }
 
@@ -131,6 +145,10 @@ public sealed class BleHidServer : IDisposable
     {
         ThrowIfDisposed();
         _desiredRunning = true;
+        if (ServiceAvailable && _provider is not null) {
+            RequestAdvertising();
+            return;
+        }
         if (_resources.IsDisposed) {
             CleanupServerResources();
             _resources = new BleResourceLifetime(text => Status?.Invoke(text));
@@ -159,15 +177,6 @@ public sealed class BleHidServer : IDisposable
 
         startupToken.ThrowIfCancellationRequested();
 
-        if (_provider is not null && IsAdvertising(_provider.AdvertisementStatus))
-        {
-            _running = true;
-            _lastOperation = $"Advertising:{_provider.AdvertisementStatus}";
-            Status?.Invoke($"Bluetooth HID 검색 신호 유지 중: {_provider.AdvertisementStatus}");
-            Changed?.Invoke();
-            return;
-        }
-
         if (_provider is null)
         {
             _lastOperation = "GattServiceProvider.CreateAsync";
@@ -184,15 +193,13 @@ public sealed class BleHidServer : IDisposable
                 if (IsAdvertising(args.Status))
                 {
                     _everAdvertised = true;
-                    _running = true;
                     Status?.Invoke($"검색 신호 상태: {args.Status}; 결과: {args.Error}");
                 }
                 else if (args.Status == GattServiceProviderAdvertisementStatus.Aborted)
                 {
                     if (_everAdvertised)
                     {
-                        _running = false;
-                        Status?.Invoke($"검색 신호 중단: {args.Status}; 결과: {args.Error}");
+                        Status?.Invoke($"검색 신호 중단: {args.Status}; 결과: {args.Error} · HID 서비스 유지");
                     }
                     else
                     {
@@ -265,19 +272,30 @@ public sealed class BleHidServer : IDisposable
         }
 
         startupToken.ThrowIfCancellationRequested();
+        // The startup deadline owns construction only, never retries of the
+        // discovery signal on an existing service.
+        startupCancellation.Dispose();
+        startupToken.ThrowIfCancellationRequested();
         _running = true;
+        RequestAdvertising();
+    }
+
+    private void RequestAdvertising()
+    {
+        _resources.Token.ThrowIfCancellationRequested();
+        var provider = _provider ?? throw new InvalidOperationException("HID 서비스가 준비되지 않았습니다.");
+        if (IsAdvertising(_advertisementStatus(provider))) return;
         _lastOperation = "GattServiceProvider.StartAdvertising";
 
         try
         {
-            _provider.StartAdvertising(ConnectionStartup.HidAdvertisement());
-            _lastOperation = $"AdvertisingRequested:{_provider.AdvertisementStatus}";
+            _startAdvertising(provider, ConnectionStartup.HidAdvertisement());
+            _lastOperation = $"AdvertisingRequested:{_advertisementStatus(provider)}";
         }
         catch (InvalidOperationException ex) when (IsIllegalState(ex))
         {
-            _running = false;
             throw new InvalidOperationException(
-                $"Windows Bluetooth가 현재 GATT 검색 신호를 시작할 수 없습니다. 상태:{Advertisement}. Bluetooth를 껐다 켠 뒤 다시 시도해 주세요.",
+                $"Windows Bluetooth 검색 신호 대기 중. 상태:{Advertisement}. 기존 HID 서비스는 유지합니다.",
                 ex);
         }
 
@@ -291,7 +309,6 @@ public sealed class BleHidServer : IDisposable
 
         if (Advertisement is "Started" or "StartedWithoutAllAdvertisementData")
         {
-            _running = true;
             return true;
         }
 
@@ -330,7 +347,6 @@ public sealed class BleHidServer : IDisposable
                 NotSupportedException or
                 ObjectDisposedException || BleNativeState.IsUnavailable(ex))
             {
-                _running = false;
                 _lastOperation = $"AutoRecovery:{ex.GetType().Name}:0x{ex.HResult:X8}";
                 if (attempt == 1 || attempt % 6 == 0)
                 {
@@ -484,7 +500,7 @@ public sealed class BleHidServer : IDisposable
                 await StartCoreAsync();
         }
         catch (Exception ex) {
-            CleanupServerResources();
+            if (!_running || _resources.IsDisposed) CleanupServerResources();
             Status?.Invoke($"[BLE] radio recovery {ex.GetType().Name} HRESULT=0x{ex.HResult:X8}");
         }
         finally { _startGate.Release(); }
@@ -751,7 +767,7 @@ public sealed class BleHidServer : IDisposable
             device.Pairing.IsPaired != true)
             throw new InvalidOperationException("Windows에서 페어링된 기기만 등록할 수 있습니다.");
 
-        if (!_running)
+        if (!ServiceAvailable)
             throw new InvalidOperationException("Bluetooth HID 서비스가 실행 중이 아닙니다.");
 
         for (var i = 0; i < 20 && !IsReady(id); i++)
@@ -782,7 +798,7 @@ public sealed class BleHidServer : IDisposable
         if (!TrustedDeviceStore.Contains(id))
             throw new InvalidOperationException("먼저 이 기기를 신뢰 기기로 등록해 주세요.");
 
-        if (!_running)
+        if (!ServiceAvailable)
             throw new InvalidOperationException("Bluetooth HID 서비스가 실행 중이 아닙니다.");
 
         if (!IsReady(id))
@@ -824,7 +840,7 @@ public sealed class BleHidServer : IDisposable
         ThrowIfDisposed();
 
         var id = _approved;
-        if (id is null || !_running || !IsReady(id))
+        if (id is null || !ServiceAvailable || !IsReady(id))
             throw new InvalidOperationException("승인된 휴대폰 입력 연결이 없습니다.");
 
         var keyboardClient = Client(_keyboard, id);
@@ -894,7 +910,7 @@ public sealed class BleHidServer : IDisposable
         ThrowIfDisposed();
 
         var id = _approved;
-        if (id is null || !_running || !IsReady(id))
+        if (id is null || !ServiceAvailable || !IsReady(id))
             throw new InvalidOperationException("승인된 휴대폰 입력 연결이 없습니다.");
 
         var client = Client(_consumer, id);
@@ -955,7 +971,7 @@ public sealed class BleHidServer : IDisposable
             if (!current()) return true;
 
             var id = _approved;
-            if (id is null || !_running || _suspended.GetValueOrDefault(id))
+            if (id is null || !ServiceAvailable || _suspended.GetValueOrDefault(id))
                 return false;
 
             // Validate the characteristic actually being sent. Enumerating both

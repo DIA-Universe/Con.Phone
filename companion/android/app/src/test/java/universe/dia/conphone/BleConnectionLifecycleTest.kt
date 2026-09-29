@@ -114,13 +114,68 @@ class BleConnectionLifecycleTest {
         assertEquals(BleConnectionState.CONNECTED, h.owner.state)
     }
 
-    @Test fun everyPendingOperationTimeoutClosesAndCancelsTransfer() {
+    @Test fun delayedOperationsKeepLinkAndAcceptOnlyTheirLateCallback() {
         for (op in listOf("mtu", "discovery", "cccd", "read:secret", "write")) {
             val h = Harness(); h.connected(); h.owner.beginOperation(op)
             h.advance(BleConnectionLifecycle.BLE_OPERATION_TIMEOUT_MS)
-            assertEquals(op, 1, h.links.single().closes)
-            assertEquals(op, 1, h.resets)
-            assertFalse(h.owner.finishOperation(op))
+            h.advance(300_000)
+            assertEquals(op, 0, h.links.single().closes)
+            assertEquals(op, 0, h.links.single().disconnects)
+            assertEquals(op, 0, h.resets)
+            assertFalse(h.owner.idle)
+            assertFalse(h.owner.beginOperation("new request"))
+            assertFalse(h.owner.finishOperation("wrong callback"))
+            assertTrue(h.owner.finishOperation(op))
+            assertTrue(h.owner.idle)
+        }
+    }
+
+    @Test fun discoveryDelayDoesNotTriggerConnectionTimeoutAfterLinkIsUp() {
+        val h = Harness(); h.connect(); h.owner.linkConnected()
+        h.owner.beginOperation("discovery")
+        h.advance(300_000)
+        assertEquals(1, h.links.size)
+        assertEquals(0, h.links.single().closes)
+        assertTrue(h.owner.finishOperation("discovery"))
+        h.owner.servicesConfigured(); h.owner.ready()
+        assertEquals(BleConnectionState.CONNECTED, h.owner.state)
+    }
+
+    @Test fun pausedSetupPreservesLinkUntilExplicitRetry() {
+        val h = Harness(); h.connect(); h.owner.linkConnected()
+        h.owner.beginOperation("cccd")
+        h.owner.pauseChannel("service or CCCD unavailable")
+        h.advance(300_000)
+        assertEquals(BleConnectionState.CHANNEL_PAUSED, h.owner.state)
+        assertEquals(0, h.links.single().closes)
+        assertFalse(h.owner.idle)
+        assertFalse(h.connect()) // Background starts cannot bypass the pause.
+        assertFalse(h.owner.finishOperation("cccd"))
+        val old = h.links.single()
+        h.owner.resume(); h.advance(1000)
+        assertEquals(1, old.closes)
+        assertEquals(2, h.links.size)
+    }
+
+    @Test fun realDisconnectAfterDelayedOperationClosesOnceAndReacquires() {
+        val h = Harness(); h.connected()
+        val old = h.links.single(); val session = h.owner.generation
+        h.owner.beginOperation("read:capabilities"); h.advance(10_000)
+        h.owner.cleanup("actual status=8 disconnect", retry = true)
+        h.advance(1000); h.owner.linkConnected(); h.owner.ready()
+        assertEquals(1, old.closes)
+        assertFalse(h.owner.accepts(old, session))
+        assertTrue(h.owner.beginOperation("read:capabilities"))
+        assertEquals(2, h.links.size)
+    }
+
+    @Test fun shutdownAndRadioOffStillReleasePausedAndDelayedLinks() {
+        for (paused in listOf(false, true)) {
+            val h = Harness(); h.connected(); h.owner.beginOperation("write")
+            if (paused) h.owner.pauseChannel("setup failure") else h.advance(10_000)
+            h.owner.radioChanged(false); h.owner.shutdown(); h.advance(300_000)
+            assertEquals(1, h.links.single().closes)
+            assertFalse(h.owner.accepts(h.links.single(), h.owner.generation))
         }
     }
 
@@ -158,7 +213,7 @@ class BleConnectionLifecycleTest {
         assertEquals(BleConnectionState.CONNECTED, h.owner.state)
     }
 
-    @Test fun rejectedStartsBackOffWithoutClosingAndAcceptedTimeoutStillCleansUp() {
+    @Test fun rejectedStartsBackOffAndManualRetryReleasesStalledOperation() {
         val h = Harness(); h.connected()
         val backoff = BleRequestBackoff()
         for (delay in listOf(250L, 500L, 1000L, 2000L, 4000L, 5000L, 5000L)) {
@@ -171,6 +226,8 @@ class BleConnectionLifecycleTest {
         backoff.accepted(); assertEquals(250L, backoff.rejected())
         h.owner.beginOperation("write") // Accepted, but no callback.
         h.advance(BleConnectionLifecycle.BLE_OPERATION_TIMEOUT_MS)
+        assertEquals(0, h.links.single().closes)
+        h.owner.resume() // Only a user request permits a connection cycle.
         assertEquals(1, h.links.single().closes)
     }
 

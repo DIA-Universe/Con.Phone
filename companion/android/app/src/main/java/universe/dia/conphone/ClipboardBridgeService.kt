@@ -135,22 +135,25 @@ class ClipboardBridgeService : Service() {
         return false
     }
 
-    private fun restartGatt(g: BluetoothGatt, message: String) {
+    private fun pauseGattChannel(g: BluetoothGatt, message: String) {
         if (destroyed || gatt !== g) return
-        showStatus(message)
-        bleLifecycle.cleanup(message, retry = true)
+        bleLifecycle.pauseChannel(message)
+        showStatus("$message · Bluetooth 연결 유지. 클립보드를 다시 시도하려면 연결을 눌러 주세요.")
     }
 
     private fun discoverGatt(g: BluetoothGatt) {
         if (destroyed || gatt !== g || !bleLifecycle.beginOperation("discovery")) return
         bleLog("discovering services")
         if (!runCatching { g.discoverServices() }.getOrDefault(false))
-            restartGatt(g, "PC 서비스 검색 시작 실패 · 재연결")
+            pauseGattChannel(g, "PC 클립보드 서비스 검색 시작 실패")
     }
 
     private val main = Handler(Looper.getMainLooper())
-    private fun bleLog(message: String): Int = android.util.Log.i("LINKO-BLE",
-        "[BLE][Session ${bleLifecycle.generation}] $message")
+    private fun bleLog(message: String) = recordBleDiagnostic("[BLE][Session ${bleLifecycle.generation}] $message")
+    private fun recordBleDiagnostic(message: String) {
+        android.util.Log.i("LINKO-BLE", message)
+        ConnectionDiagnostics.write(this, message)
+    }
     private val bleLifecycle: BleConnectionLifecycle<BluetoothGatt> = BleConnectionLifecycle(
         schedule = { delay, action ->
             val task = Runnable { action() }
@@ -173,8 +176,9 @@ class ClipboardBridgeService : Service() {
         close = { it.close() },
         resetTransport = { resetBleTransport() },
         reconnect = { ensureSelectedPcConnection() },
-        log = { android.util.Log.i("LINKO-BLE", it) },
-        recoveryPaused = { showStatus("반복 연결 실패 · 자동 재연결을 멈췄어요. PC의 LINKO 상태를 확인한 뒤 연결을 눌러 주세요.") }
+        log = { recordBleDiagnostic(it) },
+        recoveryPaused = { showStatus("반복 연결 실패 · 자동 재연결을 멈췄어요. PC의 LINKO 상태를 확인한 뒤 연결을 눌러 주세요.") },
+        channelDelayed = { showStatus("클립보드 응답 지연 · Bluetooth 연결 유지. 응답을 기다리거나 연결을 눌러 다시 시도하세요.") }
     )
 
     @Suppress("DEPRECATION")
@@ -286,6 +290,9 @@ class ClipboardBridgeService : Service() {
 
     override fun onCreate() {
         super.onCreate()
+        @Suppress("DEPRECATION")
+        val version = packageManager.getPackageInfo(packageName, 0).versionName
+        bleLog("service started version=$version Android=${Build.VERSION.RELEASE} SDK=${Build.VERSION.SDK_INT}")
         createNotificationChannel()
         showStatus("연결 준비 중")
         if (getSharedPreferences(CONNECTION_PREFS, MODE_PRIVATE).getBoolean(USER_DISCONNECTED, false))
@@ -372,7 +379,11 @@ class ClipboardBridgeService : Service() {
         val device = adapter.bondedDevices.firstOrNull { it.address == address }
         if (device == null) { showStatus("먼저 휴대폰 Bluetooth 설정에서 PC와 페어링해 주세요"); return }
         // A selection of the current PC is a connect request, not a forced reconnect.
-        if (gatt?.device?.address == device.address || bleLifecycle.state == BleConnectionState.CONNECTING ||
+        if (gatt?.device?.address == device.address) {
+            bleLifecycle.resume()
+            return
+        }
+        if (bleLifecycle.state == BleConnectionState.CONNECTING ||
             bleLifecycle.state == BleConnectionState.DISCOVERING_SERVICES ||
             bleLifecycle.state == BleConnectionState.DISCONNECTING) return
         getSharedPreferences(CONNECTION_PREFS, MODE_PRIVATE).edit()
@@ -430,13 +441,13 @@ class ClipboardBridgeService : Service() {
             if (!bleLifecycle.accepts(g, session) || !bleLifecycle.finishOperation("discovery")) return
             bleLog("services discovered status=$status")
             if (status != BluetoothGatt.GATT_SUCCESS) {
-                restartGatt(g, "Clipboard BLE 서비스 확인 실패 status=$status")
+                pauseGattChannel(g, "Clipboard BLE 서비스 확인 실패 status=$status")
                 return
             }
             try {
                 val service = g.getService(SERVICE_UUID) ?: run {
-                    // This can be a PC restarting its provider. Retry only this bonded PC.
-                    restartGatt(g, "선택한 PC의 LINKO 서비스 대기")
+                    // Optional clipboard service absence must not cycle the HID link.
+                    pauseGattChannel(g, "선택한 PC의 LINKO 클립보드 서비스 대기")
                     return
                 }
                 tx = service.getCharacteristic(TX_UUID)
@@ -455,7 +466,7 @@ class ClipboardBridgeService : Service() {
                 showStatus("BLE Clipboard 준비 중")
             } catch (ex: Exception) {
                 bleLog("discovery/notification exception=${ex.javaClass.simpleName}")
-                restartGatt(g, "BLE 필수 특성 또는 알림 설정 실패 · 재연결")
+                pauseGattChannel(g, "클립보드 특성 또는 알림 설정 실패")
             }
         }
 
@@ -474,7 +485,7 @@ class ClipboardBridgeService : Service() {
                 bleLifecycle.servicesConfigured()
                 secretCharacteristic?.let { readCharacteristic(g, it) }
             }
-            else restartGatt(g, "BLE 알림 등록 실패 status=$status")
+            else pauseGattChannel(g, "BLE 클립보드 알림 등록 실패 status=$status")
         }
 
         @Suppress("DEPRECATION")

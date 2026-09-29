@@ -2,6 +2,7 @@ package universe.dia.conphone
 
 object FriendlyStatus {
     fun summary(detail: String): String = when {
+        detail.contains("Bluetooth 연결 유지") -> "Bluetooth는 유지 중이에요. 클립보드 응답을 기다리고 있어요."
         detail.contains("PC를 선택") || detail.contains("PC를 다시 선택") -> "연결할 PC 선택 버튼을 눌러 주세요."
         detail.contains("실패") || detail.contains("거부") || detail.contains("시간 초과") || detail.contains("오류") ->
             "연결을 확인해 주세요. 설정에서 상세 정보를 볼 수 있어요."

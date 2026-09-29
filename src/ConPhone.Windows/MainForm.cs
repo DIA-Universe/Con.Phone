@@ -1049,7 +1049,7 @@ public sealed partial class MainForm : Form
 
         _peerTimer.Tick += (_, _) =>
         {
-            if (_ble.Advertisement is "Started" or "StartedWithoutAllAdvertisementData")
+            if (_ble.ServiceAvailable)
                 _ = RefreshPeersInBackgroundAsync();
         };
         _peerTimer.Start();
@@ -1098,7 +1098,7 @@ public sealed partial class MainForm : Form
                     await _ble.EnsureAdvertisingAsync();
 
                 if (!_servicesPaused &&
-                    _ble.Advertisement is "Started" or "StartedWithoutAllAdvertisementData" &&
+                    _ble.ServiceAvailable &&
                     _settings.ClipboardSyncEnabled &&
                     _clipboardSync is not null)
                     await _clipboardSync.EnsureHealthyAsync();

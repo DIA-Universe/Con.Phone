@@ -161,6 +161,15 @@ class MainActivity : Activity() {
             android.app.AlertDialog.Builder(this).setTitle("연결 상세 정보")
                 .setMessage(ClipboardBridgeService.latestStatus).setPositiveButton("닫기", null).show()
         }
+        button(help, "연결 진단 로그 공유") {
+            ConnectionDiagnostics.snapshot(this) { report ->
+                if (!isFinishing && !isDestroyed) startActivity(Intent.createChooser(Intent(Intent.ACTION_SEND).apply {
+                    type = "text/plain"
+                    putExtra(Intent.EXTRA_SUBJECT, "LINKO $installedVersion 연결 진단")
+                    putExtra(Intent.EXTRA_TEXT, "LINKO $installedVersion\n연결 상태와 오류 코드만 기록합니다.\n\n$report")
+                }, "연결 진단 로그 공유"))
+            }
+        }
         setContentView(scroll)
         // Explain permissions before requesting them; explicit share intents still start immediately.
         ensurePermissionsAndStart()

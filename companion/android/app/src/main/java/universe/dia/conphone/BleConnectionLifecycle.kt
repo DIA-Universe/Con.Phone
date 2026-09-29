@@ -3,7 +3,7 @@ package universe.dia.conphone
 /** All methods/callbacks run on the service's main Handler. No sleeping or OS autoConnect. */
 enum class BleConnectionState {
     DISCONNECTED, SCANNING, CONNECTING, DISCOVERING_SERVICES, WAITING_AUTHORIZATION, CONNECTED,
-    DISCONNECTING, RECONNECT_WAIT, RECOVERY_PAUSED
+    CHANNEL_PAUSED, DISCONNECTING, RECONNECT_WAIT, RECOVERY_PAUSED
 }
 
 internal fun interface BleTimer { fun cancel() }
@@ -16,7 +16,8 @@ internal class BleConnectionLifecycle<G : Any>(
     private val resetTransport: () -> Unit,
     private val reconnect: () -> Unit,
     private val log: (String) -> Unit,
-    private val recoveryPaused: () -> Unit = {}
+    private val recoveryPaused: () -> Unit = {},
+    private val channelDelayed: (String) -> Unit = {}
 ) {
     companion object {
         const val BLE_CONNECT_TIMEOUT_MS = 15_000L
@@ -45,6 +46,7 @@ internal class BleConnectionLifecycle<G : Any>(
     private var retryTimer: BleTimer? = null
     private var stableTimer: BleTimer? = null
     private var operation: String? = null
+    private var operationTimedOut = false
     private var operationSequence = 0L
     val idle get() = operation == null && state in setOf(
         BleConnectionState.DISCOVERING_SERVICES, BleConnectionState.WAITING_AUTHORIZATION, BleConnectionState.CONNECTED)
@@ -61,7 +63,7 @@ internal class BleConnectionLifecycle<G : Any>(
         try {
             resource = open(session) ?: error("connectGatt returned null")
             connectTimer = schedule(BLE_CONNECT_TIMEOUT_MS) {
-                if (generation == session && state in setOf(BleConnectionState.CONNECTING, BleConnectionState.DISCOVERING_SERVICES))
+                if (generation == session && state == BleConnectionState.CONNECTING)
                     cleanup("connection timeout", retry = true)
             }
         } catch (ex: Exception) {
@@ -74,10 +76,13 @@ internal class BleConnectionLifecycle<G : Any>(
     fun accepts(g: G, session: Long): Boolean =
         resource === g && generation == session && !stopped && state in setOf(
             BleConnectionState.CONNECTING, BleConnectionState.DISCOVERING_SERVICES,
-            BleConnectionState.WAITING_AUTHORIZATION, BleConnectionState.CONNECTED)
+            BleConnectionState.WAITING_AUTHORIZATION, BleConnectionState.CONNECTED, BleConnectionState.CHANNEL_PAUSED)
 
     fun linkConnected() {
-        if (state == BleConnectionState.CONNECTING) transition(BleConnectionState.DISCOVERING_SERVICES)
+        if (state == BleConnectionState.CONNECTING) {
+            connectTimer?.cancel(); connectTimer = null
+            transition(BleConnectionState.DISCOVERING_SERVICES)
+        }
     }
 
     fun servicesConfigured() {
@@ -100,11 +105,19 @@ internal class BleConnectionLifecycle<G : Any>(
     fun beginOperation(name: String): Boolean {
         if (!idle) return false
         operation = name
+        operationTimedOut = false
         val session = generation
         val sequence = ++operationSequence
         operationTimer = schedule(BLE_OPERATION_TIMEOUT_MS) {
-            if (generation == session && operationSequence == sequence && operation == name)
-                cleanup("operation timeout: $name", retry = true)
+            if (generation == session && operationSequence == sequence && operation == name) {
+                // A missing clipboard callback is not a link-disconnected event.
+                // Keep the slot occupied: starting another ATT operation could
+                // mistake a late callback for the new request or duplicate a write.
+                operationTimer = null
+                operationTimedOut = true
+                log("[BLE][Session $session] operation delayed: $name; keeping link")
+                channelDelayed(name)
+            }
         }
         return true
     }
@@ -113,14 +126,33 @@ internal class BleConnectionLifecycle<G : Any>(
         if (operation != name || !acceptsCurrent()) return false
         operationTimer?.cancel(); operationTimer = null
         operation = null
+        operationTimedOut = false
         return true
     }
 
     private fun acceptsCurrent() = resource?.let { accepts(it, generation) } == true
 
+    /** Setup failed on a live link. Wait for an explicit retry or real disconnect. */
+    fun pauseChannel(reason: String) {
+        if (!acceptsCurrent()) return
+        connectTimer?.cancel(); connectTimer = null
+        operationTimer?.cancel(); operationTimer = null
+        stableTimer?.cancel(); stableTimer = null
+        operation = null
+        operationTimedOut = false
+        ++operationSequence
+        transition(BleConnectionState.CHANNEL_PAUSED)
+        log("[BLE][Session $generation] clipboard paused: $reason; keeping link")
+    }
+
     fun resume() {
         if (stopped) return
         desired = true
+        if (state == BleConnectionState.CHANNEL_PAUSED || operationTimedOut) {
+            retries = 0
+            cleanup("manual clipboard retry", retry = true)
+            return
+        }
         // Manual requests may bypass backoff, but never interrupt an active attempt.
         if (state in setOf(BleConnectionState.DISCONNECTED, BleConnectionState.RECONNECT_WAIT, BleConnectionState.RECOVERY_PAUSED)) {
             retryTimer?.cancel(); retryTimer = null
@@ -163,6 +195,7 @@ internal class BleConnectionLifecycle<G : Any>(
         connectTimer?.cancel(); connectTimer = null
         operationTimer?.cancel(); operationTimer = null
         operation = null
+        operationTimedOut = false
         ++operationSequence
         transition(BleConnectionState.DISCONNECTING)
         log("[BLE][Session $generation] cleanup started: $reason")

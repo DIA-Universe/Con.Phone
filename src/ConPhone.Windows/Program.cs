@@ -14,11 +14,14 @@ internal static class Program
             return;
         }
 
-        if (args.Length == 1 && args[0] == "--ble-lifecycle-selftest")
+        if (args.Length == 1 && args[0] is "--ble-lifecycle-selftest" or "--ble-recovery-selftest")
         {
             using var testMutex = new Mutex(true, @"Local\DIAUniverse.ConPhone", out var canTest);
             if (!canTest) { Console.Error.WriteLine("Exit LINKO before the native BLE lifecycle test."); Environment.ExitCode = 1; return; }
-            try { BleLifecycleSelfTest.RunAsync().GetAwaiter().GetResult(); }
+            try {
+                if (args[0] == "--ble-recovery-selftest") BleRecoverySelfTest.RunAsync().GetAwaiter().GetResult();
+                else BleLifecycleSelfTest.RunAsync().GetAwaiter().GetResult();
+            }
             catch (Exception ex) { Console.Error.WriteLine(ex); Environment.ExitCode = 1; }
             return;
         }

@@ -102,6 +102,8 @@ public sealed class BleClipboardService : IDisposable
     private sealed record Subscription(SharedBleResource<GattSession>.Lease Lease, BleResourceLifetime Lifetime);
     private long _stopGeneration;
     private volatile bool _published;
+    private bool _prepared;
+    private readonly Action<GattServiceProvider, GattServiceProviderAdvertisingParameters> _startAdvertising;
 
     public Func<string, ClipboardContent, Task<bool>>? ReceiveContentAsync { get; set; }
     public event Action<string>? Status;
@@ -112,8 +114,10 @@ public sealed class BleClipboardService : IDisposable
         Func<bool> enabled,
         Func<int> bleImageLimitBytes,
         Func<bool> p2pRequested,
-        Func<DirectLinkConfig?> directLinkConfig)
+        Func<DirectLinkConfig?> directLinkConfig,
+        Action<GattServiceProvider, GattServiceProviderAdvertisingParameters>? startAdvertising = null)
     {
+        _startAdvertising = startAdvertising ?? ((provider, parameters) => provider.StartAdvertising(parameters));
         _resources = new BleResourceLifetime(text => Status?.Invoke(text));
         _approvedDeviceId = approvedDeviceId;
         _trustedDevice = trustedDevice;
@@ -215,6 +219,7 @@ public sealed class BleClipboardService : IDisposable
         direct.ReadRequested += DirectLinkReadRequested;
         lifetime.Register(() => direct.ReadRequested -= DirectLinkReadRequested);
         lifetime.Token.ThrowIfCancellationRequested();
+        _prepared = true;
     }
 
     public async Task StartAsync()
@@ -227,7 +232,10 @@ public sealed class BleClipboardService : IDisposable
             _resources.Token.ThrowIfCancellationRequested();
             StartAdvertising();
         }
-        catch { CleanupServerResources(); throw; }
+        catch {
+            if (!_prepared || _resources.IsDisposed) CleanupServerResources();
+            throw;
+        }
         finally { _lifecycleGate.Release(); }
     }
 
@@ -235,7 +243,7 @@ public sealed class BleClipboardService : IDisposable
     {
         if (_provider is null || Running) return;
 
-        _provider.StartAdvertising(ConnectionStartup.ClipboardAdvertisement());
+        _startAdvertising(_provider, ConnectionStartup.ClipboardAdvertisement());
         // Non-connectable publication can keep AdvertisementStatus at Created.
         // It is already registered; repeating StartAdvertising then throws E_ILLEGAL_METHOD_CALL.
         _published = true;
@@ -697,6 +705,7 @@ public sealed class BleClipboardService : IDisposable
 
     private void CleanupServerResources()
     {
+        _prepared = false;
         _resources.Dispose();
         _published = false;
         CancelPendingSends("BLE service cleanup");
