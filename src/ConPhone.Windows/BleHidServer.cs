@@ -22,16 +22,36 @@ public sealed record Peer(
     bool Connected,
     bool Trusted = false,
     bool Active = false,
-    bool ConsumerControl = false)
+    bool ConsumerControl = false,
+    bool? BluetoothConnected = null,
+    bool Suspended = false)
 {
+    public bool InputReady => Keyboard && Mouse && !Suspended;
+    public string ConnectionDetail =>
+        (Connected || BluetoothConnected == true ? "Bluetooth 연결됨"
+            : BluetoothConnected == false ? "Bluetooth 연결 안 됨" : "Bluetooth 상태 확인 중") + " · " +
+        (Suspended ? "휴대폰이 입력을 일시 중지함"
+            : Keyboard && Mouse ? (Active ? "현재 사용 기기 · 입력 준비됨"
+                : Trusted ? "입력 준비됨 · 선택해서 전환" : "입력 준비됨 · ‘이 기기 사용’을 누르세요")
+            : Keyboard ? "마우스 입력 연결 대기"
+            : Mouse ? "키보드 입력 연결 대기" : "키보드·마우스 입력 연결 대기");
+
+    internal Peer WithInput(PeerInput input) => this with {
+        Keyboard = input.Keyboard, Mouse = input.Mouse, SystemControl = input.System,
+        ConsumerControl = input.Consumer, Connected = input.Keyboard || input.Mouse,
+        Suspended = input.Suspended
+    };
+
     public override string ToString() =>
         $"{(Active ? "▶ " : "")}{Name} [{Fingerprint}]  " +
         $"키보드:{Keyboard} 마우스:{Mouse} 잠금:{SystemControl} 미디어:{ConsumerControl} " +
-        $"등록:{Trusted} 연결:{Connected}";
+        $"등록:{Trusted} Bluetooth:{BluetoothConnected?.ToString() ?? "Unknown"} HID:{Connected} 일시중지:{Suspended}";
 }
 
 public sealed class BleHidServer : IDisposable
 {
+    internal const string ConnectedProperty = "System.Devices.Aep.IsConnected";
+    private static readonly string[] PeerProperties = [ConnectedProperty];
     private GattServiceProvider? _provider;
     private GattServiceProvider? _batteryProvider;
     private GattLocalCharacteristic? _keyboard, _mouse, _system, _consumer;
@@ -541,7 +561,7 @@ public sealed class BleHidServer : IDisposable
             // for access and must not run in the 5-second background refresh.
             _lastOperation = "DeviceInformation.CreateFromIdAsync";
             var info = await DeviceInformation.CreateFromIdAsync(
-                    id, [], DeviceInformationKind.AssociationEndpoint)
+                    id, PeerProperties, DeviceInformationKind.AssociationEndpoint)
                 .AsTask(timeout.Token).ConfigureAwait(false);
             if (info is not null && !_disposed && !_resources.IsDisposed) _deviceInfo[id] = info;
             else _deviceInfo.TryRemove(id, out _);
@@ -579,12 +599,21 @@ public sealed class BleHidServer : IDisposable
             try {
                 var clients = characteristic.SubscribedClients.ToArray();
                 var live = 0; var selected = 0;
-                foreach (var client in clients)
+                var states = new List<string>();
+                foreach (var client in clients) {
                     if (TryActiveSession(client, out _, out var id)) {
                         live++;
                         if (id == _approved) selected++;
                     }
-                return $"{label}: OS 구독 {clients.Length}, 활성 {live}, 선택 기기 {selected}";
+                    try {
+                        var session = client.Session;
+                        var fingerprint = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(session.DeviceId.Id)))[..8];
+                        states.Add($"{fingerprint}={session.SessionStatus}");
+                    }
+                    catch (Exception ex) when (BleNativeState.IsUnavailable(ex)) { states.Add($"unavailable=0x{ex.HResult:X8}"); }
+                }
+                return $"{label}: OS 구독 {clients.Length}, 활성 {live}, 선택 기기 {selected}" +
+                    (states.Count > 0 ? $" [{string.Join(", ", states)}]" : "");
             }
             catch (Exception ex) when (BleNativeState.IsUnavailable(ex)) {
                 return $"{label}: 조회 중 연결 변경 (0x{ex.HResult:X8})";
@@ -593,6 +622,14 @@ public sealed class BleHidServer : IDisposable
         return string.Join(Environment.NewLine,
             Describe("키보드", _keyboard), Describe("마우스", _mouse),
             $"추적 중 세션 {_sessions.Count} · 선택 기기 준비 {Ready}");
+    }
+
+    public async Task<string> DescribePeerStatesAsync()
+    {
+        var peers = await GetPeersAsync().ConfigureAwait(false);
+        return string.Join(Environment.NewLine, peers.Select(peer =>
+            $"기기 {peer.Fingerprint}: Windows Bluetooth={peer.BluetoothConnected?.ToString() ?? "Unknown"}, " +
+            $"K={peer.Keyboard}, M={peer.Mouse}, 일시중지={peer.Suspended}, 선택={peer.Active}"));
     }
 
     private async Task CreateBatteryServiceAsync()
@@ -754,20 +791,25 @@ public sealed class BleHidServer : IDisposable
         // reverse connection, GATT discovery, pairing or session ownership.
         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(3));
         var devices = await DeviceInformation.FindAllAsync(
-            BluetoothLEDevice.GetDeviceSelectorFromPairingState(true), [],
+            BluetoothLEDevice.GetDeviceSelectorFromPairingState(true), PeerProperties,
             DeviceInformationKind.AssociationEndpoint).AsTask(timeout.Token).ConfigureAwait(false);
         return devices.Where(device => device.Pairing.IsPaired)
-            .Select(device => new PeerDevice(device.Id, device.Name, true)).ToArray();
+            .Select(ToPeerDevice).ToArray();
     }
+
+    private static PeerDevice ToPeerDevice(DeviceInformation device) => new(
+        device.Id, device.Name, device.Pairing.IsPaired,
+        device.Properties.TryGetValue(ConnectedProperty, out var value) && value is bool connected
+            ? connected : null);
 
     private async Task<PeerDevice?> ReadPeerDeviceAsync(string id)
     {
         await ReadDeviceInfoAsync(id).ConfigureAwait(false);
         return _deviceInfo.TryGetValue(id, out var device)
-            ? new PeerDevice(id, device.Name, device.Pairing.IsPaired) : null;
+            ? ToPeerDevice(device) : null;
     }
 
-    private IReadOnlyDictionary<string, PeerInput> ReadPeerInputs()
+    internal IReadOnlyDictionary<string, PeerInput> ReadPeerInputs()
     {
         var inputs = new Dictionary<string, PeerInput>(StringComparer.Ordinal);
         var characteristics = new[] { _keyboard, _mouse, _system, _consumer };
@@ -780,7 +822,7 @@ public sealed class BleHidServer : IDisposable
                 foreach (var client in characteristic.SubscribedClients)
                 {
                     if (!TryActiveSession(client, out _, out var id)) continue;
-                    var input = inputs.GetValueOrDefault(id) ?? new PeerInput();
+                    var input = inputs.GetValueOrDefault(id) ?? new PeerInput(Suspended: _suspended.GetValueOrDefault(id));
                     inputs[id] = report switch {
                         0 => input with { Keyboard = true },
                         1 => input with { Mouse = true },

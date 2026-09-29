@@ -4,7 +4,7 @@ PC의 키보드와 마우스를 Bluetooth로 휴대폰에서 사용하세요.
 
 **Windows / Android 1.0.6** · [다운로드](https://github.com/DIA-Universe/Con.Phone/releases/tag/v1.0.6)
 
-목록 누락 수정 빌드 **1.0.12**: [다운로드](https://github.com/DIA-Universe/Con.Phone/releases/tag/v1.0.12) · [수정 내용과 검증 범위](docs/LINKO-1.0.12.md). **1.0.11 사용 후 휴대폰 목록 누락이 신고되어 해당 버전 사용을 권장하지 않습니다.** 목록 조회 중 세션 정리를 제거하고, Windows에 페어링된 기기는 HID 입력이 끊겨도 표시합니다. 현재 수정은 PC에 적용되므로 **Windows EXE를 교체하면 됩니다.** Android 연결 코드는 1.0.10/1.0.11과 같으며 APK는 버전만 맞췄습니다. 실제 휴대폰 재연결과 끊김 해소 여부는 아직 확인하지 못했습니다.
+연결 상태 판정 수정 빌드 **1.0.13**: [다운로드](https://github.com/DIA-Universe/Con.Phone/releases/tag/v1.0.13) · [수정 내용과 검증 범위](docs/LINKO-1.0.13.md). Windows의 실제 Bluetooth 연결 상태와 키보드·마우스 입력 준비 상태를 따로 읽고 표시합니다. HID 상태는 기기 이름 조회를 기다리지 않고 갱신합니다. **Windows EXE를 교체하면 됩니다.** Android 연결 코드는 그대로이며 APK는 버전만 맞췄습니다. **실제 휴대폰의 끊김과 입력 재연결 문제는 아직 해결을 확인하지 못했습니다.** 1.0.12의 목록 누락 수정도 포함되며, 목록 누락이 신고된 1.0.11 사용은 권장하지 않습니다.
 
 ## 시작하기
 

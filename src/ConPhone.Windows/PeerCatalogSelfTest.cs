@@ -86,10 +86,53 @@ internal static class PeerCatalogSelfTest
         Check((await removable.GetAsync()).Count == 0,
             "Successful empty query removes unpaired candidates that were never observed or trusted");
 
+        paired = [new("link-only", "Test phone", true, false)];
+        enumerationFails = false;
+        inputs = new Dictionary<string, PeerInput>();
+        var connection = new PeerCatalog(
+            () => enumerationFails ? Task.FromException<IReadOnlyList<PeerDevice>>(new COMException("synthetic read failure"))
+                : Task.FromResult(paired),
+            _ => Task.FromResult<PeerDevice?>(null), () => [], () => null, () => inputs, _ => { });
+        var disconnected = (await connection.GetAsync()).Single();
+        Check(disconnected.BluetoothConnected == false && !disconnected.InputReady &&
+            disconnected.ConnectionDetail.StartsWith("Bluetooth 연결 안 됨"),
+            "Paired device reports disconnected when Windows link state is false");
+        paired = [new("link-only", "Test phone", true, true)];
+        var connected = (await connection.GetAsync()).Single();
+        Check(connected.BluetoothConnected == true && !connected.Connected && !connected.InputReady &&
+            connected.ConnectionDetail.StartsWith("Bluetooth 연결됨") && connected.ConnectionDetail.Contains("입력 연결 대기"),
+            "Windows reconnection updates display even without HID; input is still not ready");
+        enumerationFails = true;
+        var unknown = (await connection.GetAsync()).Single();
+        Check(unknown.BluetoothConnected is null && unknown.ConnectionDetail.StartsWith("Bluetooth 상태 확인 중") &&
+            unknown.Name == connected.Name,
+            "Failed refresh preserves candidate but clears old Bluetooth connected status");
+        enumerationFails = false;
+        paired = [new("link-only", "Test phone", true, false)];
+        var offlineAgain = (await connection.GetAsync()).Single();
+        Check(offlineAgain.BluetoothConnected == false && !offlineAgain.InputReady,
+            "Subsequent disconnect replaces connected state");
+        inputs = new Dictionary<string, PeerInput> { ["link-only"] = new(true, true) };
+        paired = [new("link-only", "Test phone", true)];
+        var hidReady = (await connection.GetAsync()).Single();
+        Check(hidReady.BluetoothConnected is null && hidReady.InputReady && hidReady.ConnectionDetail.StartsWith("Bluetooth 연결됨"),
+            "Live HID proves input readiness even if optional OS metadata is missing");
+        var suspended = hidReady.WithInput(new PeerInput(true, true, Suspended: true));
+        Check(!suspended.InputReady && suspended.ConnectionDetail.Contains("일시 중지"),
+            "HID suspend cannot be presented as input ready");
+        var recovered = suspended.WithInput(new PeerInput(true, true));
+        Check(recovered.InputReady && !recovered.ConnectionDetail.Contains("일시 중지"),
+            "Input snapshot clears suspend without waiting for metadata refresh");
+        var dropped = recovered.WithInput(new PeerInput());
+        Check(!dropped.InputReady && !dropped.Connected && dropped.ConnectionDetail.Contains("입력 연결 대기"),
+            "Input-only refresh removes stale ready state without a metadata query");
+
         // Exercise the actual read-only WinRT selector on this PC. It does not
         // substitute for testing the user's phone or a physical HID reconnect.
         var native = await BleHidServer.ReadPairedDevicesAsync();
         Check(native.All(peer => peer.Paired), $"Native paired-only enumeration completed ({native.Count} candidates)");
+        Console.WriteLine($"Native Bluetooth metadata: connected={native.Count(peer => peer.BluetoothConnected == true)}, " +
+            $"disconnected={native.Count(peer => peer.BluetoothConnected == false)}, unknown={native.Count(peer => peer.BluetoothConnected is null)}");
         using var server = new BleHidServer();
         var before = server.DescribeSubscriptions();
         var nativePeers = await server.GetPeersAsync();

@@ -78,14 +78,7 @@ public sealed partial class MainForm
             e.Graphics.FillRectangle(brush, e.Bounds);
             using var titleFont = new Font(Font, FontStyle.Bold);
             var name = (peer.Active ? "●  " : "○  ") + peer.Name;
-            var detail = !peer.Connected ? (peer.Paired
-                    ? "Windows 페어링됨 · 휴대폰의 키보드·마우스 입력 연결 대기"
-                    : "저장된 기기 · 현재 입력 연결 없음")
-                : !peer.Keyboard ? "마우스 연결됨 · 키보드 입력 연결이 복구되지 않았어요"
-                : !peer.Mouse ? "키보드 연결됨 · 마우스 입력 연결이 복구되지 않았어요"
-                : peer.Active ? "현재 사용 기기 · 키보드와 마우스 준비됨"
-                : peer.Trusted ? "등록된 기기 · 선택해서 전환할 수 있어요"
-                : "새 기기 · ‘이 기기 사용’을 눌러 등록하세요";
+            var detail = peer.ConnectionDetail;
             TextRenderer.DrawText(e.Graphics, name, titleFont,
                 new Rectangle(e.Bounds.X + 14, e.Bounds.Y + 9, e.Bounds.Width - 28, 24),
                 selected ? BrandPressed : TextColor, TextFormatFlags.EndEllipsis);

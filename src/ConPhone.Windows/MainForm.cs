@@ -652,7 +652,8 @@ public sealed partial class MainForm : Form
         status.Controls.Add(SectionTitle("Bluetooth 진단"));
         status.Controls.Add(_diagnosis);
         status.Controls.Add(ActionButton("Bluetooth 다시 검사", async () =>
-            _diagnosis.Text = await BleHidServer.DiagnoseAsync() + Environment.NewLine + _ble.DescribeSubscriptions()));
+            _diagnosis.Text = await BleHidServer.DiagnoseAsync() + Environment.NewLine + _ble.DescribeSubscriptions() +
+                Environment.NewLine + await _ble.DescribePeerStatesAsync()));
         AddDisclosure(flow, "Bluetooth 진단 보기", status);
 
         var update = AutoSection(InfoWeak);
@@ -954,6 +955,10 @@ public sealed partial class MainForm : Form
 
         _ble.Changed += () =>
         {
+            Post(() => {
+                RefreshPeerInputStates();
+                _ = RefreshPeersInBackgroundAsync();
+            });
             if (!_input.IsRemote)
                 return;
 
@@ -971,6 +976,7 @@ public sealed partial class MainForm : Form
 
         _timer.Tick += (_, _) =>
         {
+            RefreshPeerInputStates();
             var connectedClipboardTarget = _clipboardSync?.ActiveTargetConnected == true ? _ble.ApprovedId : null;
             if (connectedClipboardTarget != _lastConnectedClipboardTarget)
             {
@@ -1025,10 +1031,14 @@ public sealed partial class MainForm : Form
             }
 
             var emergency = HotkeyCatalog.Display(_settings.EmergencyHotkey);
+            var targetPeer = _peers.Items.OfType<Peer>().FirstOrDefault(peer => peer.Active)
+                ?? _peers.SelectedItem as Peer;
             _state.Text = _input.IsRemote
                 ? $"휴대폰 조작 중 · {emergency}로 즉시 복귀"
                 : _servicesPaused ? "이 PC 사용 중  ·  휴대폰 연결을 일시 중지했어요"
                 : _ble.Ready ? "이 PC 사용 중  ·  휴대폰으로 전환할 준비가 되었어요"
+                : targetPeer is { InputReady: false } && (targetPeer.Connected || targetPeer.BluetoothConnected == true)
+                    ? $"이 PC 사용 중  ·  {targetPeer.ConnectionDetail}"
                 : _ble.KeyboardSubscribers == 0 || _ble.MouseSubscribers == 0
                     ? "이 PC 사용 중  ·  휴대폰 Bluetooth의 키보드·마우스 연결 대기"
                     : "이 PC 사용 중  ·  목록에서 사용할 휴대폰을 선택하세요";
@@ -1052,7 +1062,7 @@ public sealed partial class MainForm : Form
 
         _peerTimer.Tick += (_, _) =>
         {
-            if (_ble.ServiceAvailable)
+            if (!_closing)
                 _ = RefreshPeersInBackgroundAsync();
         };
         _peerTimer.Start();
@@ -2400,6 +2410,7 @@ public sealed partial class MainForm : Form
             SystemSubscribers = _ble.SystemSubscribers,
             ConsumerSubscribers = _ble.ConsumerSubscribers,
             SubscriptionDetails = _ble.DescribeSubscriptions(),
+            PeerConnectionStates = await _ble.DescribePeerStatesAsync(),
             ApprovedAndSubscribed = _ble.Ready,
             ServicesPausedByUser = _servicesPaused,
             TrustedDeviceCount = _ble.TrustedDeviceCount,
@@ -2463,6 +2474,22 @@ public sealed partial class MainForm : Form
 
                 Log("절전 복귀 · Bluetooth HID/Clipboard 검색 신호를 다시 확인했습니다.");
             });
+        }
+    }
+
+    private void RefreshPeerInputStates()
+    {
+        if (_closing || IsDisposed || _peers.Items.Count == 0) return;
+        ApplyPeerInputStates(_ble.ReadPeerInputs());
+    }
+
+    private void ApplyPeerInputStates(IReadOnlyDictionary<string, PeerInput> inputs)
+    {
+        for (var i = 0; i < _peers.Items.Count; i++)
+        {
+            if (_peers.Items[i] is not Peer peer) continue;
+            var current = peer.WithInput(inputs.GetValueOrDefault(peer.Id) ?? new PeerInput());
+            if (current != peer) _peers.Items[i] = current;
         }
     }
 

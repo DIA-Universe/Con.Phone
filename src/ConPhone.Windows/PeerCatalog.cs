@@ -3,9 +3,9 @@ using System.Text;
 
 namespace ConPhone.Windows;
 
-internal sealed record PeerDevice(string Id, string Name, bool Paired);
+internal sealed record PeerDevice(string Id, string Name, bool Paired, bool? BluetoothConnected = null);
 internal sealed record PeerInput(bool Keyboard = false, bool Mouse = false,
-    bool System = false, bool Consumer = false);
+    bool System = false, bool Consumer = false, bool Suspended = false);
 
 // Device visibility is independent of an active HID subscription. This catalog
 // only reads metadata and input snapshots; it owns no GATT session or connection.
@@ -30,10 +30,16 @@ internal sealed class PeerCatalog(
         {
             var trusted = readTrusted();
             var approved = readApproved();
+            // Names/candidates may survive a failed query. Link state must come
+            // from this refresh; never reuse a previous "connected" value.
+            var linkStates = new Dictionary<string, bool?>(StringComparer.Ordinal);
             // Keep incoming devices visible for this process even if their first
             // HID subscription disappears before the user can approve them.
             _observed.UnionWith(readInputs().Keys);
-            try { _paired = await readPaired().ConfigureAwait(false); }
+            try {
+                _paired = await readPaired().ConfigureAwait(false);
+                foreach (var device in _paired) linkStates[device.Id] = device.BluetoothConnected;
+            }
             catch (Exception ex) {
                 log($"[BLE][Peers] paired metadata unavailable HRESULT=0x{ex.HResult:X8}; keeping previous candidates");
             }
@@ -46,8 +52,10 @@ internal sealed class PeerCatalog(
             foreach (var id in ids.Where(id => !pairedIds.Contains(id)))
             {
                 try {
-                    if (await readDevice(id).ConfigureAwait(false) is { } device)
+                    if (await readDevice(id).ConfigureAwait(false) is { } device) {
                         _metadata[id] = device;
+                        linkStates[id] = device.BluetoothConnected;
+                    }
                 }
                 catch (Exception ex) {
                     log($"[BLE][Peers] device metadata unavailable HRESULT=0x{ex.HResult:X8}; retaining row");
@@ -67,10 +75,14 @@ internal sealed class PeerCatalog(
                         ? (isTrusted ? "저장된 기기 (오프라인)" : "이름 확인 불가") : device.Name,
                     Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(id)))[..8],
                     input.Keyboard, input.Mouse, input.System, device?.Paired == true,
-                    input.Keyboard || input.Mouse, isTrusted, id == approved, input.Consumer);
+                    input.Keyboard || input.Mouse, isTrusted, id == approved, input.Consumer,
+                    linkStates.GetValueOrDefault(id), input.Suspended);
             }).OrderByDescending(peer => peer.Active).ThenByDescending(peer => peer.Trusted)
                 .ThenBy(peer => peer.Name, StringComparer.CurrentCultureIgnoreCase).ToArray();
-            var summary = $"[BLE][Peers] paired={_paired.Count} trusted={trusted.Count} incoming={inputs.Count} rows={peers.Length}";
+            var summary = $"[BLE][Peers] paired={_paired.Count} trusted={trusted.Count} incoming={inputs.Count} rows={peers.Length} " +
+                $"bluetoothConnected={peers.Count(peer => peer.BluetoothConnected == true)} " +
+                $"bluetoothUnknown={peers.Count(peer => peer.BluetoothConnected is null)} " +
+                string.Join("; ", peers.Select(peer => $"{peer.Fingerprint}:BT={peer.BluetoothConnected?.ToString() ?? "Unknown"},K={peer.Keyboard},M={peer.Mouse},suspended={peer.Suspended},selected={peer.Active}"));
             if (summary != _lastSummary) { _lastSummary = summary; log(summary); }
             return peers;
         }

@@ -9,7 +9,10 @@ internal static class Program
 
         if (args.Length == 1 && args[0] == "--peer-catalog-selftest")
         {
-            try { PeerCatalogSelfTest.RunAsync().GetAwaiter().GetResult(); }
+            try {
+                PeerCatalogSelfTest.RunAsync().GetAwaiter().GetResult();
+                MainForm.RunPeerPresentationSelfTest();
+            }
             catch (Exception ex) { Console.Error.WriteLine(ex); Environment.ExitCode = 1; }
             return;
         }
