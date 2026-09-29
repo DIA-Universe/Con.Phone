@@ -45,6 +45,7 @@ public sealed class BleHidServer : IDisposable
     private readonly SemaphoreSlim _deviceGate = new(1, 1);
     private readonly SemaphoreSlim _recoveryGate = new(1, 1);
     private readonly SemaphoreSlim _startGate = new(1, 1);
+    private readonly PeerCatalog _peerCatalog;
 
     private volatile string? _approved;
     private volatile string _lastOperation = "Idle";
@@ -64,7 +65,6 @@ public sealed class BleHidServer : IDisposable
     private readonly Dictionary<SharedBleResource<GattSession>.Lease, TypedEventHandler<GattSession, GattSessionStatusChangedEventArgs>> _sessionHandlers = new();
     private long _stopGeneration;
     private long _nextSessionId;
-    private long _sessionObservationRevision;
     public event Action<bool>? RadioAvailabilityChanged;
 
     private byte[] _keyboardValue = new byte[Hid.KeyboardReportLength];
@@ -111,6 +111,8 @@ public sealed class BleHidServer : IDisposable
         _advertisementStatus = advertisementStatus ?? (provider => provider.AdvertisementStatus);
         _resources = new BleResourceLifetime(text => Status?.Invoke(text));
         _approved = TrustedDeviceStore.Load();
+        _peerCatalog = new PeerCatalog(ReadPairedDevicesAsync, ReadPeerDeviceAsync,
+            TrustedDeviceStore.LoadAll, () => _approved, ReadPeerInputs, text => Status?.Invoke(text));
     }
 
     private static Guid Uuid(ushort n) => new($"0000{n:x4}-0000-1000-8000-00805f9b34fb");
@@ -408,7 +410,11 @@ public sealed class BleHidServer : IDisposable
         TypedEventHandler<GattLocalCharacteristic, object> subscribed = (_, _) =>
         {
             if (lifetime.IsDisposed) return;
-            try { RefreshSessionObservations(); }
+            try {
+                foreach (var client in c.SubscribedClients)
+                    if (TryActiveSession(client, out var session, out var id) && session is not null)
+                        TrackSession(id, session);
+            }
             catch (Exception ex) when (BleNativeState.IsUnavailable(ex))
             { Status?.Invoke($"[BLE] subscription changed during disconnect HRESULT=0x{ex.HResult:X8}"); }
 
@@ -452,9 +458,9 @@ public sealed class BleHidServer : IDisposable
                         // A queued Closed event can arrive after Windows has
                         // already reactivated this same native session.
                         if (lease.IsActive || BleNativeState.IsActive(sender)) {
-                            Status?.Invoke($"[BLE][Session {generation}/HID {sessionId}] late Closed callback; retire old observation without closing Active native session");
+                            Status?.Invoke($"[BLE][Session {generation}/HID {sessionId}] late Closed callback ignored; native session already Active");
+                            return;
                         }
-                        _sessionObservationRevision++;
                         _sessions.TryRemove(id, out _);
                         lease.Retire();
                         ReleaseSession(lease, detach: true);
@@ -462,7 +468,6 @@ public sealed class BleHidServer : IDisposable
                     }
                 }
                 Status?.Invoke($"[BLE][Session {generation}/HID {sessionId}] session={args.Status} status={args.Error}");
-                if (args.Status == GattSessionStatus.Closed) RefreshSessionObservations();
                 Changed?.Invoke();
             };
             _sessionHandlers.Add(lease, changed);
@@ -493,51 +498,6 @@ public sealed class BleHidServer : IDisposable
         _mouseValue = new byte[Hid.MouseReportLength];
         _systemValue = new byte[Hid.SystemReportLength];
         _consumerValue = new byte[Hid.ConsumerReportLength];
-    }
-
-    private void RefreshSessionObservations()
-    {
-        var lifetime = _resources;
-        var revision = Interlocked.Read(ref _sessionObservationRevision);
-        var incoming = new Dictionary<string, GattSession>(StringComparer.Ordinal);
-        var complete = true;
-        foreach (var characteristic in new[] { _keyboard, _mouse, _system, _consumer })
-        {
-            if (characteristic is null) { complete = false; continue; }
-            try {
-                foreach (var client in characteristic.SubscribedClients) {
-                    try {
-                        var session = client.Session;
-                        if (session.SessionStatus == GattSessionStatus.Active)
-                            incoming[session.DeviceId.Id] = session;
-                    }
-                    catch (Exception ex) when (BleNativeState.IsUnavailable(ex)) { complete = false; }
-                }
-            }
-            catch (Exception ex) when (BleNativeState.IsUnavailable(ex)) { complete = false; }
-        }
-        lock (_sessionGate)
-        {
-            if (_disposed || lifetime.IsDisposed || !ReferenceEquals(_resources, lifetime) ||
-                revision != _sessionObservationRevision) return;
-            _sessionObservationRevision++;
-            foreach (var pair in _sessions.ToArray())
-            {
-                var inactive = !pair.Value.IsActive;
-                if (!inactive && (!complete || incoming.ContainsKey(pair.Key))) continue;
-                _sessions.TryRemove(pair.Key, out _);
-                if (inactive) pair.Value.Retire();
-                ReleaseSession(pair.Value, detach: true);
-                ResetPeerInputState(pair.Key);
-                Status?.Invoke($"[BLE][Session {lifetime.Id}] stale HID observation removed; inactive={inactive}");
-            }
-            foreach (var pair in incoming) {
-                try { TrackSession(pair.Key, pair.Value); }
-                catch (Exception ex) when (BleNativeState.IsUnavailable(ex)) {
-                    Status?.Invoke($"[BLE][Session {lifetime.Id}] incoming session changed during refresh HRESULT=0x{ex.HResult:X8}");
-                }
-            }
-        }
     }
 
     private async void RadioStateChanged(Radio sender, object args)
@@ -782,69 +742,56 @@ public sealed class BleHidServer : IDisposable
     public async Task<IReadOnlyList<Peer>> GetPeersAsync()
     {
         ThrowIfDisposed();
-        RefreshSessionObservations();
-        _lastOperation = "EnumerateSubscribedClients";
+        _lastOperation = "ReadPeerCatalog";
+        var peers = await _peerCatalog.GetAsync().ConfigureAwait(false);
+        _lastOperation = "PeerRefreshComplete";
+        return peers;
+    }
 
-        var trustedIds = TrustedDeviceStore.LoadAll();
-        var ids = new HashSet<string>(trustedIds, StringComparer.Ordinal);
+    internal static async Task<IReadOnlyList<PeerDevice>> ReadPairedDevicesAsync()
+    {
+        // Paired-only AEP metadata: no scan, BluetoothLEDevice instance,
+        // reverse connection, GATT discovery, pairing or session ownership.
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(3));
+        var devices = await DeviceInformation.FindAllAsync(
+            BluetoothLEDevice.GetDeviceSelectorFromPairingState(true), [],
+            DeviceInformationKind.AssociationEndpoint).AsTask(timeout.Token).ConfigureAwait(false);
+        return devices.Where(device => device.Pairing.IsPaired)
+            .Select(device => new PeerDevice(device.Id, device.Name, true)).ToArray();
+    }
 
-        foreach (var characteristic in new[] { _keyboard, _mouse, _system, _consumer })
+    private async Task<PeerDevice?> ReadPeerDeviceAsync(string id)
+    {
+        await ReadDeviceInfoAsync(id).ConfigureAwait(false);
+        return _deviceInfo.TryGetValue(id, out var device)
+            ? new PeerDevice(id, device.Name, device.Pairing.IsPaired) : null;
+    }
+
+    private IReadOnlyDictionary<string, PeerInput> ReadPeerInputs()
+    {
+        var inputs = new Dictionary<string, PeerInput>(StringComparer.Ordinal);
+        var characteristics = new[] { _keyboard, _mouse, _system, _consumer };
+        for (var report = 0; report < characteristics.Length; report++)
         {
+            var characteristic = characteristics[report];
             if (characteristic is null) continue;
-
             try
             {
                 foreach (var client in characteristic.SubscribedClients)
                 {
-                    if (!TryActiveSession(client, out _, out var id))
-                        continue;
-
-                    ids.Add(id);
+                    if (!TryActiveSession(client, out _, out var id)) continue;
+                    var input = inputs.GetValueOrDefault(id) ?? new PeerInput();
+                    inputs[id] = report switch {
+                        0 => input with { Keyboard = true },
+                        1 => input with { Mouse = true },
+                        2 => input with { System = true },
+                        _ => input with { Consumer = true }
+                    };
                 }
             }
             catch (Exception ex) when (BleNativeState.IsUnavailable(ex)) { }
         }
-
-        // Remembered devices should stay visible even while temporarily disconnected.
-        foreach (var id in ids)
-            await ReadDeviceInfoAsync(id).ConfigureAwait(false);
-
-        var peers = new List<Peer>();
-        foreach (var id in ids)
-        {
-            _deviceInfo.TryGetValue(id, out var device);
-            var fingerprint = Convert.ToHexString(
-                SHA256.HashData(Encoding.UTF8.GetBytes(id)))[..8];
-
-            var trusted = trustedIds.Contains(id, StringComparer.Ordinal);
-            var active = string.Equals(_approved, id, StringComparison.Ordinal);
-            // Each field in this row must use the same observation. Re-querying
-            // Connected separately could combine old and new subscription states.
-            var keyboard = Client(_keyboard, id) is not null;
-            var mouse = Client(_mouse, id) is not null;
-
-            peers.Add(new Peer(
-                id,
-                string.IsNullOrWhiteSpace(device?.Name)
-                    ? (trusted ? "저장된 기기 (오프라인)" : "이름 확인 불가")
-                    : device.Name,
-                fingerprint,
-                keyboard,
-                mouse,
-                Client(_system, id) is not null,
-                device?.Pairing.IsPaired == true,
-                keyboard || mouse,
-                trusted,
-                active,
-                Client(_consumer, id) is not null));
-        }
-
-        _lastOperation = "PeerRefreshComplete";
-        return peers
-            .OrderByDescending(x => x.Active)
-            .ThenByDescending(x => x.Trusted)
-            .ThenBy(x => x.Name, StringComparer.CurrentCultureIgnoreCase)
-            .ToArray();
+        return inputs;
     }
 
     public async Task ApproveAsync(string id)

@@ -7,6 +7,13 @@ internal static class Program
     {
         ApplicationConfiguration.Initialize();
 
+        if (args.Length == 1 && args[0] == "--peer-catalog-selftest")
+        {
+            try { PeerCatalogSelfTest.RunAsync().GetAwaiter().GetResult(); }
+            catch (Exception ex) { Console.Error.WriteLine(ex); Environment.ExitCode = 1; }
+            return;
+        }
+
         if (args.Length == 1 && args[0] == "--ui-lifecycle-selftest")
         {
             try { MainForm.RunCloseLifecycleSelfTest(); }

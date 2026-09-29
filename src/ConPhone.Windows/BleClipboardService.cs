@@ -671,10 +671,10 @@ public sealed class BleClipboardService : IDisposable
                     TypedEventHandler<GattSession, GattSessionStatusChangedEventArgs> changed = (sender, args) => {
                         if (args.Status == GattSessionStatus.Closed) {
                             if (lease.IsActive || BleNativeState.IsActive(sender)) {
-                                Status?.Invoke($"[BLE][Session {lifetime.Id}] late clipboard Closed callback; retire old observation without closing Active native session");
+                                Status?.Invoke($"[BLE][Session {lifetime.Id}] late clipboard Closed callback ignored; native session already Active");
+                                return;
                             }
                             lock (_peerGate) RemoveSubscription(id, subscription, detach: true, retire: true);
-                            RefreshSubscriptions();
                         }
                         Status?.Invoke($"[BLE][Session {lifetime.Id}] clipboard session={args.Status} status={args.Error}");
                     };

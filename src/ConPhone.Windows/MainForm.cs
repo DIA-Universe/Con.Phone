@@ -27,6 +27,7 @@ public sealed partial class MainForm : Form
     private readonly CancellationTokenSource _lifetime = new();
     private readonly SemaphoreSlim _actions = new(1, 1);
     private int _healthCheckRunning, _clipboardSendRunning, _peerRefreshRunning;
+    private long _peerRefreshRequest;
     private CancellationTokenSource? _automaticClipboardSend;
     private int _clipboardFailureCount;
     private DateTimeOffset _clipboardRetryAfter;
@@ -439,6 +440,8 @@ public sealed partial class MainForm : Form
         devices.Controls.Add(SectionTitle("2. 사용할 휴대폰 선택"));
         devices.Controls.Add(Help(
             $"목록에서 내 휴대폰을 선택하고 ‘이 기기 사용’을 누르세요. 최대 {TrustedDeviceStore.MaxDevices}대를 등록할 수 있어요."));
+        devices.Controls.Add(Help(
+            "페어링된 다른 Bluetooth 기기도 표시될 수 있어요. 내 휴대폰 이름과 키보드·마우스 연결 상태를 확인하세요.", Secondary));
         devices.Controls.Add(_peers);
         devices.Controls.Add(Row(
             ActionButton("새로 고침", () => RefreshPeersAsync(false)),
@@ -2133,9 +2136,11 @@ public sealed partial class MainForm : Form
 
     private async Task RefreshPeersAsync(bool silent = false)
     {
-        var selectedId = (_peers.SelectedItem as Peer)?.Id;
+        var request = ++_peerRefreshRequest;
         var peers = await _ble.GetPeersAsync();
-        if (_closing || IsDisposed) return;
+        if (_closing || IsDisposed || request != _peerRefreshRequest) return;
+        // The user can change selection while metadata is being read.
+        var selectedId = (_peers.SelectedItem as Peer)?.Id;
 
         _peers.BeginUpdate();
         try
@@ -2165,7 +2170,7 @@ public sealed partial class MainForm : Form
         }
 
         if (!silent && peers.Count == 0)
-            Log("HID 구독 기기가 없습니다. 휴대폰 Bluetooth 페어링과 '입력 장치' 상태를 확인하세요.");
+            Log("Windows에 페어링된 Bluetooth LE 기기가 없습니다. 휴대폰 Bluetooth에서 이 PC가 페어링되어 있는지 확인하세요.");
     }
 
     private bool IsPointerRecentlyActive()

@@ -69,7 +69,7 @@ public sealed partial class MainForm
         _peers.Height = 138;
         _peers.IntegralHeight = false;
         _peers.BorderStyle = BorderStyle.FixedSingle;
-        _peers.AccessibleName = "연결된 휴대폰 목록";
+        _peers.AccessibleName = "페어링 및 등록된 기기 목록";
         _peers.DrawItem += (_, e) =>
         {
             if (e.Index < 0 || _peers.Items[e.Index] is not Peer peer) return;
@@ -78,7 +78,9 @@ public sealed partial class MainForm
             e.Graphics.FillRectangle(brush, e.Bounds);
             using var titleFont = new Font(Font, FontStyle.Bold);
             var name = (peer.Active ? "●  " : "○  ") + peer.Name;
-            var detail = !peer.Connected ? "키보드·마우스 입력 연결 없음 · 휴대폰 Bluetooth를 확인하세요"
+            var detail = !peer.Connected ? (peer.Paired
+                    ? "Windows 페어링됨 · 휴대폰의 키보드·마우스 입력 연결 대기"
+                    : "저장된 기기 · 현재 입력 연결 없음")
                 : !peer.Keyboard ? "마우스 연결됨 · 키보드 입력 연결이 복구되지 않았어요"
                 : !peer.Mouse ? "키보드 연결됨 · 마우스 입력 연결이 복구되지 않았어요"
                 : peer.Active ? "현재 사용 기기 · 키보드와 마우스 준비됨"
