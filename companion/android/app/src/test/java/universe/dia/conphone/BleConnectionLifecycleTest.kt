@@ -169,6 +169,32 @@ class BleConnectionLifecycleTest {
         assertEquals(2, h.links.size)
     }
 
+    @Test fun remoteDisconnectClosesObservationWithoutIssuingAnotherDisconnect() {
+        val h = Harness(); h.connected()
+        val old = h.links.single(); val session = h.owner.generation
+        h.owner.cleanup("remote disconnected", retry = true, linkAlreadyDisconnected = true)
+        assertEquals(0, old.disconnects)
+        assertEquals(1, old.closes)
+        h.owner.finishCleanup(old, session)
+        h.advance(1000); h.owner.linkConnected(); h.owner.ready()
+        assertEquals(2, h.links.size)
+        h.owner.userDisconnect()
+        assertEquals(1, h.links.last().disconnects)
+        assertEquals(1, h.links.last().closes)
+        assertEquals(1, old.closes)
+    }
+
+    @Test fun remoteLossDuringGracefulCleanupSkipsRedundantDisconnect() {
+        val h = Harness(); h.connected(); h.cccdStarted = true
+        h.owner.userDisconnect()
+        h.owner.finishCleanup(h.links.single(), h.owner.generation, linkAlreadyDisconnected = true)
+        h.advance(750)
+        assertEquals(0, h.links.single().disconnects)
+        assertEquals(1, h.links.single().closes)
+        h.advance(60_000)
+        assertEquals(1, h.links.size)
+    }
+
     @Test fun shutdownAndRadioOffStillReleasePausedAndDelayedLinks() {
         for (paused in listOf(false, true)) {
             val h = Harness(); h.connected(); h.owner.beginOperation("write")

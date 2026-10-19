@@ -20,7 +20,8 @@ class MainActivity : Activity() {
     private val statusPoll = object : Runnable {
         override fun run() {
             if (hasWindowFocus() && hasBluetoothPermissions()) sendFocusedClipboard(false)
-            statusText.text = FriendlyStatus.summary(ClipboardBridgeService.latestStatus)
+            val summary = FriendlyStatus.summary(ClipboardBridgeService.latestStatus)
+            if (statusText.text.toString() != summary) statusText.text = summary
             statusHandler.postDelayed(this, 500)
         }
     }
@@ -248,7 +249,6 @@ class MainActivity : Activity() {
             return
         }
 
-        statusText.text = "PC 연결을 요청했어요. 실제 연결 상태는 LINKO 알림에서 확인하세요."
         startForegroundService(
             Intent(this, ClipboardBridgeService::class.java)
                 .setAction(ClipboardBridgeService.ACTION_START)

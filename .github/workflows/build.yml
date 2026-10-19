@@ -54,26 +54,26 @@ jobs:
           path: ${{ runner.temp }}/ConPhone-verified/ui/*.png
           if-no-files-found: error
           retention-days: 14
-      - name: Upload ConPhone.exe
+      - name: Upload LINKO.exe
         uses: actions/upload-artifact@v4
         with:
           name: ConPhone-win-x64-single-exe
-          path: ${{ runner.temp }}/ConPhone-verified/win-x64/ConPhone.exe
+          path: ${{ runner.temp }}/ConPhone-verified/win-x64/LINKO.exe
           if-no-files-found: error
           retention-days: 14
-      - name: Upload ConPhone.exe SHA256
+      - name: Upload LINKO.exe SHA256
         uses: actions/upload-artifact@v4
         with:
           name: ConPhone-win-x64-sha256
-          path: ${{ runner.temp }}/ConPhone-verified/win-x64/ConPhone.exe.sha256
+          path: ${{ runner.temp }}/ConPhone-verified/win-x64/LINKO.exe.sha256
           if-no-files-found: error
           retention-days: 14
       - name: Build self-update package
         run: |
           $package = Join-Path $env:RUNNER_TEMP 'ConPhone-update-package'
           New-Item -ItemType Directory -Force -Path $package | Out-Null
-          Copy-Item (Join-Path $env:RUNNER_TEMP 'ConPhone-verified\win-x64\ConPhone.exe') (Join-Path $package 'ConPhone.exe')
-          Copy-Item (Join-Path $env:RUNNER_TEMP 'ConPhone-verified\win-x64\ConPhone.exe.sha256') (Join-Path $package 'ConPhone.exe.sha256')
+          Copy-Item (Join-Path $env:RUNNER_TEMP 'ConPhone-verified\win-x64\LINKO.exe') (Join-Path $package 'LINKO.exe')
+          Copy-Item (Join-Path $env:RUNNER_TEMP 'ConPhone-verified\win-x64\LINKO.exe.sha256') (Join-Path $package 'LINKO.exe.sha256')
       - name: Upload self-update package
         uses: actions/upload-artifact@v4
         with:

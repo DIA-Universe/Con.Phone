@@ -90,7 +90,7 @@ public sealed class ClipboardSyncCoordinator : IAsyncDisposable
         }
     }
 
-    private async Task StartCoreAsync()
+    private async Task StartCoreAsync(bool automaticRecovery = false)
     {
         if (_disposed || !_radioAvailable) return;
         try
@@ -106,8 +106,8 @@ public sealed class ClipboardSyncCoordinator : IAsyncDisposable
 
         try
         {
-            await _ble.StartAsync()
-                .ConfigureAwait(false);
+            if (automaticRecovery) await _ble.EnsureAdvertisingAsync().ConfigureAwait(false);
+            else await _ble.StartAsync().ConfigureAwait(false);
         }
         catch (Exception ex)
         {
@@ -128,7 +128,7 @@ public sealed class ClipboardSyncCoordinator : IAsyncDisposable
             if (!_enabled() || _disposed)
                 return;
 
-            await StartCoreAsync()
+            await StartCoreAsync(automaticRecovery: true)
                 .ConfigureAwait(false);
         }
         catch (Exception ex)

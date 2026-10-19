@@ -85,6 +85,7 @@ internal static class BleRecoverySelfTest
         Check(!await hid.EnsureAdvertisingAsync() && !hid.DesiredRunning,
             "Health check cannot restart explicitly stopped services");
         await CheckExpiredServiceAsync();
+        await CheckConnectedRecoveryAsync();
         Console.WriteLine("PASS: Native advertisement fault recovery. Physical phone reconnection NOT tested.");
     }
 
@@ -115,5 +116,51 @@ internal static class BleRecoverySelfTest
         await server.StartAsync();
         Check(ReferenceEquals(replacement, Field<GattServiceProvider>(server, "_provider")),
             "Repeated start keeps the recovered live provider intact");
+    }
+
+    private static async Task CheckConnectedRecoveryAsync()
+    {
+        var connected = false;
+        var publications = 0;
+        var aborted = false;
+        using var hid = new BleHidServer((provider, parameters) => {
+            publications++;
+            provider.StartAdvertising(parameters);
+        }, provider => aborted ? GattServiceProviderAdvertisementStatus.Aborted : provider.AdvertisementStatus,
+            () => connected);
+        await hid.StartAsync();
+        var provider = Field<GattServiceProvider>(hid, "_provider");
+        var lifetime = Field<BleResourceLifetime>(hid, "_resources");
+        var before = publications;
+        connected = true; aborted = true;
+        for (var check = 0; check < 100; check++) await hid.EnsureAdvertisingAsync();
+        await hid.StartAsync();
+        Check(publications == before && hid.AutoRecoveryAttempts == 0 && !lifetime.IsDisposed &&
+            ReferenceEquals(provider, Field<GattServiceProvider>(hid, "_provider")),
+            "100 health checks and repeated start preserve a connected HID service despite Aborted advertisement");
+        connected = false;
+        await hid.EnsureAdvertisingAsync();
+        Check(publications == before + 1, "HID discovery recovery resumes when the incoming link is gone");
+        for (var check = 0; check < 100; check++) await hid.EnsureAdvertisingAsync();
+        Check(publications == before + 1, "Persistent Aborted status cannot cause a health-timer publication storm");
+        hid.Stop();
+
+        var clipboardPublications = 0;
+        using var clipboard = new BleClipboardService(() => null, _ => false, () => true,
+            () => 512 * 1024, () => false, () => null,
+            (_, _) => { clipboardPublications++; throw new InvalidOperationException("Injected advertisement failure"); },
+            () => connected);
+        connected = true;
+        var initialLifetime = Field<BleResourceLifetime>(clipboard, "_resources");
+        for (var check = 0; check < 100; check++) await clipboard.EnsureAdvertisingAsync();
+        Check(clipboardPublications == 0 && !initialLifetime.IsDisposed &&
+            typeof(BleClipboardService).GetField("_provider", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(clipboard) is null,
+            "Clipboard maintenance does not construct or publish an optional service under a live HID link");
+        connected = false;
+        try { await clipboard.EnsureAdvertisingAsync(); }
+        catch (InvalidOperationException ex) when (ex.Message == "Injected advertisement failure") { }
+        for (var check = 0; check < 100; check++) await clipboard.EnsureAdvertisingAsync();
+        Check(clipboardPublications == 1 && !initialLifetime.IsDisposed,
+            "Clipboard publication retries back off while preserving the prepared service");
     }
 }

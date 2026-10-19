@@ -2,9 +2,9 @@
 
 PC의 키보드와 마우스를 Bluetooth로 휴대폰에서 사용하세요.
 
-**Windows / Android 1.0.6** · [다운로드](https://github.com/DIA-Universe/Con.Phone/releases/tag/v1.0.6)
+**Windows / Android 1.0.15** · [EXE 다운로드](https://github.com/DIA-Universe/Con.Phone/releases/download/v1.0.15/LINKO.exe) · [Android APK](https://github.com/DIA-Universe/Con.Phone/releases/download/v1.0.15/LINKO-1.0.15.apk) · [릴리스](https://github.com/DIA-Universe/Con.Phone/releases/tag/v1.0.15)
 
-연결 복구·입력 전환 수정 빌드 **1.0.14**: [EXE 다운로드](https://github.com/DIA-Universe/Con.Phone/releases/download/v1.0.14/LINKO.exe) · [적용 순서와 검증 범위](docs/LINKO-1.0.14.md). 취소된 HID 서비스를 검색 신호의 과거 ‘시작됨’ 상태만 보고 정상으로 판단하는 복구 누락을 수정했습니다. **기기 연결 → 연결 복구 (앱 다시 시작)**으로 기존 LINKO가 완전히 종료된 뒤 Bluetooth 서비스를 새로 열 수 있습니다. 페어링·등록 정보는 유지합니다. 단축키/화면 버튼 전환 때 키·마우스 해제를 최대 2초 기다리고, 계속 막히면 감지된 키/버튼 이름을 표시합니다. **Windows EXE를 교체하면 됩니다.** Android 연결 코드는 그대로이며 APK는 버전만 맞췄습니다. **사용자 휴대폰의 연결 실패 원인 및 이 빌드로의 실제 복구는 아직 확인하지 못했습니다.** 목록 누락이 신고된 1.0.11 사용은 권장하지 않습니다.
+**1.0.15 연결 안정화:** 연결 중 검색 신호 오류만으로 Bluetooth 서비스를 반복 게시하지 않도록 바꿨습니다. Android LINKO는 외부 키보드·마우스 연결 상태가 바뀌어도 화면을 유지하고, 같은 알림을 반복 갱신하지 않습니다. PC의 EXE를 교체하고 Android LINKO를 사용한다면 APK도 함께 업데이트하세요. 기존 페어링과 설정은 유지합니다. 자동 검사와 Windows 네이티브 서비스 검사는 통과했지만, 사용자가 겪은 실제 휴대폰의 끊김·화면 깜빡임 개선 여부는 아직 확인하지 못했습니다. [변경 내용과 검증 범위](docs/LINKO-1.0.15.md).
 
 ## 시작하기
 
@@ -21,7 +21,7 @@ PC의 키보드와 마우스를 Bluetooth로 휴대폰에서 사용하세요.
 
 ## Android 클립보드
 
-`LINKO-1.0.6.apk`를 설치하고 처음 실행할 때 Bluetooth 권한을 허용하세요. 홈의 **연결할 PC 선택**에서 페어링한 PC를 한 번 선택하면 이후 해당 PC에만 자동 연결합니다. 기존에 저장된 PC는 그대로 사용합니다. 주변 키보드·마우스를 검색해 자동 접속하지 않습니다. 텍스트 동기화는 기본으로 켜져 있으며 기존 Con.Phone / LINKO에 덮어 설치할 수 있습니다.
+`LINKO-1.0.15.apk`를 설치하고 처음 실행할 때 Bluetooth 권한을 허용하세요. 홈의 **연결할 PC 선택**에서 페어링한 PC를 한 번 선택하면 이후 해당 PC에만 자동 연결합니다. 기존에 저장된 PC는 그대로 사용합니다. 주변 키보드·마우스를 검색해 자동 접속하지 않습니다. 텍스트 동기화는 기본으로 켜져 있으며 기존 Con.Phone / LINKO에 덮어 설치할 수 있습니다.
 
 **이미지는 전달되지 않습니다.** PC에서 복사한 텍스트는 휴대폰으로 자동 전송됩니다.
 

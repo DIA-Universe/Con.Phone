@@ -2,6 +2,7 @@
 **/obj/
 .vs/
 artifacts/
+.codex-remote-attachments/
 *.user
 *.pfx
 *.cer

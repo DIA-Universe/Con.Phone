@@ -104,6 +104,8 @@ public sealed class BleClipboardService : IDisposable
     private volatile bool _published;
     private bool _prepared;
     private readonly Action<GattServiceProvider, GattServiceProviderAdvertisingParameters> _startAdvertising;
+    private readonly Func<bool> _hasConnectedPeer;
+    private readonly BleAdvertisingBackoff _advertisingBackoff = new();
 
     public Func<string, ClipboardContent, Task<bool>>? ReceiveContentAsync { get; set; }
     public event Action<string>? Status;
@@ -115,9 +117,11 @@ public sealed class BleClipboardService : IDisposable
         Func<int> bleImageLimitBytes,
         Func<bool> p2pRequested,
         Func<DirectLinkConfig?> directLinkConfig,
-        Action<GattServiceProvider, GattServiceProviderAdvertisingParameters>? startAdvertising = null)
+        Action<GattServiceProvider, GattServiceProviderAdvertisingParameters>? startAdvertising = null,
+        Func<bool>? hasConnectedPeer = null)
     {
         _startAdvertising = startAdvertising ?? ((provider, parameters) => provider.StartAdvertising(parameters));
+        _hasConnectedPeer = hasConnectedPeer ?? (() => SharedBleResource<GattSession>.HasActiveResources || Subscribers > 0);
         _resources = new BleResourceLifetime(text => Status?.Invoke(text));
         _approvedDeviceId = approvedDeviceId;
         _trustedDevice = trustedDevice;
@@ -127,9 +131,9 @@ public sealed class BleClipboardService : IDisposable
         _directLinkConfig = directLinkConfig;
     }
 
-    public bool Running => _published || BleNativeState.Read(() => _provider?.AdvertisementStatus is
+    public bool Running => !_resources.IsDisposed && (_published || BleNativeState.Read(() => _provider?.AdvertisementStatus is
         GattServiceProviderAdvertisementStatus.Started or
-        GattServiceProviderAdvertisementStatus.StartedWithoutAllAdvertisementData, false);
+        GattServiceProviderAdvertisementStatus.StartedWithoutAllAdvertisementData, false));
 
     public int Subscribers => LiveClients(_tx).Count;
 
@@ -222,15 +226,25 @@ public sealed class BleClipboardService : IDisposable
         _prepared = true;
     }
 
-    public async Task StartAsync()
+    public Task StartAsync() => StartAsync(automaticRecovery: false);
+
+    public Task EnsureAdvertisingAsync() => StartAsync(automaticRecovery: true);
+
+    private async Task StartAsync(bool automaticRecovery)
     {
         var stopGeneration = Interlocked.Read(ref _stopGeneration);
         await _lifecycleGate.WaitAsync().ConfigureAwait(false);
         try {
             if (stopGeneration != Interlocked.Read(ref _stopGeneration)) return;
+            if (Running) { _advertisingBackoff.Reset(); return; }
+            // An optional service must not change the GATT table under a live
+            // HID connection, including when its initial construction failed.
+            if (automaticRecovery && _hasConnectedPeer()) { _advertisingBackoff.Reset(); return; }
+            if (automaticRecovery && !_advertisingBackoff.TryBegin(Environment.TickCount64)) return;
             await PrepareCoreAsync().ConfigureAwait(false);
             _resources.Token.ThrowIfCancellationRequested();
             StartAdvertising();
+            if (Running) _advertisingBackoff.Reset();
         }
         catch {
             if (!_prepared || _resources.IsDisposed) CleanupServerResources();

@@ -40,6 +40,7 @@ internal class BleConnectionLifecycle<G : Any>(
     private var stopped = false
     private var retries = 0
     private var retryAfterCleanup = false
+    private var disconnectOnCleanup = true
     private var connectTimer: BleTimer? = null
     private var operationTimer: BleTimer? = null
     private var cleanupTimer: BleTimer? = null
@@ -183,10 +184,12 @@ internal class BleConnectionLifecycle<G : Any>(
     }
 
     /** CCCD is best effort and bounded; disconnect and close execute even if either throws. */
-    fun cleanup(reason: String, retry: Boolean, graceful: Boolean = false) {
+    fun cleanup(reason: String, retry: Boolean, graceful: Boolean = false, linkAlreadyDisconnected: Boolean = false) {
         retryTimer?.cancel(); retryTimer = null
         stableTimer?.cancel(); stableTimer = null
         retryAfterCleanup = retry && desired && radioOn && !stopped
+        if (state != BleConnectionState.DISCONNECTING) disconnectOnCleanup = !linkAlreadyDisconnected
+        else if (linkAlreadyDisconnected) disconnectOnCleanup = false
         if (state == BleConnectionState.DISCONNECTING) {
             if (!graceful) finishCleanup(resource, generation)
             return
@@ -202,7 +205,7 @@ internal class BleConnectionLifecycle<G : Any>(
         val old = resource
         var awaitingCccd = false
         try {
-            if (old != null) awaitingCccd = disableNotifications(old, canWriteCccd)
+            if (old != null && disconnectOnCleanup) awaitingCccd = disableNotifications(old, canWriteCccd)
         } catch (ex: Exception) {
             log("[BLE][Session $generation] notify OFF exception=${ex.javaClass.simpleName}")
         } finally {
@@ -215,12 +218,13 @@ internal class BleConnectionLifecycle<G : Any>(
         } else finishCleanup(old, generation)
     }
 
-    fun finishCleanup(old: G?, session: Long) {
+    fun finishCleanup(old: G?, session: Long, linkAlreadyDisconnected: Boolean = false) {
         if (state != BleConnectionState.DISCONNECTING || resource !== old || generation != session) return
+        if (linkAlreadyDisconnected) disconnectOnCleanup = false
         cleanupTimer?.cancel(); cleanupTimer = null
         resource = null // Invalidate BEFORE calling the platform; reentrant callbacks cannot close twice.
         if (old != null) {
-            try { disconnect(old) }
+            try { if (disconnectOnCleanup) disconnect(old) }
             catch (ex: Exception) { log("[BLE][Session $session] disconnect exception=${ex.javaClass.simpleName}") }
             finally {
                 try { close(old); log("[BLE][Session $session] GATT closed") }

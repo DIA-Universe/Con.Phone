@@ -415,13 +415,14 @@ class ClipboardBridgeService : Service() {
         override fun onConnectionStateChange(g: BluetoothGatt, status: Int, newState: Int) {
             bleLog("connection callback session=$session status=$status newState=$newState")
             if (bleLifecycle.state == BleConnectionState.DISCONNECTING && newState == BluetoothProfile.STATE_DISCONNECTED) {
-                bleLifecycle.finishCleanup(g, session)
+                bleLifecycle.finishCleanup(g, session, linkAlreadyDisconnected = true)
                 return
             }
             if (!bleLifecycle.accepts(g, session)) return
             if (status != BluetoothGatt.GATT_SUCCESS || newState == BluetoothProfile.STATE_DISCONNECTED) {
                 showStatus("PC 연결 끊김 (상태 $status) · 재연결 대기")
-                bleLifecycle.cleanup("disconnected status=$status", retry = true)
+                bleLifecycle.cleanup("disconnected status=$status", retry = true,
+                    linkAlreadyDisconnected = newState == BluetoothProfile.STATE_DISCONNECTED)
             } else if (newState == BluetoothProfile.STATE_CONNECTED && bleLifecycle.state == BleConnectionState.CONNECTING) {
                 bleLifecycle.linkConnected()
                 mtu = 23
@@ -1999,18 +2000,31 @@ class ClipboardBridgeService : Service() {
         }.getOrDefault(false)
     }
 
+    private var foregroundStarted = false
+    private var notificationSummary: String? = null
+
     private fun showStatus(text: String) {
+        // Some transfer callbacks run on a worker. Serialize publication so an
+        // older status cannot race a new one or start the foreground twice.
+        if (Looper.myLooper() != Looper.getMainLooper()) { main.post { showStatus(text) }; return }
         if (destroyed) return
         latestStatus = text + pendingSummary()
+        val summary = FriendlyStatus.summary(text)
+        if (foregroundStarted && notificationSummary == summary) return
         val manager = getSystemService(NotificationManager::class.java)
         val notification = Notification.Builder(this, CHANNEL)
             .setSmallIcon(R.drawable.ic_linko_notification)
             .setContentTitle("LINKO")
-            .setContentText(FriendlyStatus.summary(text))
+            .setContentText(summary)
             .setOngoing(true)
+            .setOnlyAlertOnce(true)
+            .setShowWhen(false)
             .build()
-        startForeground(NOTIFICATION_ID, notification)
-        manager.notify(NOTIFICATION_ID, notification)
+        if (!foregroundStarted) {
+            startForeground(NOTIFICATION_ID, notification)
+            foregroundStarted = true
+        } else manager.notify(NOTIFICATION_ID, notification)
+        notificationSummary = summary
     }
 
     private fun createNotificationChannel() {

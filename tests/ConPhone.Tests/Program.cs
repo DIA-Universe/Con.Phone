@@ -676,7 +676,39 @@ await cancellationSender.SendAsync("test-peer", cancellableFragment, (packet, _)
 }, CancellationToken.None);
 Check("cancelled receipt waiter does not occupy the next session transfer", freshReceiptAccepted);
 
+var publicationBackoff = new BleAdvertisingBackoff();
+long publicationClock = 0;
+foreach (var interval in new long[] { 4_000, 8_000, 16_000, 32_000, 60_000, 60_000 })
+{
+    Check($"advertising attempt allowed at {publicationClock}ms", publicationBackoff.TryBegin(publicationClock));
+    Check($"advertising retry waits full {interval}ms", !publicationBackoff.TryBegin(publicationClock + interval - 1));
+    publicationClock += interval;
+}
+publicationBackoff.Reset();
+Check("successful or connected service clears advertising backoff", publicationBackoff.TryBegin(publicationClock));
+Check("reset restores initial advertising retry interval", publicationBackoff.TryBegin(publicationClock + 4_000));
+
+var recoveryLink = new RecoveryResource();
+Check("no incoming observers means publication can recover", !SharedBleResource<RecoveryResource>.HasActiveResources);
+var recoveryHid = SharedBleResource<RecoveryResource>.Acquire("recovery", recoveryLink, x => x.Active);
+var recoveryClipboard = SharedBleResource<RecoveryResource>.Acquire("recovery", recoveryLink, x => x.Active);
+Check("incoming HID and clipboard block automatic publication", SharedBleResource<RecoveryResource>.HasActiveResources);
+recoveryHid.Detach();
+Check("clipboard still protects link after HID observer detaches", SharedBleResource<RecoveryResource>.HasActiveResources);
+recoveryLink.Active = false;
+Check("closed native link does not suppress discovery recovery", !SharedBleResource<RecoveryResource>.HasActiveResources);
+recoveryLink.Active = true;
+recoveryClipboard.Retire();
+Check("retired generation cannot block discovery recovery", !SharedBleResource<RecoveryResource>.HasActiveResources);
+recoveryClipboard.Detach();
+
 Console.WriteLine($"{passed} checks passed. No Windows/Bluetooth/phone hardware has been tested by these checks.");
+
+sealed class RecoveryResource : IDisposable
+{
+    public bool Active = true;
+    public void Dispose() => Active = false;
+}
 
 sealed class TestBleNativeLink
 {

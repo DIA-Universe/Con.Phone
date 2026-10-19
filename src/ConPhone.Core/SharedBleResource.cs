@@ -24,6 +24,17 @@ public static class SharedBleResource<T> where T : class, IDisposable
     private static long _nextGeneration;
     private static readonly Dictionary<string, Entry> Entries = new(StringComparer.Ordinal);
 
+    // HID and clipboard observe the same incoming link. A missing advertisement
+    // must not cause either service to republish while the other still owns it.
+    public static bool HasActiveResources
+    {
+        get
+        {
+            lock (Entries) return Entries.Values.Any(entry =>
+                !entry.Closing && !entry.Retired && entry.References > 0 && entry.Active(entry.Resource));
+        }
+    }
+
     public static Lease Acquire(string peer, T resource, Func<T, bool> active)
     {
         lock (Entries)

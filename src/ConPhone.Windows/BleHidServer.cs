@@ -73,7 +73,8 @@ public sealed class BleHidServer : IDisposable
     private readonly Action<GattServiceProvider, GattServiceProviderAdvertisingParameters> _startAdvertising;
     private readonly Func<GattServiceProvider, GattServiceProviderAdvertisementStatus> _advertisementStatus;
     private volatile bool _desiredRunning;
-    private long _lastRecoveryAttemptTicks;
+    private readonly BleAdvertisingBackoff _advertisingBackoff = new();
+    private readonly Func<bool> _hasConnectedPeer;
     private long _autoRecoveryAttempts;
     private long _autoRecoverySuccesses;
     private long _lastRecoverySuccessUnixMs;
@@ -125,10 +126,13 @@ public sealed class BleHidServer : IDisposable
     public BleHidServer() : this((provider, parameters) => provider.StartAdvertising(parameters)) { }
 
     internal BleHidServer(Action<GattServiceProvider, GattServiceProviderAdvertisingParameters> startAdvertising,
-        Func<GattServiceProvider, GattServiceProviderAdvertisementStatus>? advertisementStatus = null)
+        Func<GattServiceProvider, GattServiceProviderAdvertisementStatus>? advertisementStatus = null,
+        Func<bool>? hasConnectedPeer = null)
     {
         _startAdvertising = startAdvertising;
         _advertisementStatus = advertisementStatus ?? (provider => provider.AdvertisementStatus);
+        _hasConnectedPeer = hasConnectedPeer ?? (() => SharedBleResource<GattSession>.HasActiveResources ||
+            KeyboardSubscribers > 0 || MouseSubscribers > 0 || SystemSubscribers > 0 || ConsumerSubscribers > 0);
         _resources = new BleResourceLifetime(text => Status?.Invoke(text));
         _approved = TrustedDeviceStore.Load();
         _peerCatalog = new PeerCatalog(ReadPairedDevicesAsync, ReadPeerDeviceAsync,
@@ -150,11 +154,16 @@ public sealed class BleHidServer : IDisposable
                "휴대폰에서 시작한 HID 연결만 처리합니다. PC에서 상대 기기로 연결/페어링을 요청하지 않습니다.";
     }
 
-    public async Task StartAsync()
+    public Task StartAsync() => StartAsync(automaticRecovery: false);
+
+    private async Task StartAsync(bool automaticRecovery)
     {
         var stopGeneration = Interlocked.Read(ref _stopGeneration);
         await _startGate.WaitAsync();
-        try { if (stopGeneration == Interlocked.Read(ref _stopGeneration)) await StartCoreAsync(); }
+        try {
+            if (stopGeneration == Interlocked.Read(ref _stopGeneration) &&
+                (!automaticRecovery || !_hasConnectedPeer())) await StartCoreAsync();
+        }
         catch {
             // An advertisement error must not remove a constructed HID service
             // or close its sessions and change the peer's GATT table mid-link.
@@ -308,6 +317,9 @@ public sealed class BleHidServer : IDisposable
         _resources.Token.ThrowIfCancellationRequested();
         var provider = _provider ?? throw new InvalidOperationException("HID 서비스가 준비되지 않았습니다.");
         if (IsAdvertising(_advertisementStatus(provider))) return;
+        // Publication status is not connection health. Keep the existing GATT
+        // table untouched even during partial subscription or HID suspend.
+        if (_hasConnectedPeer()) return;
         _lastOperation = "GattServiceProvider.StartAdvertising";
 
         try
@@ -334,7 +346,14 @@ public sealed class BleHidServer : IDisposable
         // example a radio transition). It cannot prove the service is still alive.
         if (ServiceAvailable && Advertisement is "Started" or "StartedWithoutAllAdvertisementData")
         {
+            _advertisingBackoff.Reset();
             return true;
+        }
+
+        if (_hasConnectedPeer())
+        {
+            _advertisingBackoff.Reset();
+            return false; // The link is usable; discovery is deferred until idle.
         }
 
         if (!await _recoveryGate.WaitAsync(0).ConfigureAwait(false))
@@ -342,23 +361,15 @@ public sealed class BleHidServer : IDisposable
 
         try
         {
-            var now = System.Diagnostics.Stopwatch.GetTimestamp();
-            var previous = Interlocked.Read(ref _lastRecoveryAttemptTicks);
-            var elapsedSeconds = previous == 0
-                ? double.MaxValue
-                : (now - previous) / (double)System.Diagnostics.Stopwatch.Frequency;
-
-            if (elapsedSeconds < 4)
-                return false;
-
-            Interlocked.Exchange(ref _lastRecoveryAttemptTicks, now);
+            if (!_advertisingBackoff.TryBegin(Environment.TickCount64)) return false;
             var attempt = Interlocked.Increment(ref _autoRecoveryAttempts);
 
             try
             {
-                await StartAsync().ConfigureAwait(false);
+                await StartAsync(automaticRecovery: true).ConfigureAwait(false);
                 if (ServiceAvailable && Advertisement is "Started" or "StartedWithoutAllAdvertisementData")
                 {
+                    _advertisingBackoff.Reset();
                     Interlocked.Increment(ref _autoRecoverySuccesses);
                     Interlocked.Exchange(
                         ref _lastRecoverySuccessUnixMs,
@@ -685,7 +696,9 @@ public sealed class BleHidServer : IDisposable
                 if (request is null) return;
                 if (lifetime.IsDisposed) { request.RespondWithProtocolError(0x0E); return; }
 
-                var bytes = value(args.Session.DeviceId.Id);
+                var session = args.Session;
+                TrackSession(session.DeviceId.Id, session);
+                var bytes = value(session.DeviceId.Id);
                 if (request.Offset > bytes.Length)
                     request.RespondWithProtocolError(0x07);
                 else
@@ -714,8 +727,10 @@ public sealed class BleHidServer : IDisposable
                 if (lifetime.IsDisposed) { request.RespondWithProtocolError(0x0E); return; }
 
                 bool valid;
+                var session = args.Session;
+                TrackSession(session.DeviceId.Id, session);
                 lock (_sessionGate)
-                    valid = !lifetime.IsDisposed && request.Offset == 0 && write(args.Session.DeviceId.Id, request.Value.ToArray());
+                    valid = !lifetime.IsDisposed && request.Offset == 0 && write(session.DeviceId.Id, request.Value.ToArray());
                 if (request.Option == GattWriteOption.WriteWithResponse)
                 {
                     if (valid) request.Respond();

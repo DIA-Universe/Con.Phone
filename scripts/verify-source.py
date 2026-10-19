@@ -56,9 +56,12 @@ update_service = read("src/ConPhone.Windows/LocalUpdateService.cs")
 authenticode = read("src/ConPhone.Windows/AuthenticodeVerifier.cs")
 p2p_security = read("src/ConPhone.Core/P2PSecurity.cs")
 
-# Product version alignment.
-require("<Version>0.3.0</Version>" in win_project, "Windows version must be 0.3.0")
-require('versionName = "0.3.0"' in android_gradle, "Android versionName must be 0.3.0")
+# Released Windows and Android versions must agree. The archived iOS companion
+# is versioned separately; iPhone HID works without installing that companion.
+win_version = re.search(r"<Version>(\d+\.\d+\.\d+)</Version>", win_project)
+android_version = re.search(r'versionName = "(\d+\.\d+\.\d+)"', android_gradle)
+require(win_version is not None and android_version is not None and
+        win_version.group(1) == android_version.group(1), "Windows/Android version mismatch")
 require('MARKETING_VERSION: "0.3.0"' in ios_project, "iOS marketing version must be 0.3.0")
 
 # There must be no cloud relay/Railway dependency in product source.
@@ -161,9 +164,10 @@ for uuid in uuids:
     ]:
         require(uuid.lower() in text.lower(), f"{path}: missing UUID {uuid}")
 
-# Companion discovery must survive Clipboard UUID advertisement truncation.
-require("00001812-0000-1000-8000-00805f9b34fb" in android_service,
-        "Android HID-service discovery fallback missing")
+# Android connects only to the selected bonded PC; it no longer scans HID peers.
+require("AutoConnectPolicy.canConnect" in android_service and "adapter.bondedDevices" in android_service and
+        "startScan(" not in android_service and "BLUETOOTH_SCAN" not in android_manifest,
+        "Android must use the selected paired PC without HID scanning")
 require('CBUUID(string: "1812")' in ios_bridge,
         "iOS HID-service discovery fallback missing")
 require("rejectedBleDevices" in android_service,
@@ -212,7 +216,7 @@ require(bluetooth_gate is not None,
 if bluetooth_gate is not None:
     require("NEARBY_WIFI_DEVICES" not in bluetooth_gate.group("body"),
             "Android BLE transport must not require Nearby Wi-Fi permission")
-require("checkSelfPermission(Manifest.permission.BLUETOOTH_SCAN)" in android_share and
+require("BLUETOOTH_SCAN" not in android_share and
         "checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT)" in android_share,
         "Android Share target must be able to dispatch with Bluetooth-only permission")
 
@@ -265,9 +269,10 @@ require("await _ble.EnsureAdvertisingAsync()" in main_form and
         "await _clipboardSync.EnsureHealthyAsync()" in main_form,
         "Windows periodic HID/clipboard recovery hooks missing")
 
-# Android durable Share queue must preserve MIME and remain BLE-capable without P2P permission.
-require("saveImage(uri, intent.type)" in android_share,
-        "Android Share target must preserve image MIME in the durable queue")
+# Android's shipping share surface is text-only; image codecs remain tested separately.
+require("saveText(text)" in android_share and "saveImage(" not in android_share and
+        'android:mimeType="image/' not in android_manifest,
+        "Android Share target must persist text and not advertise unsupported image sharing")
 require("NEARBY_WIFI_DEVICES" not in android_share,
         "Android Share target must not require Nearby Wi-Fi permission for BLE fallback")
 
@@ -336,14 +341,14 @@ if errors:
     sys.exit(1)
 
 print("SOURCE SANITY PASSED")
-print(" - version alignment: 0.3.0")
+print(f" - Windows/Android version alignment: {win_version.group(1) if win_version else 'missing'}")
 print(" - transport: Direct Wi-Fi/P2P -> BLE only")
 print(" - no Railway/internet relay")
 print(" - P2P listener lifecycle guarded")
 print(" - P2P v2 security markers aligned")
 print(" - clipboard caps aligned (1 MiB text / 32 MiB image)")
 print(" - BLE UUIDs aligned across Windows/Android/iOS")
-print(" - Clipboard/HID discovery fallback + unrelated-HID rejection guarded")
+print(" - Android selected-PC connection / legacy iOS discovery guarded")
 print(" - application ACK paths present")
 print(" - capabilities UUID/active-target/BLE-limit negotiation guarded")
 print(" - Android BLE fallback remains independent of P2P permission")
