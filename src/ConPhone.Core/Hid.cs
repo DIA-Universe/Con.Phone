@@ -6,23 +6,66 @@ public sealed record PointerPacket(byte Buttons, int X = 0, int Y = 0, int Wheel
 public sealed record Envelope(long Epoch, InputPacket Packet);
 public sealed record WireReport(bool Keyboard, byte[] Data);
 
+public enum HangulKeyMode
+{
+    RightAlt,
+    Lang1,
+    CtrlSpace,
+    ShiftSpace
+}
+
+public enum ModifierProfile
+{
+    Standard,
+    MacCtrlCommandSwap
+}
+
+public enum ConsumerAction
+{
+    Mute = 0,
+    VolumeUp = 1,
+    VolumeDown = 2,
+    PlayPause = 3,
+    NextTrack = 4,
+    PreviousTrack = 5
+}
+
 public static class Hid
 {
     // HOGP: report IDs live in each Report Reference descriptor, not in notification payloads.
     // This descriptor intentionally matches the minimal composite layout measured working on Galaxy Android 16.
     public const int KeyboardReportLength = 8;
-    public const int MouseReportLength = 6;
+    public const int MouseReportLength = 7;
     public const int SystemReportLength = 1;
+    public const int ConsumerReportLength = 1;
     public const byte SystemLockMask = 0x02; // HID Generic Desktop System Sleep (usage 0x82)
     public static byte[] ReportMap => Convert.FromHexString(
         "05010906A1018501050719E029E715002501750195088102950175088101" +
         "95067508150025650507190029658100C0" +
         "05010902A10185020901A10005091901290315002501950375018102950175058101" +
-        "05010930093116018026FF7F75109502810609381581257F750895018106C0C0" +
-        "05010980A1018503150025017501950319812983810295058101C0");
+        "05010930093116018026FF7F75109502810609381581257F750895018106" +
+        "050C0A38028106C0C0" +
+        "05010980A1018503150025017501950319812983810295058101C0" +
+        "050C0901A1018504150025017501950609E209E909EA09CD09B509B6810295028101C0");
 
     public static byte[] SystemReport(bool lockPressed) =>
         [lockPressed ? SystemLockMask : (byte)0];
+
+    // Raw HID modifiers: GUI+L for Galaxy, Control+Command+Q for Apple.
+    // Already in host layout; do not apply the user's Ctrl/Command swap again.
+    public static byte[] LockKeyboardReport(ModifierProfile profile) =>
+        profile == ModifierProfile.MacCtrlCommandSwap
+            ? [0x09, 0, 0x14, 0, 0, 0, 0, 0]
+            : [0x08, 0, 0x0F, 0, 0, 0, 0, 0];
+
+    public static byte[] ConsumerReport(ConsumerAction action, bool pressed)
+    {
+        var bit = (int)action;
+        if (bit is < 0 or > 5)
+            throw new ArgumentOutOfRangeException(nameof(action));
+
+        return [pressed ? (byte)(1 << bit) : (byte)0];
+    }
 
     public static IEnumerable<WireReport> Encode(InputPacket packet)
     {
@@ -33,24 +76,69 @@ public static class Hid
             yield break;
         }
         var p = (PointerPacket)packet;
-        int x = p.X, y = p.Y, w = p.Wheel;
-        if (new[] { x, y, w, p.Pan }.Any(v => Math.Abs((long)v) > 32767))
-            throw new ArgumentOutOfRangeException(nameof(packet), "Pointer backlog exceeds safety limit.");
+        int x = p.X, y = p.Y, w = p.Wheel, pan = p.Pan;
+
+        if (x is < -32767 or > 32767 ||
+            y is < -32767 or > 32767 ||
+            w is < -32767 or > 32767 ||
+            pan is < -32767 or > 32767)
+            throw new ArgumentOutOfRangeException(
+                nameof(packet),
+                "Pointer backlog exceeds safety limit.");
+
         do
         {
-            int dx = Math.Clamp(x, short.MinValue + 1, short.MaxValue);
-            int dy = Math.Clamp(y, short.MinValue + 1, short.MaxValue);
+            int dx = Math.Clamp(
+                x,
+                short.MinValue + 1,
+                short.MaxValue);
+            int dy = Math.Clamp(
+                y,
+                short.MinValue + 1,
+                short.MaxValue);
             int dw = Math.Clamp(w, -127, 127);
+            int dp = Math.Clamp(pan, -127, 127);
+
             short sx = (short)dx, sy = (short)dy;
+
             yield return new(false,
             [
                 (byte)(p.Buttons & 0x07),
-                (byte)(sx & 0xFF), (byte)((sx >> 8) & 0xFF),
-                (byte)(sy & 0xFF), (byte)((sy >> 8) & 0xFF),
-                unchecked((byte)(sbyte)dw)
+                (byte)(sx & 0xFF),
+                (byte)((sx >> 8) & 0xFF),
+                (byte)(sy & 0xFF),
+                (byte)((sy >> 8) & 0xFF),
+                unchecked((byte)(sbyte)dw),
+                unchecked((byte)(sbyte)dp)
             ]);
-            x -= dx; y -= dy; w -= dw;
-        } while (x != 0 || y != 0 || w != 0);
+
+            x -= dx;
+            y -= dy;
+            w -= dw;
+            pan -= dp;
+        }
+        while (
+            x != 0 ||
+            y != 0 ||
+            w != 0 ||
+            pan != 0);
+    }
+
+    public static byte MapModifierUsage(
+        byte usage,
+        ModifierProfile profile)
+    {
+        if (profile != ModifierProfile.MacCtrlCommandSwap)
+            return usage;
+
+        return usage switch
+        {
+            0xE0 => 0xE3,
+            0xE4 => 0xE7,
+            0xE3 => 0xE0,
+            0xE7 => 0xE4,
+            _ => usage
+        };
     }
 
     public static byte Usage(int vk, int scan = 0, bool extended = false)
@@ -92,15 +180,29 @@ public sealed class KeyboardState
         bool changed = down ? _pressed.Add(usage) : _pressed.Remove(usage);
         return changed ? Snapshot() : null; // Host, not Windows repeat events, owns key repeat.
     }
-    public byte[] Snapshot()
+    public byte[] Snapshot() => BuildSnapshot(_pressed);
+
+    public byte[] SnapshotWith(params byte[] extraUsages)
+    {
+        var combined = new HashSet<byte>(_pressed);
+        foreach (var usage in extraUsages)
+            if (usage != 0) combined.Add(usage);
+        return BuildSnapshot(combined);
+    }
+
+    private static byte[] BuildSnapshot(IEnumerable<byte> pressed)
     {
         byte[] bytes = new byte[8];
-        foreach (var key in _pressed.Where(k => k is >= 0xE0 and <= 0xE7))
+        var keys = pressed.Distinct().ToArray();
+
+        foreach (var key in keys.Where(k => k is >= 0xE0 and <= 0xE7))
             bytes[0] |= (byte)(1 << (key - 0xE0));
-        var ordinary = _pressed.Where(k => k is < 0xE0 or > 0xE7).Order().ToArray();
-        if (ordinary.Length > 6) Array.Fill(bytes, (byte)1, 2, 6); // ErrorRollOver, not silent loss.
+
+        var ordinary = keys.Where(k => k is < 0xE0 or > 0xE7).Order().ToArray();
+        if (ordinary.Length > 6) Array.Fill(bytes, (byte)1, 2, 6);
         else ordinary.CopyTo(bytes, 2);
         return bytes;
     }
+
     public void Clear() => _pressed.Clear();
 }

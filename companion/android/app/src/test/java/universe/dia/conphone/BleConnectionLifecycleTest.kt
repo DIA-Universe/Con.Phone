@@ -1,0 +1,317 @@
+package universe.dia.conphone
+
+import org.junit.Assert.*
+import org.junit.Test
+
+class BleConnectionLifecycleTest {
+    private class Gatt { var disconnects = 0; var closes = 0 }
+    private class Harness {
+        data class Task(val at: Long, val action: () -> Unit, var cancelled: Boolean = false)
+        var now = 0L
+        val tasks = mutableListOf<Task>()
+        val links = mutableListOf<Gatt>()
+        val logs = mutableListOf<String>()
+        var cccdStarted = false
+        var cccdThrows = false
+        var disconnectThrows = false
+        var resets = 0
+        val owner: BleConnectionLifecycle<Gatt> = BleConnectionLifecycle(
+            schedule = { delay, action ->
+                val task = Task(now + delay, action); tasks.add(task)
+                BleTimer { task.cancelled = true }
+            },
+            disableNotifications = { _, canWrite ->
+                if (cccdThrows) error("CCCD disconnected")
+                canWrite && cccdStarted
+            },
+            disconnect = { it.disconnects++; if (disconnectThrows) error("radio gone") },
+            close = { it.closes++ },
+            resetTransport = { resets++ },
+            reconnect = { connect() },
+            log = { logs.add(it) }
+        )
+        fun connect(): Boolean = owner.connect { Gatt().also(links::add) }
+        fun connected() { connect(); owner.linkConnected(); owner.ready() }
+        fun advance(ms: Long) {
+            val end = now + ms
+            while (true) {
+                val next = tasks.filter { !it.cancelled && it.at <= end }.minByOrNull { it.at } ?: break
+                next.cancelled = true; now = next.at; next.action()
+            }
+            now = end
+        }
+    }
+
+    @Test fun tenClicksAndConnectingRequestOpenOnlyOneGatt() {
+        val h = Harness()
+        repeat(10) { h.connect() }
+        assertEquals(1, h.links.size)
+        h.owner.linkConnected(); assertFalse(h.connect())
+        h.owner.ready(); assertFalse(h.connect())
+        h.advance(20_000)
+        assertEquals(0, h.links.single().closes)
+    }
+
+    @Test fun connectionTimeoutClosesBeforeBackoffConnects() {
+        val h = Harness(); h.connect()
+        h.advance(BleConnectionLifecycle.BLE_CONNECT_TIMEOUT_MS)
+        assertEquals(1, h.links.single().closes)
+        assertEquals(BleConnectionState.RECONNECT_WAIT, h.owner.state)
+        h.advance(999); assertEquals(1, h.links.size)
+        h.advance(1); assertEquals(2, h.links.size)
+    }
+
+    @Test fun twentyCyclesCloseExactlyOnceAndIgnoreOldCallbacks() {
+        val h = Harness()
+        repeat(20) {
+            h.owner.resume(); h.connected()
+            val old = h.links.last(); val session = h.owner.generation
+            h.owner.userDisconnect(); h.owner.userDisconnect()
+            h.owner.finishCleanup(old, session)
+            assertFalse(h.owner.accepts(old, session))
+            assertEquals(1, old.closes); assertEquals(1, old.disconnects)
+        }
+        h.owner.resume(); h.connected()
+        h.owner.finishCleanup(h.links.first(), 1)
+        assertEquals(BleConnectionState.CONNECTED, h.owner.state)
+    }
+
+    @Test fun notificationErrorAndDisconnectErrorNeverPreventClose() {
+        val h = Harness(); h.connected(); h.cccdThrows = true; h.disconnectThrows = true
+        h.owner.userDisconnect()
+        assertEquals(1, h.links.single().closes)
+        assertNull(h.owner.resource)
+    }
+
+    @Test fun cccdDisableIsBoundedAndDuplicateCleanupCannotCloseAgain() {
+        val h = Harness(); h.connected(); h.cccdStarted = true
+        val old = h.links.single(); val id = h.owner.generation
+        h.owner.userDisconnect()
+        assertEquals(BleConnectionState.DISCONNECTING, h.owner.state)
+        assertFalse(h.connect())
+        h.advance(750)
+        h.owner.finishCleanup(old, id)
+        assertEquals(1, old.closes)
+    }
+
+    @Test fun successfulCccdCallbackClosesWithoutWaitingForTimeout() {
+        val h = Harness(); h.connected(); h.cccdStarted = true
+        val old = h.links.single(); val id = h.owner.generation
+        h.owner.userDisconnect(); h.owner.finishCleanup(old, id)
+        h.advance(750)
+        assertEquals(1, old.closes)
+    }
+
+    @Test fun mtuDiscoveryCccdAndWriteNeverOverlap() {
+        val h = Harness(); h.connect(); h.owner.linkConnected()
+        for (op in listOf("mtu", "discovery", "cccd", "read:secret", "write")) {
+            assertTrue(h.owner.beginOperation(op))
+            assertFalse(h.owner.beginOperation("other"))
+            assertFalse(h.owner.finishOperation("wrong callback"))
+            assertTrue(h.owner.finishOperation(op))
+        }
+        h.owner.ready(); h.advance(20_000)
+        assertEquals(BleConnectionState.CONNECTED, h.owner.state)
+    }
+
+    @Test fun delayedOperationsKeepLinkAndAcceptOnlyTheirLateCallback() {
+        for (op in listOf("mtu", "discovery", "cccd", "read:secret", "write")) {
+            val h = Harness(); h.connected(); h.owner.beginOperation(op)
+            h.advance(BleConnectionLifecycle.BLE_OPERATION_TIMEOUT_MS)
+            h.advance(300_000)
+            assertEquals(op, 0, h.links.single().closes)
+            assertEquals(op, 0, h.links.single().disconnects)
+            assertEquals(op, 0, h.resets)
+            assertFalse(h.owner.idle)
+            assertFalse(h.owner.beginOperation("new request"))
+            assertFalse(h.owner.finishOperation("wrong callback"))
+            assertTrue(h.owner.finishOperation(op))
+            assertTrue(h.owner.idle)
+        }
+    }
+
+    @Test fun discoveryDelayDoesNotTriggerConnectionTimeoutAfterLinkIsUp() {
+        val h = Harness(); h.connect(); h.owner.linkConnected()
+        h.owner.beginOperation("discovery")
+        h.advance(300_000)
+        assertEquals(1, h.links.size)
+        assertEquals(0, h.links.single().closes)
+        assertTrue(h.owner.finishOperation("discovery"))
+        h.owner.servicesConfigured(); h.owner.ready()
+        assertEquals(BleConnectionState.CONNECTED, h.owner.state)
+    }
+
+    @Test fun pausedSetupPreservesLinkUntilExplicitRetry() {
+        val h = Harness(); h.connect(); h.owner.linkConnected()
+        h.owner.beginOperation("cccd")
+        h.owner.pauseChannel("service or CCCD unavailable")
+        h.advance(300_000)
+        assertEquals(BleConnectionState.CHANNEL_PAUSED, h.owner.state)
+        assertEquals(0, h.links.single().closes)
+        assertFalse(h.owner.idle)
+        assertFalse(h.connect()) // Background starts cannot bypass the pause.
+        assertFalse(h.owner.finishOperation("cccd"))
+        val old = h.links.single()
+        h.owner.resume(); h.advance(1000)
+        assertEquals(1, old.closes)
+        assertEquals(2, h.links.size)
+    }
+
+    @Test fun realDisconnectAfterDelayedOperationClosesOnceAndReacquires() {
+        val h = Harness(); h.connected()
+        val old = h.links.single(); val session = h.owner.generation
+        h.owner.beginOperation("read:capabilities"); h.advance(10_000)
+        h.owner.cleanup("actual status=8 disconnect", retry = true)
+        h.advance(1000); h.owner.linkConnected(); h.owner.ready()
+        assertEquals(1, old.closes)
+        assertFalse(h.owner.accepts(old, session))
+        assertTrue(h.owner.beginOperation("read:capabilities"))
+        assertEquals(2, h.links.size)
+    }
+
+    @Test fun remoteDisconnectClosesObservationWithoutIssuingAnotherDisconnect() {
+        val h = Harness(); h.connected()
+        val old = h.links.single(); val session = h.owner.generation
+        h.owner.cleanup("remote disconnected", retry = true, linkAlreadyDisconnected = true)
+        assertEquals(0, old.disconnects)
+        assertEquals(1, old.closes)
+        h.owner.finishCleanup(old, session)
+        h.advance(1000); h.owner.linkConnected(); h.owner.ready()
+        assertEquals(2, h.links.size)
+        h.owner.userDisconnect()
+        assertEquals(1, h.links.last().disconnects)
+        assertEquals(1, h.links.last().closes)
+        assertEquals(1, old.closes)
+    }
+
+    @Test fun remoteLossDuringGracefulCleanupSkipsRedundantDisconnect() {
+        val h = Harness(); h.connected(); h.cccdStarted = true
+        h.owner.userDisconnect()
+        h.owner.finishCleanup(h.links.single(), h.owner.generation, linkAlreadyDisconnected = true)
+        h.advance(750)
+        assertEquals(0, h.links.single().disconnects)
+        assertEquals(1, h.links.single().closes)
+        h.advance(60_000)
+        assertEquals(1, h.links.size)
+    }
+
+    @Test fun shutdownAndRadioOffStillReleasePausedAndDelayedLinks() {
+        for (paused in listOf(false, true)) {
+            val h = Harness(); h.connected(); h.owner.beginOperation("write")
+            if (paused) h.owner.pauseChannel("setup failure") else h.advance(10_000)
+            h.owner.radioChanged(false); h.owner.shutdown(); h.advance(300_000)
+            assertEquals(1, h.links.single().closes)
+            assertFalse(h.owner.accepts(h.links.single(), h.owner.generation))
+        }
+    }
+
+    @Test fun reconnectBudgetStopsStormAndManualRequestResumes() {
+        val h = Harness(); h.connect()
+        for (delay in listOf(1000L, 2000L, 4000L, 8000L, 16000L)) {
+            val count = h.links.size
+            h.owner.cleanup("status=133", retry = true)
+            h.advance(delay - 1); assertEquals(count, h.links.size)
+            h.advance(1); assertEquals(count + 1, h.links.size)
+        }
+        h.owner.cleanup("status=8", retry = true)
+        assertEquals(BleConnectionState.RECOVERY_PAUSED, h.owner.state)
+        h.advance(300_000); assertEquals(6, h.links.size)
+        assertFalse(h.connect()) // Activity/ACL/START cannot bypass the pause.
+        h.owner.resume(); assertTrue(h.connect())
+        assertEquals(7, h.links.size)
+        h.owner.cleanup("status=8", retry = true)
+        h.owner.userDisconnect(); h.advance(60_000)
+        assertEquals(7, h.links.size)
+    }
+
+    @Test fun approvalWaitDoesNotCloseHealthyHidLink() {
+        val h = Harness(); h.connect(); h.owner.linkConnected()
+        assertTrue(h.owner.beginOperation("cccd")); h.owner.finishOperation("cccd")
+        h.owner.servicesConfigured()
+        repeat(60) {
+            assertTrue(h.owner.beginOperation("read:secret"))
+            h.owner.finishOperation("read:secret") // Includes an explicit authorization denial.
+            h.advance(5000)
+        }
+        assertEquals(BleConnectionState.WAITING_AUTHORIZATION, h.owner.state)
+        assertEquals(1, h.links.size); assertEquals(0, h.links.single().closes)
+        h.owner.ready()
+        assertEquals(BleConnectionState.CONNECTED, h.owner.state)
+    }
+
+    @Test fun rejectedStartsBackOffAndManualRetryReleasesStalledOperation() {
+        val h = Harness(); h.connected()
+        val backoff = BleRequestBackoff()
+        for (delay in listOf(250L, 500L, 1000L, 2000L, 4000L, 5000L, 5000L)) {
+            assertTrue(h.owner.beginOperation("read:capabilities"))
+            h.owner.finishOperation("read:capabilities") // API returned false: no outstanding ATT.
+            assertEquals(delay, backoff.rejected())
+            h.advance(delay)
+        }
+        assertEquals(0, h.links.single().closes)
+        backoff.accepted(); assertEquals(250L, backoff.rejected())
+        h.owner.beginOperation("write") // Accepted, but no callback.
+        h.advance(BleConnectionLifecycle.BLE_OPERATION_TIMEOUT_MS)
+        assertEquals(0, h.links.single().closes)
+        h.owner.resume() // Only a user request permits a connection cycle.
+        assertEquals(1, h.links.single().closes)
+    }
+
+    @Test fun briefSuccessesDoNotResetReconnectBudget() {
+        val h = Harness(); h.connected()
+        for (delay in listOf(1000L, 2000L, 4000L, 8000L, 16000L)) {
+            h.advance(1000)
+            h.owner.cleanup("flapping", retry = true)
+            h.advance(delay)
+            h.owner.linkConnected(); h.owner.ready()
+        }
+        h.owner.cleanup("flapping", retry = true)
+        assertEquals(BleConnectionState.RECOVERY_PAUSED, h.owner.state)
+        h.advance(300_000); assertEquals(6, h.links.size)
+    }
+
+    @Test fun stableConnectionAndRadioCycleRestoreRecoveryBudget() {
+        val h = Harness(); h.connected()
+        h.owner.cleanup("disconnect", retry = true); h.advance(1000)
+        h.owner.linkConnected(); h.owner.ready()
+        h.advance(BleConnectionLifecycle.BLE_STABLE_CONNECTION_MS)
+        h.owner.cleanup("disconnect", retry = true)
+        h.advance(1000); assertEquals(3, h.links.size)
+        h.owner.radioChanged(false); h.owner.radioChanged(true)
+        h.advance(1000); assertEquals(4, h.links.size)
+    }
+
+    @Test fun explicitDisconnectThenConnectGetsFreshRetryBudget() {
+        val h = Harness(); h.connect()
+        for (delay in listOf(1000L, 2000L, 4000L, 8000L, 16000L)) {
+            h.owner.cleanup("unavailable", retry = true); h.advance(delay)
+        }
+        h.owner.userDisconnect(); h.owner.resume(); h.connect()
+        h.owner.cleanup("unavailable", retry = true)
+        assertEquals(BleConnectionState.RECONNECT_WAIT, h.owner.state)
+        h.advance(1000); assertEquals(8, h.links.size)
+    }
+
+    @Test fun radioOffClosesAndOnRestoresUnlessUserStopped() {
+        val h = Harness(); h.connected(); h.owner.radioChanged(false)
+        h.advance(60_000); assertEquals(1, h.links.size)
+        h.owner.radioChanged(true); h.advance(1000); assertEquals(2, h.links.size)
+        h.owner.userDisconnect(); h.owner.radioChanged(false); h.owner.radioChanged(true)
+        h.advance(60_000); assertEquals(2, h.links.size)
+    }
+
+    @Test fun shutdownDuringCccdCleanupIsImmediateAndNeverReconnects() {
+        val h = Harness(); h.connected(); h.cccdStarted = true
+        h.owner.cleanup("switch", retry = true, graceful = true)
+        h.owner.shutdown(); h.owner.shutdown(); h.advance(60_000)
+        assertEquals(1, h.links.size); assertEquals(1, h.links.single().closes)
+        assertFalse(h.connect())
+    }
+
+    @Test fun openExceptionLeavesNoOwnedGattAndSchedulesRetry() {
+        val h = Harness()
+        h.owner.connect { error("adapter off race") }
+        assertNull(h.owner.resource)
+        h.advance(1000); assertEquals(1, h.links.size)
+    }
+}

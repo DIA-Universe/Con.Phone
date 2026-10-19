@@ -1,0 +1,644 @@
+using System.Buffers.Binary;
+using System.Net;
+using System.Net.Sockets;
+using System.Security.Cryptography;
+using System.Text;
+using ConPhone.Core;
+
+namespace ConPhone.Windows;
+
+public sealed class P2PClipboardServer : IAsyncDisposable
+{
+    public const int DataPort = 47911;
+
+    private static readonly byte[] Hello = P2PSecurity.HelloMagic.ToArray();
+    private static readonly byte[] Ready = P2PSecurity.ReadyMagic.ToArray();
+    private static readonly byte[] AadPrefix = P2PSecurity.AadPrefix.ToArray();
+
+    private readonly Func<string?> _approvedDeviceId;
+    private readonly Func<bool> _enabled;
+    private readonly CancellationTokenSource _lifetime = new();
+    private readonly SemaphoreSlim _connectionSlots = new(4, 4);
+    private readonly object _listenerGate = new();
+    private readonly object _clientGate = new();
+    private readonly object _ackGate = new();
+    private readonly Dictionary<Guid, AckWaiter> _ackWaiters = [];
+    private ClientConnection? _client;
+    private TcpListener? _listener;
+    private CancellationTokenSource? _listenerCts;
+    private Task? _acceptLoop;
+
+    public Func<string, ClipboardContent, Task<bool>>? ReceiveContentAsync { get; set; }
+    public event Action<string>? Status;
+
+    private sealed record AckWaiter(
+        ClientConnection Connection,
+        TaskCompletionSource<bool> Completion);
+
+    public P2PClipboardServer(Func<string?> approvedDeviceId, Func<bool> enabled)
+    {
+        _approvedDeviceId = approvedDeviceId;
+        _enabled = enabled;
+    }
+
+    public bool Connected
+    {
+        get
+        {
+            lock (_clientGate)
+                return _client is { Closed: false };
+        }
+    }
+
+    public bool HasClient(string deviceId)
+    {
+        lock (_clientGate)
+            return _client is { Closed: false } client &&
+                   string.Equals(client.DeviceId, deviceId, StringComparison.Ordinal);
+    }
+
+    public Task StartAsync()
+    {
+        lock (_listenerGate)
+        {
+            if (_listener is not null)
+                return Task.CompletedTask;
+
+            ObjectDisposedException.ThrowIf(
+                _lifetime.IsCancellationRequested,
+                this);
+
+            var listener = new TcpListener(
+                IPAddress.Any,
+                DataPort);
+            listener.Start();
+
+            var cts = CancellationTokenSource
+                .CreateLinkedTokenSource(_lifetime.Token);
+
+            _listener = listener;
+            _listenerCts = cts;
+            _acceptLoop = Task.Run(
+                () => AcceptLoopAsync(
+                    listener,
+                    cts.Token));
+
+            Status?.Invoke(
+                $"Clipboard P2P 보안 채널 대기 · TCP {DataPort}");
+        }
+
+        return Task.CompletedTask;
+    }
+
+    private async Task AcceptLoopAsync(
+        TcpListener listener,
+        CancellationToken token)
+    {
+        while (!token.IsCancellationRequested)
+        {
+            try
+            {
+                var tcp = await listener
+                    .AcceptTcpClientAsync(token)
+                    .ConfigureAwait(false);
+
+                if (!await _connectionSlots.WaitAsync(0, token).ConfigureAwait(false))
+                {
+                    tcp.Dispose();
+                    Status?.Invoke("Clipboard P2P 연결 요청이 너무 많아 새 연결을 거부했습니다.");
+                    continue;
+                }
+
+                _ = Task.Run(async () =>
+                {
+                    try
+                    {
+                        await HandleClientAsync(tcp, token).ConfigureAwait(false);
+                    }
+                    catch (OperationCanceledException) when (token.IsCancellationRequested)
+                    {
+                    }
+                    catch (Exception ex)
+                    {
+                        Status?.Invoke($"Clipboard P2P 연결 처리 오류: {ex.Message}");
+                    }
+                    finally
+                    {
+                        _connectionSlots.Release();
+                    }
+                });
+            }
+            catch (OperationCanceledException) when (token.IsCancellationRequested)
+            {
+                break;
+            }
+            catch (ObjectDisposedException) when (token.IsCancellationRequested)
+            {
+                break;
+            }
+            catch (SocketException) when (token.IsCancellationRequested)
+            {
+                break;
+            }
+            catch (Exception ex)
+            {
+                Status?.Invoke($"Clipboard P2P 연결 수락 오류: {ex.Message}");
+                await Task.Delay(500, token).ConfigureAwait(false);
+            }
+        }
+    }
+
+    private async Task HandleClientAsync(TcpClient tcp, CancellationToken token)
+    {
+        using (tcp)
+        {
+            tcp.NoDelay = true;
+            var stream = tcp.GetStream();
+            if (!_enabled()) return;
+            var approved = _approvedDeviceId();
+            if (approved is null) return;
+
+            var approvedHash = SHA256.HashData(Encoding.UTF8.GetBytes(approved));
+            var secret = ClipboardPairingSecretStore.GetOrCreate(approved);
+            byte[]? sessionKey = null;
+
+            try
+            {
+                using var handshakeCts =
+                    CancellationTokenSource.CreateLinkedTokenSource(token);
+                handshakeCts.CancelAfter(TimeSpan.FromSeconds(5));
+                var handshakeToken = handshakeCts.Token;
+
+                var hello = new byte[8 + 32 + 16 + 32];
+                if (!await ReadExactAsync(stream, hello, handshakeToken).ConfigureAwait(false))
+                    return;
+                if (!hello.AsSpan(0, 8).SequenceEqual(Hello))
+                    return;
+
+                var deviceHash = hello.AsSpan(8, 32);
+                var clientNonce = hello.AsSpan(40, 16).ToArray();
+                var clientMac = hello.AsSpan(56, 32);
+
+                if (!CryptographicOperations.FixedTimeEquals(deviceHash, approvedHash))
+                    return;
+
+                var clientSigned = new byte[8 + 32 + 16];
+                Hello.CopyTo(clientSigned, 0);
+                approvedHash.CopyTo(clientSigned, 8);
+                clientNonce.CopyTo(clientSigned, 40);
+                var expectedMac = HMACSHA256.HashData(secret, clientSigned);
+
+                try
+                {
+                    if (!CryptographicOperations.FixedTimeEquals(clientMac, expectedMac))
+                        return;
+                }
+                finally
+                {
+                    CryptographicOperations.ZeroMemory(expectedMac);
+                    CryptographicOperations.ZeroMemory(clientSigned);
+                }
+
+                var serverNonce = RandomNumberGenerator.GetBytes(16);
+                var readySigned = new byte[8 + 16 + 16];
+                Ready.CopyTo(readySigned, 0);
+                clientNonce.CopyTo(readySigned, 8);
+                serverNonce.CopyTo(readySigned, 24);
+                var serverMac = HMACSHA256.HashData(secret, readySigned);
+
+                try
+                {
+                    var ready = new byte[8 + 16 + 32];
+                    Ready.CopyTo(ready, 0);
+                    serverNonce.CopyTo(ready, 8);
+                    serverMac.CopyTo(ready, 24);
+                    await stream.WriteAsync(ready, handshakeToken).ConfigureAwait(false);
+
+                    sessionKey = P2PSecurity.DeriveSessionKey(
+                        secret,
+                        approvedHash,
+                        clientNonce,
+                        serverNonce);
+                }
+                finally
+                {
+                    CryptographicOperations.ZeroMemory(serverMac);
+                    CryptographicOperations.ZeroMemory(readySigned);
+                    CryptographicOperations.ZeroMemory(clientNonce);
+                    CryptographicOperations.ZeroMemory(serverNonce);
+                }
+            }
+            catch (OperationCanceledException) when (!token.IsCancellationRequested)
+            {
+                Status?.Invoke("Clipboard P2P 인증 시간이 초과되어 연결을 종료했습니다.");
+                return;
+            }
+            finally
+            {
+                CryptographicOperations.ZeroMemory(secret);
+            }
+
+            if (sessionKey is null)
+                return;
+
+            var connection = new ClientConnection(
+                approved,
+                tcp,
+                stream,
+                sessionKey,
+                approvedHash);
+
+            CryptographicOperations.ZeroMemory(sessionKey);
+            ClientConnection? replaced;
+            lock (_clientGate)
+            {
+                replaced = _client;
+                _client = connection;
+            }
+            if (replaced is not null)
+            {
+                replaced.Close();
+                FailAckWaiters(
+                    replaced,
+                    new IOException("Clipboard P2P 연결이 새 세션으로 교체되었습니다."));
+            }
+
+            Status?.Invoke("Clipboard P2P 보안 채널 연결됨.");
+
+            var reassembler = new ClipboardReassembler();
+            try
+            {
+                while (!token.IsCancellationRequested && !connection.Closed)
+                {
+                    var frame = await connection.ReadEncryptedAsync(token).ConfigureAwait(false);
+                    if (frame is null) break;
+
+                    if (ClipboardAckCodec.TryDecode(frame, out var ackTransferId))
+                    {
+                        CompleteAck(connection, ackTransferId);
+                        continue;
+                    }
+
+                    var chunk = ClipboardWireCodec.Decode(frame);
+                    var content = reassembler.Add(chunk);
+                    if (content is not null)
+                    {
+                        var receiver = ReceiveContentAsync;
+                        if (receiver is null)
+                        {
+                            Status?.Invoke(
+                                "Clipboard P2P 수신기가 준비되지 않아 ACK를 보류합니다.");
+                            continue;
+                        }
+
+                        var applied = await receiver(
+                                approved,
+                                content)
+                            .WaitAsync(
+                                TimeSpan.FromSeconds(8),
+                                token)
+                            .ConfigureAwait(false);
+
+                        if (!applied)
+                        {
+                            Status?.Invoke(
+                                "Clipboard P2P 내용을 Windows 클립보드에 적용하지 못해 ACK를 보내지 않습니다.");
+                            continue;
+                        }
+
+                        await connection.WriteEncryptedAsync(
+                            ClipboardAckCodec.Encode(chunk.TransferId),
+                            token).ConfigureAwait(false);
+                    }
+                }
+            }
+            catch (Exception ex) when (
+                ex is IOException or
+                SocketException or
+                CryptographicException or
+                InvalidDataException or
+                TimeoutException)
+            {
+                Status?.Invoke($"Clipboard P2P 연결 종료: {ex.Message}");
+            }
+            finally
+            {
+                connection.Close();
+                FailAckWaiters(
+                    connection,
+                    new IOException("Clipboard P2P 연결이 종료되었습니다."));
+
+                lock (_clientGate)
+                {
+                    if (ReferenceEquals(_client, connection))
+                        _client = null;
+                }
+            }
+        }
+    }
+
+    public async Task SendAsync(
+        string deviceId,
+        ClipboardContent content,
+        CancellationToken token)
+    {
+        if (!_enabled())
+            throw new InvalidOperationException("Clipboard sync is disabled.");
+
+        ClientConnection client;
+        lock (_clientGate)
+        {
+            client = _client is { Closed: false } current &&
+                     string.Equals(current.DeviceId, deviceId, StringComparison.Ordinal)
+                ? current
+                : throw new InvalidOperationException("Clipboard P2P 연결이 없습니다.");
+        }
+
+        using var frames = ClipboardWireCodec.Enumerate(content).GetEnumerator();
+        if (!frames.MoveNext())
+            throw new InvalidDataException("Clipboard transfer has no frames.");
+
+        var firstFrame = frames.Current;
+        var transferId = ClipboardWireCodec.Decode(firstFrame).TransferId;
+        var completion = new TaskCompletionSource<bool>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var waiter = new AckWaiter(client, completion);
+
+        lock (_ackGate)
+        {
+            if (_ackWaiters.ContainsKey(transferId))
+                throw new InvalidOperationException(
+                    "Clipboard ACK transfer id collision.");
+
+            _ackWaiters.Add(transferId, waiter);
+        }
+
+        try
+        {
+            await client.WriteEncryptedAsync(
+                firstFrame,
+                token).ConfigureAwait(false);
+
+            while (frames.MoveNext())
+            {
+                await client.WriteEncryptedAsync(
+                    frames.Current,
+                    token).ConfigureAwait(false);
+            }
+
+            await completion.Task.WaitAsync(token).ConfigureAwait(false);
+        }
+        finally
+        {
+            lock (_ackGate)
+            {
+                if (_ackWaiters.TryGetValue(transferId, out var current) &&
+                    ReferenceEquals(current, waiter))
+                    _ackWaiters.Remove(transferId);
+            }
+        }
+    }
+
+    public void Deactivate()
+    {
+        ClientConnection? client;
+        lock (_clientGate)
+        {
+            client = _client;
+            _client = null;
+        }
+
+        if (client is not null)
+        {
+            client.Close();
+            FailAckWaiters(
+                client,
+                new IOException("Clipboard P2P 연결이 비활성화되었습니다."));
+        }
+        Status?.Invoke("Clipboard P2P 연결 종료.");
+    }
+
+    public async Task StopListeningAsync()
+    {
+        TcpListener? listener;
+        CancellationTokenSource? cts;
+        Task? acceptLoop;
+
+        lock (_listenerGate)
+        {
+            listener = _listener;
+            cts = _listenerCts;
+            acceptLoop = _acceptLoop;
+
+            _listener = null;
+            _listenerCts = null;
+            _acceptLoop = null;
+        }
+
+        if (listener is null)
+            return;
+
+        Deactivate();
+
+        try { cts?.Cancel(); }
+        catch (ObjectDisposedException) { }
+
+        try { listener.Stop(); }
+        catch { }
+
+        if (acceptLoop is not null)
+        {
+            try { await acceptLoop.ConfigureAwait(false); }
+            catch (OperationCanceledException) { }
+            catch (ObjectDisposedException) { }
+        }
+
+        cts?.Dispose();
+        Status?.Invoke("Clipboard P2P TCP listener 중지.");
+    }
+
+    private void CompleteAck(
+        ClientConnection connection,
+        Guid transferId)
+    {
+        TaskCompletionSource<bool>? completion = null;
+
+        lock (_ackGate)
+        {
+            if (_ackWaiters.TryGetValue(transferId, out var waiter) &&
+                ReferenceEquals(waiter.Connection, connection))
+            {
+                _ackWaiters.Remove(transferId);
+                completion = waiter.Completion;
+            }
+        }
+
+        completion?.TrySetResult(true);
+    }
+
+    private void FailAckWaiters(
+        ClientConnection connection,
+        Exception error)
+    {
+        List<TaskCompletionSource<bool>> failures = [];
+
+        lock (_ackGate)
+        {
+            foreach (var pair in _ackWaiters
+                         .Where(x => ReferenceEquals(x.Value.Connection, connection))
+                         .ToArray())
+            {
+                _ackWaiters.Remove(pair.Key);
+                failures.Add(pair.Value.Completion);
+            }
+        }
+
+        foreach (var completion in failures)
+            completion.TrySetException(error);
+    }
+
+    private static async Task<bool> ReadExactAsync(Stream stream, Memory<byte> buffer, CancellationToken token)
+    {
+        var offset = 0;
+        while (offset < buffer.Length)
+        {
+            var read = await stream.ReadAsync(buffer[offset..], token).ConfigureAwait(false);
+            if (read == 0) return false;
+            offset += read;
+        }
+
+        return true;
+    }
+
+    private sealed class ClientConnection
+    {
+        private readonly TcpClient _tcp;
+        private readonly NetworkStream _stream;
+        private readonly byte[] _sessionKey;
+        private readonly byte[] _aad;
+        private readonly SemaphoreSlim _send = new(1, 1);
+        private long _sendSequence;
+        private ulong _receiveSequence;
+        private int _closed;
+
+        public string DeviceId { get; }
+        public bool Closed => Volatile.Read(ref _closed) != 0;
+
+        public ClientConnection(
+            string deviceId,
+            TcpClient tcp,
+            NetworkStream stream,
+            byte[] sessionKey,
+            byte[] deviceHash)
+        {
+            DeviceId = deviceId;
+            _tcp = tcp;
+            _stream = stream;
+            _sessionKey = sessionKey.ToArray();
+            _aad = new byte[AadPrefix.Length + deviceHash.Length];
+            AadPrefix.CopyTo(_aad, 0);
+            deviceHash.CopyTo(_aad, AadPrefix.Length);
+        }
+
+        public async Task WriteEncryptedAsync(byte[] plaintext, CancellationToken token)
+        {
+            await _send.WaitAsync(token).ConfigureAwait(false);
+            try
+            {
+                if (Closed) throw new IOException("Clipboard connection closed.");
+
+                var sequence = checked((ulong)Interlocked.Increment(ref _sendSequence));
+                var sequenceBytes = new byte[8];
+                BinaryPrimitives.WriteUInt64LittleEndian(sequenceBytes, sequence);
+
+                var nonce = RandomNumberGenerator.GetBytes(12);
+                var ciphertext = new byte[plaintext.Length];
+                var tag = new byte[16];
+                var frameAad = BuildFrameAad(sequenceBytes);
+
+                using (var aes = new AesGcm(_sessionKey, 16))
+                    aes.Encrypt(nonce, plaintext, ciphertext, tag, frameAad);
+
+                var bodyLength = 12 + 8 + ciphertext.Length + 16;
+                var prefix = new byte[4];
+                BinaryPrimitives.WriteInt32LittleEndian(prefix, bodyLength);
+                await _stream.WriteAsync(prefix, token).ConfigureAwait(false);
+                await _stream.WriteAsync(nonce, token).ConfigureAwait(false);
+                await _stream.WriteAsync(sequenceBytes, token).ConfigureAwait(false);
+                await _stream.WriteAsync(ciphertext, token).ConfigureAwait(false);
+                await _stream.WriteAsync(tag, token).ConfigureAwait(false);
+                await _stream.FlushAsync(token).ConfigureAwait(false);
+            }
+            finally
+            {
+                _send.Release();
+            }
+        }
+
+        public async Task<byte[]?> ReadEncryptedAsync(CancellationToken token)
+        {
+            var prefix = new byte[4];
+            if (!await ReadExactAsync(_stream, prefix, token).ConfigureAwait(false))
+                return null;
+
+            var bodyLength = BinaryPrimitives.ReadInt32LittleEndian(prefix);
+            if (bodyLength < 36 ||
+                bodyLength > ClipboardWireCodec.MaxEncodedFrameBytes + 36)
+                throw new InvalidDataException("Invalid encrypted clipboard frame length.");
+
+            var body = new byte[bodyLength];
+            if (!await ReadExactAsync(_stream, body, token).ConfigureAwait(false))
+                return null;
+
+            var nonce = body.AsSpan(0, 12);
+            var sequenceBytes = body.AsSpan(12, 8);
+            var sequence = BinaryPrimitives.ReadUInt64LittleEndian(sequenceBytes);
+
+            if (sequence != _receiveSequence + 1)
+                throw new InvalidDataException(
+                    $"P2P frame sequence rejected. expected={_receiveSequence + 1} received={sequence}");
+
+            var cipherLength = bodyLength - 36;
+            var ciphertext = body.AsSpan(20, cipherLength);
+            var tag = body.AsSpan(20 + cipherLength, 16);
+            var plaintext = new byte[cipherLength];
+            var frameAad = BuildFrameAad(sequenceBytes);
+
+            using (var aes = new AesGcm(_sessionKey, 16))
+                aes.Decrypt(nonce, ciphertext, tag, plaintext, frameAad);
+
+            _receiveSequence = sequence;
+            return plaintext;
+        }
+
+        private byte[] BuildFrameAad(ReadOnlySpan<byte> sequenceBytes)
+        {
+            var frameAad = new byte[_aad.Length + 8];
+            _aad.CopyTo(frameAad, 0);
+            sequenceBytes.CopyTo(frameAad.AsSpan(_aad.Length));
+            return frameAad;
+        }
+
+        public void Close()
+        {
+            if (Interlocked.Exchange(ref _closed, 1) != 0) return;
+            try { _tcp.Close(); } catch { }
+
+            // A concurrent WriteEncryptedAsync may still be in its finally block.
+            // Keep the private SemaphoreSlim alive until this connection is collected.
+            CryptographicOperations.ZeroMemory(_sessionKey);
+        }
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        _lifetime.Cancel();
+
+        await StopListeningAsync()
+            .ConfigureAwait(false);
+
+        // Connection handlers may still be unwinding and releasing their slot.
+        // Let SemaphoreSlim be collected with this server rather than racing Dispose().
+        _lifetime.Dispose();
+    }
+}

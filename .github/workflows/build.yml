@@ -1,11 +1,22 @@
 name: Windows build and core tests
 on:
   push:
+    branches:
+      - main
+      - feature/clipboard-text-image-sync
   pull_request:
+    types:
+      - opened
+      - reopened
+      - synchronize
+      - ready_for_review
   workflow_dispatch:
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.head.repo.full_name || github.repository }}-${{ github.head_ref || github.ref_name }}
+  cancel-in-progress: true
+
 permissions:
   contents: read
-  pull-requests: write
 jobs:
   build:
     runs-on: windows-latest
@@ -29,76 +40,47 @@ jobs:
           Expand-Archive -Path $zip -DestinationPath $unpack
           $root = Get-ChildItem -Directory $unpack | Select-Object -First 1
           Move-Item $root.FullName (Join-Path $env:RUNNER_TEMP 'conphone-src')
+      - name: Source sanity
+        run: python "$env:RUNNER_TEMP/conphone-src/scripts/verify-source.py"
       - uses: actions/setup-dotnet@v4
         with:
           dotnet-version: '10.0.x'
-      - name: Core behavior tests (no hardware claims)
-        run: dotnet run --project "$env:RUNNER_TEMP/conphone-src/tests/ConPhone.Tests" -c Release
-      - name: Build Windows application
-        run: dotnet build "$env:RUNNER_TEMP/conphone-src/src/ConPhone.Windows" -c Release
-      - name: Real Windows clipboard roundtrip
-        run: dotnet run --project "$env:RUNNER_TEMP/conphone-src/src/ConPhone.Windows" -c Release -- --clipboard-selftest
-      - name: Render all UI tabs
-        run: |
-          $shots = Join-Path $env:RUNNER_TEMP 'ConPhone-ui'
-          New-Item -ItemType Directory -Force -Path $shots | Out-Null
-          dotnet run --project "$env:RUNNER_TEMP/conphone-src/src/ConPhone.Windows" -c Release -- --snapshot $shots
-          $pngs = @(Get-ChildItem $shots -Filter '*.png' -File)
-          if ($pngs.Count -ne 4) { throw "Expected 4 UI snapshots, got $($pngs.Count)." }
+      - name: Core tests, Windows build, clipboard, snapshots and executable verification
+        run: '& "$env:RUNNER_TEMP/conphone-src/scripts/verify-windows.ps1" -Configuration Release -OutputRoot "$env:RUNNER_TEMP/ConPhone-verified"'
       - name: Upload UI snapshots
         uses: actions/upload-artifact@v4
         with:
           name: ConPhone-ui-snapshots
-          path: ${{ runner.temp }}/ConPhone-ui/*.png
+          path: ${{ runner.temp }}/ConPhone-verified/ui/*.png
           if-no-files-found: error
           retention-days: 14
-      - name: Publish one self-contained Windows x64 EXE
-        run: |
-          dotnet publish "$env:RUNNER_TEMP/conphone-src/src/ConPhone.Windows" `
-            -c Release `
-            -r win-x64 `
-            --self-contained true `
-            -p:PublishSingleFile=true `
-            -p:IncludeNativeLibrariesForSelfExtract=true `
-            -p:EnableCompressionInSingleFile=true `
-            -p:PublishTrimmed=false `
-            -p:PublishReadyToRun=false `
-            -p:DebugType=None `
-            -p:DebugSymbols=false `
-            -o "$env:RUNNER_TEMP/ConPhone-win-x64"
-      - name: Verify exactly one distributable file
-        run: |
-          $ErrorActionPreference = 'Stop'
-          $publish = Join-Path $env:RUNNER_TEMP 'ConPhone-win-x64'
-          $exe = Join-Path $publish 'ConPhone.exe'
-          if (!(Test-Path $exe -PathType Leaf)) { throw 'ConPhone.exe was not produced.' }
-          $files = @(Get-ChildItem $publish -File)
-          $unexpected = @($files | Where-Object Name -ne 'ConPhone.exe')
-          if ($unexpected.Count -gt 0) {
-            $names = ($unexpected.Name -join ', ')
-            throw "Single-file publish produced unexpected files: $names"
-          }
-          $hash = (Get-FileHash $exe -Algorithm SHA256).Hash
-          $size = (Get-Item $exe).Length
-          Write-Host "ConPhone.exe size=$size SHA256=$hash"
-      - name: Upload ConPhone.exe
+      - name: Upload LINKO.exe
         uses: actions/upload-artifact@v4
         with:
           name: ConPhone-win-x64-single-exe
-          path: ${{ runner.temp }}/ConPhone-win-x64/ConPhone.exe
+          path: ${{ runner.temp }}/ConPhone-verified/win-x64/LINKO.exe
           if-no-files-found: error
           retention-days: 14
-      - name: Report successful single-EXE build to PR
-        if: success() && github.event_name == 'pull_request'
-        env:
-          GH_TOKEN: ${{ github.token }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
+      - name: Upload LINKO.exe SHA256
+        uses: actions/upload-artifact@v4
+        with:
+          name: ConPhone-win-x64-sha256
+          path: ${{ runner.temp }}/ConPhone-verified/win-x64/LINKO.exe.sha256
+          if-no-files-found: error
+          retention-days: 14
+      - name: Build self-update package
         run: |
-          $exe = Join-Path $env:RUNNER_TEMP 'ConPhone-win-x64\ConPhone.exe'
-          $hash = (Get-FileHash $exe -Algorithm SHA256).Hash
-          $size = (Get-Item $exe).Length
-          $body = "ConPhone single-EXE build succeeded.`n`nrun_id=$env:GITHUB_RUN_ID`nartifact=ConPhone-win-x64-single-exe`nsize=$size`nsha256=$hash"
-          gh pr comment $env:PR_NUMBER --repo $env:GITHUB_REPOSITORY --body $body
+          $package = Join-Path $env:RUNNER_TEMP 'ConPhone-update-package'
+          New-Item -ItemType Directory -Force -Path $package | Out-Null
+          Copy-Item (Join-Path $env:RUNNER_TEMP 'ConPhone-verified\win-x64\LINKO.exe') (Join-Path $package 'LINKO.exe')
+          Copy-Item (Join-Path $env:RUNNER_TEMP 'ConPhone-verified\win-x64\LINKO.exe.sha256') (Join-Path $package 'LINKO.exe.sha256')
+      - name: Upload self-update package
+        uses: actions/upload-artifact@v4
+        with:
+          name: ConPhone-win-x64-update-package
+          path: ${{ runner.temp }}/ConPhone-update-package/*
+          if-no-files-found: error
+          retention-days: 14
       - name: Upload exact source archive
         if: always()
         uses: actions/upload-artifact@v4

@@ -1,0 +1,236 @@
+# Con.Phone text/image clipboard sync
+
+## 목표
+
+Con.Phone의 키보드/마우스 경로와 클립보드 데이터 경로를 분리한다.
+
+- 입력: 표준 BLE HID(HOGP)
+- 텍스트/이미지: Con.Phone Companion data plane
+- 파일/폴더: 지원하지 않음
+
+사용자가 목표로 하는 기본 흐름은 다음과 같다.
+
+1. Windows에서 텍스트 또는 이미지를 복사한다.
+2. Con.Phone으로 입력 대상을 휴대폰으로 전환한다.
+3. 최신 클립보드가 Companion에 전달된다.
+4. 대상 앱이 해당 형식을 지원하면 붙여넣는다.
+
+휴대폰 → Windows는 Companion의 명시적 전송을 사용한다. Android는 ACTION_SEND Share Target으로 다른 앱의 텍스트/이미지를 바로 Con.Phone에 넘길 수 있고, iOS는 Share Extension이 App Group에 payload를 staging한 뒤 Con.Phone 앱이 활성화될 때 기존 BLE/P2P 전송 엔진으로 보낸다.
+
+## 전송 경로
+
+Windows는 다음 순서로 자동 선택한다.
+
+1. **Direct Wi-Fi / P2P 링크** — Windows가 전용 링크를 만들고 Companion이 직접 연결, TCP + AES-256-GCM
+2. **Bluetooth LE fallback** — P2P를 사용할 수 없을 때 텍스트/작은 이미지 전송
+
+Wi-Fi Direct/Wi-Fi Aware 등으로 IP 링크가 이미 만들어진 경우에도 1번 프로토콜을 그대로 사용할 수 있다. 현재 앱이 직접 P2P 그룹을 생성하는 기능은 별도 검증 대상이다.
+
+텍스트는 BLE fallback을 허용한다. 이미지는 기본 512 KiB까지 BLE fallback을 허용하며 Windows 설정에서 64~4096 KiB로 조정할 수 있다.
+
+## 승인 및 보안
+
+클립보드 데이터는 HID report에 넣지 않는다.
+
+Windows에서 사용자가 HID 대상 휴대폰을 승인하면:
+
+- Windows Password Vault에 기기별 256-bit 임의 secret을 생성/보관한다.
+- Companion은 승인된 동일 BLE peer에서만 암호화된 custom GATT characteristic을 읽을 수 있다.
+- characteristic은 deviceHash(32) + secret(32)을 반환한다.
+- BLE characteristic 접근에는 GATT encryption을 요구한다.
+- P2P 연결은 secret 기반 HMAC challenge/response 후 시작한다.
+- 각 P2P clipboard frame은 AES-256-GCM으로 암호화하고 device hash를 AAD에 포함한다.
+
+진단 로그에는 클립보드 본문과 pairing secret을 기록하지 않는다.
+
+## Wire protocol
+
+ConPhone.Core/ClipboardSync.cs가 Windows의 기준 구현이다.
+
+지원 콘텐츠:
+
+- UTF-8 text: 최대 1 MiB
+- PNG/JPEG/WebP image: 최대 32 MiB
+
+각 transfer는 SHA-256을 포함하며 chunk 순서가 뒤바뀌거나 중복되어도 재조립한다. 완료 시 전체 길이와 hash를 다시 검증한다.
+
+BLE에서는 wire frame을 다시 ATT notification/write 크기에 맞게 fragment한다. 이 secondary fragmentation은 30초 timeout과 중복 fragment 방지를 포함한다.
+
+## Windows
+
+Windows 앱은 기존 ClipboardHistoryService를 실제 OS adapter로 사용한다.
+
+- WM_CLIPBOARDUPDATE로 text/image를 읽는다.
+- Windows bitmap은 PNG로 정규화하여 저장/전송한다.
+- 휴대폰 수신 항목을 실제 Windows clipboard에 적용한다.
+- remote apply 시 self-write guard를 사용해 echo loop를 방지한다.
+- 입력 대상을 휴대폰으로 전환할 때 최신 로컬 항목을 동기화한다.
+- 클립보드 탭에서 선택 항목을 수동으로 보낼 수도 있다.
+
+## Android Companion
+
+companion/android
+
+- Android 12(API 31)+
+- foreground BLE connection
+- encrypted custom GATT service 연결
+- BLE credential로 Windows Direct Wi-Fi/P2P 고속 채널 자동 승격
+- PC → Android text: ClipboardManager
+- PC → Android image: app cache의 content URI를 clipboard에 등록
+- Android → PC: Companion 화면의 명시적 보내기 버튼
+- P2P 연결이 불가능하면 BLE fallback
+- Android가 Windows P2P 링크를 사용할 수 있으면 시스템 승인 후 local-only Wi-Fi로 승격
+
+이미지 paste 성공 여부는 붙여넣기 대상 Android 앱이 image/content URI clipboard를 지원하는지에 따라 달라진다.
+
+## iOS Companion
+
+companion/ios
+
+- iOS 17+
+- CoreBluetooth central + background central mode
+- PC → iOS text/image를 UIPasteboard에 적용
+- iOS → PC는 Companion의 명시적 보내기 버튼
+- BLE fallback 지원
+- P2P 고속 연결 버튼: iOS 시스템 승인 → Windows 전용 Wi-Fi → AES-GCM TCP 채널
+
+## 자동 검증과 실기기 검증의 구분
+
+CI에서 검증 가능한 항목:
+
+- .NET core protocol tests
+- Windows build
+- 실제 Windows clipboard text roundtrip
+- 모든 Windows UI tab snapshot render
+- self-contained Windows x64 EXE publish
+- Android debug APK compile
+- iOS Simulator SDK compile
+
+CI만으로 검증할 수 없는 항목:
+
+- 특정 Galaxy/iPhone의 HID + custom GATT 동시 연결
+- Bluetooth MTU/속도
+- Windows 방화벽 환경의 P2P TCP 연결
+- 모바일 앱별 image paste 지원
+- 절전/재부팅 후 장시간 reconnect
+
+이 항목은 실제 기기 E2E 시험표에서 별도로 확인한다.
+
+
+## Windows Direct Wi-Fi 주의사항
+
+Con.Phone은 같은 Wi-Fi를 전제로 하지 않는다. 고속 경로는 Windows가 직접 만드는 Wi-Fi Direct/legacy AP를 사용한다.
+
+- Windows Mobile Hotspot과 Wi-Fi Direct는 동시에 사용할 수 없다. Mobile Hotspot이 켜져 있으면 P2P 시작이 실패할 수 있으며 이 경우 BLE fallback을 사용한다.
+- P2P SSID는 클립보드 설정의 "P2P 링크 이름"으로 바꿀 수 있다.
+- Windows 내장 BLE의 시스템 Bluetooth 페어링 이름은 Con.Phone이 변경하지 않는다. 앱별 GATT 서버에서 시스템 Bluetooth 이름을 안전하게 재정의하는 지원 경로가 없기 때문이다.
+- P2P 비밀번호와 per-device clipboard secret은 Windows Password Vault에 보관한다.
+- 비활성 신뢰 기기는 clipboard secret을 유지할 수 있지만 P2P 설정 읽기와 clipboard 쓰기는 거부된다.
+
+
+## P2P 보안 프로토콜 v2
+
+Direct Wi-Fi/P2P 링크 자체의 WPA2 비밀번호만 신뢰하지 않는다.
+
+1. Companion이 BLE에서 받은 per-device 256-bit secret과 device hash를 사용한다.
+2. TCP 연결 후 CPHELLO2 / CPREADY2 HMAC challenge-response로 상대를 인증한다.
+3. client nonce 16 bytes + server nonce 16 bytes + device hash를 장기 secret과 HMAC-SHA256하여 연결 전용 256-bit session key를 만든다.
+4. clipboard wire frame은 session key로 AES-256-GCM 암호화한다.
+5. 각 방향 frame sequence를 AAD에 포함하고 1부터 정확히 증가해야 한다.
+6. 연결 종료 시 Windows/Android의 session key 메모리를 즉시 폐기한다.
+7. wire frame, BLE fragment 모두 완료 transfer replay와 내용이 바뀐 duplicate chunk를 거부한다.
+8. 동시에 진행 가능한 미완료 transfer/frame 수를 제한하여 메모리 소모 공격을 막는다.
+
+장기 pairing secret은 P2P 데이터 frame의 AES key로 직접 사용하지 않는다.
+
+## HID 입력과 클립보드 QoS
+
+마우스/키보드 입력이 활성 상태일 때 이미지 bulk payload를 BLE로 동시에 밀지 않는다.
+
+- 텍스트: BLE fallback 허용
+- 이미지 + HID 입력 중: P2P를 우선하고 잠시 연결을 기다림
+- P2P가 준비되지 않으면 이미지 BLE bulk 전송을 보류하고 HID 입력을 계속 유지
+- 사용자가 로컬 입력 상태에서 수동 전송하는 작은 이미지는 설정된 BLE 한도 내에서 fallback 가능
+
+이 정책은 이미지 전송 때문에 상대좌표 mouse report가 Bluetooth queue에 밀리는 현상을 줄이기 위한 것이다.
+
+
+## 휴대폰 → PC 공유 UX
+
+### Android
+
+- 다른 앱의 공유 메뉴에서 Con.Phone을 선택할 수 있다.
+- 텍스트는 즉시 서비스 대기열에 넣는다.
+- 이미지는 앱 cache에 임시 staging 후 40 MiB staging cap과 40MP decode cap을 적용한다.
+- PC 연결이 아직 없으면 memory pending queue에 유지하고 BLE credential 또는 P2P 연결 준비 시 자동 전송한다.
+- 파일/폴더 공유는 받지 않는다.
+
+### iOS / iPadOS
+
+- Share Extension은 텍스트 또는 이미지 하나만 받는다.
+- Share Extension 자체가 BLE/P2P 장기 연결을 수행하지 않는다.
+- App Group `group.universe.dia.conphone`에 payload를 staging하고 Con.Phone 본 앱이 활성화될 때 읽는다.
+- 작은 payload는 BLE, 큰 이미지는 사용자 승인형 P2P 경로로 전송한다.
+- 120초 안에 transport가 준비되지 않으면 memory pending은 만료시키되 App Group payload는 유지하여 다음 앱 실행 때 재시도한다.
+- 실제 transport queue에 들어간 뒤에만 App Group payload를 삭제한다.
+
+
+## Windows 방화벽 진단
+
+P2P 데이터 채널은 TCP 47911을 사용한다. Con.Phone은 시작 시 전용 방화벽 규칙 상태를 비권한 조회로 확인하며, 규칙이 없거나 확인되지 않아도 BLE fallback을 막지 않는다. 사용자가 P2P 허용 버튼을 누른 경우에만 UAC를 요청해 inbound rule을 생성하고 다시 검증한다.
+
+
+## BLE fallback 크기 정책
+
+Windows의 "BLE 이미지 한도"가 기준값이다. Clipboard GATT Capabilities v2가 이 값을 64 KiB~4 MiB 범위의 little-endian byte count로 Android/iOS Companion에 전달한다. Companion은 이 값을 폰→PC BLE 전송에도 동일하게 사용한다. Capabilities v2 읽기에 실패하거나 구버전 PC에 연결한 경우 Companion은 안전 기본값 512 KiB를 사용한다.
+
+큰 이미지는 이 한도를 넘기면 BLE로 억지 전송하지 않고 Direct Wi-Fi/P2P 경로를 사용한다.
+
+
+## 전송 실패 복구
+
+- HID 검색 신호는 동일 GATT provider를 유지한 채 5초 watchdog으로 자동 복구한다. 사용자가 직접 서비스를 중지한 경우 watchdog은 재시작하지 않는다.
+- Windows의 단순 GATT readiness 흔들림은 1.5초 grace 후에만 로컬 입력으로 복귀한다. 실제 HID 전송 실패는 즉시 로컬로 복귀한다.
+- Android BLE 송신은 진행 중 Clipboard를 추적하며 write 실패/연결 끊김 시 새 transfer로 대기열에 되돌린다.
+- iOS BLE 송신도 진행 중 Clipboard를 대기 상태로 복원하고, Share Extension 항목은 실제 전송 완료 전까지 App Group 저장소에서 삭제하지 않는다.
+- iOS P2P는 wire frame 전체 배열을 만들지 않고 FrameCursor로 순차 전송한다.
+- Android/iOS 공유 대기열은 최대 8개이며 크기/TTL 제한을 둔다.
+- Android 공유 메뉴 항목은 filesDir + SharedPreferences metadata에 24시간 보관하며, 서비스 프로세스가 종료되어도 다음 실행에서 재전송한다. 실제 P2P/BLE 전송 성공 뒤에만 삭제한다.
+- Android 영구 대기열 metadata는 동기 commit으로 확정해 공유 직후 프로세스 종료에도 항목 유실 가능성을 줄인다.
+- Android의 Nearby Wi-Fi 권한은 P2P 전용이다. 권한을 거부해도 BLE 텍스트/작은 이미지 fallback은 계속 동작한다.
+
+
+## 전송 완료 / ACK 의미
+
+Con.Phone은 로컬 socket/GATT write 성공만으로 클립보드 전송 완료를 판단하지 않는다.
+
+- P2P: 수신 측이 모든 wire chunk를 재조립하고 OS 클립보드 적용에 성공한 뒤 `CPACK1 + transferId` ACK를 AES-GCM 보호 채널로 회신한다.
+- Windows -> Android/iOS BLE: 모바일이 전체 clipboard transfer를 재조립하고 OS 클립보드 적용에 성공한 뒤 ACK control frame을 BLE secondary fragmentation으로 RX characteristic에 회신한다. ACK도 MTU 23 환경을 고려해 일반 BLE fragment로 분할한다.
+- Android/iOS -> Windows BLE: 마지막 GATT write response는 Windows STA thread에서 실제 Clipboard 적용 결과를 기다린 뒤 성공/오류로 반환한다.
+- sender는 ACK 또는 성공 write-response가 확인되기 전에는 Share payload를 영구 대기열에서 삭제하지 않는다.
+- ACK가 유실되면 동일 content가 다른 경로로 재시도될 수 있으므로 Android/iOS는 최근 수신 SHA-256을 짧게 기억해 동일 fallback 재전송을 재적용하지 않는다.
+- P2P frame 자체에는 monotonic authenticated sequence가 포함되어 세션 내 replay/out-of-order를 거부한다.
+
+
+## 휴대폰 → PC 공유 대기열
+
+모바일 OS의 클립보드 개인정보 보호 정책 때문에 휴대폰 → PC는 명시적 사용자 동작을 사용한다.
+
+### Android
+
+- 다른 앱의 공유 메뉴에서 **Con.Phone**을 선택할 수 있다.
+- 공유 텍스트/이미지는 앱 내부 영구 FIFO 대기열에 저장한다.
+- 최대 8개, 총 40 MiB, 각 이미지는 최대 32 MiB, 24시간 TTL이다.
+- BLE/P2P가 아직 준비되지 않았어도 항목은 보존된다.
+- Windows가 실제 클립보드 적용 ACK를 반환한 뒤에만 영구 항목을 삭제한다.
+- Nearby Wi-Fi 권한은 P2P 전용이다. 거부해도 BLE 텍스트/작은 이미지 전송은 계속 동작한다.
+- 사용자가 나중에 P2P 권한을 허용하면 Companion은 즉시 P2P 설정을 다시 읽고 영구 공유 대기열을 재시도한다.
+
+### iOS/iPadOS
+
+- Share Extension에서 텍스트/이미지를 App Group 대기열에 저장한다.
+- 앱과 Share Extension은 `group.universe.dia.conphone`을 공유한다.
+- 최대 8개, 이미지 총 40 MiB, 각 이미지는 최대 32 MiB, 24시간 TTL이다.
+- Share Extension은 네트워크 전송을 직접 하지 않는다. 사용자가 Con.Phone 앱을 열거나 활성화하면 FIFO 순서로 전송한다.
+- Windows 적용 ACK가 확인된 항목만 App Group 대기열에서 삭제한다.
+- 한 항목 전송이 끝나면 다음 영구 Share 항목을 자동으로 이어서 drain한다.

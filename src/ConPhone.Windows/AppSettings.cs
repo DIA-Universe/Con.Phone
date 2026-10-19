@@ -1,6 +1,8 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
 
+using ConPhone.Core;
+
 namespace ConPhone.Windows;
 
 [Flags]
@@ -28,7 +30,11 @@ public sealed class ConPhoneSettings
     public int MouseSpeedPercent { get; set; } = 100;
     public int ScrollSpeedPercent { get; set; } = 100;
     public bool InvertScroll { get; set; }
+    public HangulKeyMode HangulKeyMode { get; set; } = HangulKeyMode.RightAlt;
+    public ModifierProfile ModifierProfile { get; set; } = ModifierProfile.Standard;
+    public HotkeyBinding AppleLockShortcut { get; set; } = new() { Key = (int)Keys.F12 };
 
+    public HotkeyBinding NextDeviceHotkey { get; set; } = new() { Key = (int)Keys.F7 };
     public HotkeyBinding ToggleHotkey { get; set; } = new() { Key = (int)Keys.F8 };
     public HotkeyBinding EmergencyHotkey { get; set; } = new() { Key = (int)Keys.F9 };
     public HotkeyBinding LockAndReturnHotkey { get; set; } = new()
@@ -39,11 +45,21 @@ public sealed class ConPhoneSettings
 
     public int ClipboardHistoryLimit { get; set; } = 50;
     public bool CaptureClipboardText { get; set; } = true;
-    public bool CaptureClipboardImages { get; set; } = true;
+    public bool CaptureClipboardImages { get; set; } = false;
+    public bool ClipboardSyncEnabled { get; set; } = true;
+    public bool ClipboardAutoSendText { get; set; } = true;
+    public bool ClipboardAutoSendImages { get; set; } = false;
+    public int ClipboardBleImageLimitKb { get; set; } = 512;
+    public string P2PLinkName { get; set; } = "ConPhone";
 }
 
 public static class SettingsStore
 {
+    internal static readonly JsonSerializerOptions JsonOptions = new()
+    {
+        WriteIndented = true,
+        Converters = { new JsonStringEnumConverter() }
+    };
     private static readonly string DirectoryPath = Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "ConPhone");
 
@@ -54,8 +70,7 @@ public static class SettingsStore
         try
         {
             if (!File.Exists(FilePath)) return new ConPhoneSettings();
-            var settings = JsonSerializer.Deserialize<ConPhoneSettings>(File.ReadAllText(FilePath));
-            return Normalize(settings ?? new ConPhoneSettings());
+            return ReadJson(File.ReadAllText(FilePath));
         }
         catch
         {
@@ -63,15 +78,14 @@ public static class SettingsStore
         }
     }
 
+    internal static ConPhoneSettings ReadJson(string json) => Normalize(
+        JsonSerializer.Deserialize<ConPhoneSettings>(json, JsonOptions) ?? new ConPhoneSettings());
+
     public static void Save(ConPhoneSettings settings)
     {
         Directory.CreateDirectory(DirectoryPath);
         var normalized = Normalize(settings);
-        var json = JsonSerializer.Serialize(normalized, new JsonSerializerOptions
-        {
-            WriteIndented = true,
-            Converters = { new JsonStringEnumConverter() }
-        });
+        var json = JsonSerializer.Serialize(normalized, JsonOptions);
 
         var temp = FilePath + ".tmp";
         File.WriteAllText(temp, json);
@@ -80,22 +94,52 @@ public static class SettingsStore
 
     public static ConPhoneSettings Normalize(ConPhoneSettings settings)
     {
-        settings.MouseSpeedPercent = Math.Clamp(settings.MouseSpeedPercent, 25, 300);
+        // 1.0 migrates even explicitly disabled legacy settings to automatic text sync.
+        settings.ClipboardSyncEnabled = true;
+        settings.ClipboardAutoSendText = true;
+        settings.CaptureClipboardText = true;
+        settings.ClipboardAutoSendImages = false;
+        settings.CaptureClipboardImages = false;
+        settings.MouseSpeedPercent = Math.Clamp(settings.MouseSpeedPercent, 1, 300);
         settings.ScrollSpeedPercent = Math.Clamp(settings.ScrollSpeedPercent, 25, 300);
         settings.ClipboardHistoryLimit = Math.Clamp(settings.ClipboardHistoryLimit, 10, 200);
+        settings.ClipboardBleImageLimitKb = Math.Clamp(settings.ClipboardBleImageLimitKb, 64, 4096);
+        settings.P2PLinkName = NormalizeP2PLinkName(settings.P2PLinkName);
+        if (!Enum.IsDefined(typeof(HangulKeyMode), settings.HangulKeyMode))
+            settings.HangulKeyMode = HangulKeyMode.RightAlt;
+        if (!Enum.IsDefined(typeof(ModifierProfile), settings.ModifierProfile))
+            settings.ModifierProfile = ModifierProfile.Standard;
 
+        settings.NextDeviceHotkey ??= DefaultNextDevice();
         settings.ToggleHotkey ??= DefaultToggle();
         settings.EmergencyHotkey ??= DefaultEmergency();
         settings.LockAndReturnHotkey ??= DefaultLockAndReturn();
+        settings.AppleLockShortcut ??= new() { Key = (int)Keys.F12 };
+        if (!HotkeyCatalog.IsAllowedKey(settings.AppleLockShortcut.Key))
+            settings.AppleLockShortcut = new() { Key = (int)Keys.F12 };
 
+        if (!HotkeyCatalog.IsAllowedKey(settings.NextDeviceHotkey.Key)) settings.NextDeviceHotkey = DefaultNextDevice();
         if (!HotkeyCatalog.IsAllowedKey(settings.ToggleHotkey.Key)) settings.ToggleHotkey = DefaultToggle();
         if (!HotkeyCatalog.IsAllowedKey(settings.EmergencyHotkey.Key)) settings.EmergencyHotkey = DefaultEmergency();
         if (!HotkeyCatalog.IsAllowedKey(settings.LockAndReturnHotkey.Key)) settings.LockAndReturnHotkey = DefaultLockAndReturn();
 
-        if (HotkeyCatalog.Same(settings.ToggleHotkey, settings.EmergencyHotkey) ||
-            HotkeyCatalog.Same(settings.ToggleHotkey, settings.LockAndReturnHotkey) ||
-            HotkeyCatalog.Same(settings.EmergencyHotkey, settings.LockAndReturnHotkey))
+        var hotkeys = new[]
         {
+            settings.NextDeviceHotkey,
+            settings.ToggleHotkey,
+            settings.EmergencyHotkey,
+            settings.LockAndReturnHotkey
+        };
+
+        var duplicate = hotkeys
+            .Select((binding, index) => new { binding, index })
+            .Any(x => hotkeys
+                .Take(x.index)
+                .Any(previous => HotkeyCatalog.Same(previous, x.binding)));
+
+        if (duplicate)
+        {
+            settings.NextDeviceHotkey = DefaultNextDevice();
             settings.ToggleHotkey = DefaultToggle();
             settings.EmergencyHotkey = DefaultEmergency();
             settings.LockAndReturnHotkey = DefaultLockAndReturn();
@@ -104,6 +148,17 @@ public static class SettingsStore
         return settings;
     }
 
+    private static string NormalizeP2PLinkName(string? value)
+    {
+        var text = string.IsNullOrWhiteSpace(value) ? "ConPhone" : value.Trim();
+        var safe = new string(text
+            .Where(ch => (ch is >= 'A' and <= 'Z') || (ch is >= 'a' and <= 'z') || (ch is >= '0' and <= '9') || ch is '-' or '_' or '.')
+            .Take(18)
+            .ToArray());
+        return string.IsNullOrWhiteSpace(safe) ? "ConPhone" : safe;
+    }
+
+    public static HotkeyBinding DefaultNextDevice() => new() { Key = (int)Keys.F7 };
     public static HotkeyBinding DefaultToggle() => new() { Key = (int)Keys.F8 };
     public static HotkeyBinding DefaultEmergency() => new() { Key = (int)Keys.F9 };
     public static HotkeyBinding DefaultLockAndReturn() => new()

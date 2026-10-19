@@ -1,0 +1,92 @@
+param(
+    [ValidateSet("all", "windows", "android")]
+    [string]$Target = "all"
+)
+
+$ErrorActionPreference = "Stop"
+Set-StrictMode -Version Latest
+
+$repo = Split-Path -Parent $PSScriptRoot
+$artifacts = Join-Path $repo "artifacts/test-now"
+New-Item -ItemType Directory -Force -Path $artifacts | Out-Null
+
+function Require-Command([string]$Name, [string]$Hint) {
+    if (-not (Get-Command $Name -ErrorAction SilentlyContinue)) {
+        throw "$Name 명령을 찾지 못했습니다. $Hint"
+    }
+}
+
+$version = ([xml](Get-Content (Join-Path $repo "src/ConPhone.Windows/ConPhone.Windows.csproj") -Raw)).Project.PropertyGroup.Version
+$androidGradleText = Get-Content (Join-Path $repo 'companion/android/app/build.gradle.kts') -Raw
+$androidVersion = [regex]::Match($androidGradleText, 'versionName\s*=\s*"([^"]+)"').Groups[1].Value
+if ($version -ne $androidVersion) { throw "EXE/APK version mismatch: $version / $androidVersion" }
+Write-Host "LINKO $version TEST NOW" -ForegroundColor Cyan
+Write-Host "Repo: $repo"
+
+if ($Target -in @("all", "windows")) {
+    Require-Command "dotnet" ".NET 10 SDK를 설치한 뒤 다시 실행하세요: https://dotnet.microsoft.com/download/dotnet/10.0"
+
+    Write-Host ""
+    Write-Host "== Windows/Core 검증 + EXE 생성 ==" -ForegroundColor Cyan
+    $verifyArgs = @{ Configuration = "Release"; OutputRoot = (Join-Path $artifacts "windows") }
+    & (Join-Path $PSScriptRoot "verify-windows.ps1") @verifyArgs
+
+    $exe = Join-Path $artifacts "windows/win-x64/LINKO.exe"
+    if (!(Test-Path $exe -PathType Leaf)) {
+        throw "Windows 테스트 EXE가 생성되지 않았습니다."
+    }
+
+    Write-Host "Windows TEST EXE: $exe" -ForegroundColor Green
+}
+
+if ($Target -in @("all", "android")) {
+    Require-Command "java" "JDK 17과 Android SDK 35를 설치하세요."
+    $source = Join-Path $repo "companion/android"
+    $project = $source
+    # AGP rejects non-ASCII project paths on Windows. Use a fresh staging copy.
+    if ($source -match '[^\x00-\x7F]') {
+        $project = Join-Path $env:LOCALAPPDATA ("ConPhoneBuild/android-" + [Guid]::NewGuid().ToString("N"))
+        if ($project -match '[^\x00-\x7F]') {
+            throw "Android requires an ASCII build path. Clone into C:\src\ConPhone and retry."
+        }
+        New-Item -ItemType Directory -Path $project -Force | Out-Null
+        & robocopy $source $project /E /XD .gradle build /XF local.properties /NFL /NDL /NJH /NJS
+        if ($LASTEXITCODE -ge 8) { throw "Android source staging failed." }
+        Write-Host "Android build path: $project"
+    }
+    $gradle = Join-Path $project "gradlew.bat"
+    if (!(Test-Path -LiteralPath $gradle)) { throw "Gradle Wrapper is missing: $gradle" }
+    Write-Host "== Android Companion tests + APK ==" -ForegroundColor Cyan
+    & $gradle --no-daemon -p $project :app:testDebugUnitTest :app:assembleDebug
+    if ($LASTEXITCODE -ne 0) { throw "Android tests/build failed (exit $LASTEXITCODE)." }
+
+    $apk = Join-Path $project "app/build/outputs/apk/debug/app-debug.apk"
+    if (!(Test-Path -LiteralPath $apk -PathType Leaf)) { throw "Android debug APK was not produced." }
+    if ((Get-Item -LiteralPath $apk).Length -eq 0) { throw "Android APK is empty." }
+    if ($project -ne $source) {
+        $expected = Join-Path $source "app/build/outputs/apk/debug"
+        New-Item -ItemType Directory -Path $expected -Force | Out-Null
+        Copy-Item -LiteralPath $apk -Destination (Join-Path $expected 'app-debug.apk') -Force
+    }
+    $reports = Join-Path $artifacts 'android-test-results'
+    New-Item -ItemType Directory -Path $reports -Force | Out-Null
+    Copy-Item (Join-Path $project 'app/build/test-results/testDebugUnitTest/*.xml') $reports -Force
+    $apkOut = Join-Path $artifacts "LINKO-$version.apk"
+    Copy-Item -LiteralPath $apk -Destination $apkOut -Force
+    $hash = (Get-FileHash -LiteralPath $apkOut -Algorithm SHA256).Hash
+    Set-Content -LiteralPath "$apkOut.sha256" -Value "$hash  $(Split-Path -Leaf $apkOut)" -NoNewline
+    Write-Host "Android TEST APK: $apkOut" -ForegroundColor Green
+}
+Write-Host ""
+Write-Host "== 실기기 최소 테스트 순서 ==" -ForegroundColor Cyan
+Write-Host "1. Windows Mobile Hotspot을 끕니다."
+Write-Host "2. 기존 Bluetooth 페어링을 유지합니다. HID 구독이 없을 때만 다시 페어링합니다."
+Write-Host "3. Windows LINKO.exe와 Android LINKO $version 을 실행합니다."
+Write-Host "4. 같은 Wi-Fi에는 연결하지 않은 상태에서 테스트합니다."
+Write-Host "5. 마우스 60초 이동/드래그/휠, 한영키, WIN+L, 미디어키를 확인합니다."
+Write-Host "6. PC 텍스트 복사 -> 폰 붙여넣기를 확인합니다 (동기화는 기본 활성)."
+Write-Host "7. 이미지는 전송되지 않고 안내 문구가 표시되는지 확인합니다."
+Write-Host "8. 삼성 키보드를 유지한 채 Shizuku 승인 후 다른 앱에서 복사 -> PC 붙여넣기를 확인합니다."
+Write-Host "9. Shizuku 미설정 상태에서는 LINKO 열기 또는 공유 -> LINKO로 전송합니다."
+Write-Host ""
+Write-Host "자세한 체크리스트: docs/LINKO-$version.md"

@@ -1,0 +1,71 @@
+package universe.dia.conphone
+
+import android.Manifest
+import android.app.Activity
+import android.content.Intent
+import android.content.pm.PackageManager
+import android.os.Bundle
+import android.widget.Toast
+
+class ShareActivity : Activity() {
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+
+        if (intent?.action != Intent.ACTION_SEND) {
+            finish()
+            return
+        }
+
+        when {
+            intent.type?.startsWith("text/") == true -> shareText()
+            else -> {
+                Toast.makeText(this, "이미지는 전달되지 않습니다. 텍스트만 지원합니다.", Toast.LENGTH_SHORT).show()
+                finish()
+            }
+        }
+    }
+
+    private fun shareText() {
+        val text = intent.getCharSequenceExtra(Intent.EXTRA_TEXT)?.toString()
+        if (text.isNullOrEmpty()) {
+            Toast.makeText(this, "공유할 텍스트가 없습니다.", Toast.LENGTH_SHORT).show()
+            finish()
+            return
+        }
+
+        runCatching {
+            AndroidSharedPayloadStore(this).saveText(text)
+        }.onSuccess {
+            dispatchDrain()
+            Toast.makeText(this, "PC 전송 대기열에 저장했습니다.", Toast.LENGTH_SHORT).show()
+        }.onFailure {
+            Toast.makeText(this, "공유 저장 실패: ${it.message}", Toast.LENGTH_SHORT).show()
+        }
+        finish()
+    }
+
+    private fun dispatchDrain() {
+        dispatchServiceIntent(
+            Intent(this, ClipboardBridgeService::class.java)
+                .setAction(ClipboardBridgeService.ACTION_DRAIN_SHARED)
+        )
+    }
+
+    private fun dispatchServiceIntent(serviceIntent: Intent) {
+        if (hasTransportPermissions()) {
+            startForegroundService(serviceIntent)
+            return
+        }
+
+        val setup = Intent(this, MainActivity::class.java)
+            .setAction(serviceIntent.action)
+            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+
+        serviceIntent.extras?.let { setup.putExtras(it) }
+        startActivity(setup)
+    }
+
+    private fun hasTransportPermissions(): Boolean =
+        checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT) == PackageManager.PERMISSION_GRANTED
+
+}

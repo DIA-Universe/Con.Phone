@@ -1,63 +1,39 @@
-# Con.Phone
+# LINKO
 
-**노트북의 키보드·마우스 → 내장 Bluetooth → 갤럭시(Android) / iPhone.**
+PC의 키보드와 마우스를 Bluetooth로 휴대폰에서 사용하세요.
 
-추가 동글, USB 연결, 외부 서버, 계정, DB 없이 사용하는 Windows용 무선 입력 실험 프로그램입니다. Android와 iPhone은 동일한 BLE HID 보고서를 사용합니다. 별도 휴대폰 앱을 설치하지 않습니다.
+**Windows / Android 1.0.15** · [EXE 다운로드](https://github.com/DIA-Universe/Con.Phone/releases/download/v1.0.15/LINKO.exe) · [Android APK](https://github.com/DIA-Universe/Con.Phone/releases/download/v1.0.15/LINKO-1.0.15.apk) · [릴리스](https://github.com/DIA-Universe/Con.Phone/releases/tag/v1.0.15)
 
-> **0.1 실험 버전입니다. 두 운영체제 모두 실제 연결·입력을 아직 검증하지 않았습니다.** Windows 빌드와 자동 테스트 통과는 실기기 호환성 인증이 아닙니다. 첫 실기기 시험 대상은 갤럭시이며 iPhone 검증은 미완료로 유지합니다. 이지블루보다 빠르거나 안정적이라는 성능 주장을 하지 않습니다.
+**1.0.15 연결 안정화:** 연결 중 검색 신호 오류만으로 Bluetooth 서비스를 반복 게시하지 않도록 바꿨습니다. Android LINKO는 외부 키보드·마우스 연결 상태가 바뀌어도 화면을 유지하고, 같은 알림을 반복 갱신하지 않습니다. PC의 EXE를 교체하고 Android LINKO를 사용한다면 APK도 함께 업데이트하세요. 기존 페어링과 설정은 유지합니다. 자동 검사와 Windows 네이티브 서비스 검사는 통과했지만, 사용자가 겪은 실제 휴대폰의 끊김·화면 깜빡임 개선 여부는 아직 확인하지 못했습니다. [변경 내용과 검증 범위](docs/LINKO-1.0.15.md).
 
-## 다운로드 / 실행
+## 시작하기
 
-저장소의 **Actions → Windows build and core tests → 성공한 실행 → Artifacts → ConPhone-win-x64**에서 내려받아 전체 압축을 푼 뒤 `ConPhone.exe`를 실행합니다. .NET 런타임을 포함하는 x64 배포본입니다. 코드 서명은 되어 있지 않습니다. 조직 보안 정책을 우회하거나 백신을 끄지 마세요.
+1. Windows에서 `LINKO.exe`를 실행합니다.
+2. 휴대폰 Bluetooth 설정에서 이 PC를 연결합니다. 표시되는 이름은 Windows PC 이름일 수 있습니다.
+3. LINKO에서 기기를 선택하고 **이 기기 사용**을 누릅니다.
+4. **F8**로 휴대폰을 조작하고 **F9**로 PC로 돌아옵니다. 1.0.9에서는 PC 사용 중 F9가 일반 키로 동작합니다.
 
-**이름 주의:** GitHub 저장소/제품 이름은 Con.Phone이지만, Windows에서는 `CON` 및 `CON.*`가 예약되어 있습니다. 로컬 폴더와 실행 파일은 반드시 `ConPhone`처럼 점을 뺀 이름을 사용합니다. 저장소 이름 자체를 바꿀 필요는 없습니다.
+## iPhone · iPad
 
-## 갤럭시에서 첫 시험
+앱 설치 없이 키보드·마우스만 사용합니다. iPhone은 **설정 → 손쉬운 사용 → 터치 → AssistiveTouch**를 켜고 **기기 → Bluetooth 기기**에서 연결하세요. iPad는 **설정 → Bluetooth**에서 연결합니다. PC 입력 설정에 **Apple 권장값**이 있습니다.
 
-1. Windows와 갤럭시의 Bluetooth를 켭니다. 케이블이나 추가 동글은 사용하지 않습니다.
-2. 앱의 **Bluetooth 검사**에서 `Peripheral 역할: True`인지 확인합니다. False이면 이 내장 어댑터/드라이버 조합에서 현재 방식은 동작하지 않습니다.
-3. **휴대폰 검색 허용**을 누르고 갤럭시의 Bluetooth 설정에서 이 PC를 검색합니다. 이름은 Windows가 제공하므로 반드시 `Con.Phone`으로 표시되는 것은 아닙니다. 양쪽 페어링 요청과 코드/기기 이름을 직접 확인하세요.
-4. 앱이 HID 연결 목록을 자동 갱신합니다. 키보드·마우스가 모두 True이고 페어링도 True인 본인 기기를 **승인**합니다. 기기가 하나면 자동 선택됩니다. 구독 목록이 비어 있으면 아직 HID로 연결된 것이 아닙니다.
-5. 갤럭시에서 Samsung Notes 등 비민감한 시험 입력 화면을 열고, 누른 키·마우스 버튼을 모두 놓은 다음 **F8**을 눌러 전환합니다. **F9**는 즉시 노트북 복귀입니다.
-6. 갤럭시 설정의 물리 키보드 메뉴에서 한국어 배열/언어 전환 설정을 확인합니다. 메뉴 위치는 One UI 버전에 따라 다릅니다. `안녕하세요`, `SAP CO 2026`, 받침 수정과 드래그·휠을 시험합니다.
-7. 실패하면 **진단 저장**으로 JSON을 저장합니다. 입력 내용, 키코드, 페어링 코드, 기기 이름·주소는 내보내지 않습니다.
+실제 iPhone/iPad와 Windows 어댑터 조합의 동작은 아직 검증하지 못했습니다. [Apple 연결 안내](https://support.apple.com/en-gb/111775)를 참고하세요.
 
-**광고 시작 → OS 페어링 → HID 구독 → 기기 승인 → 입력 반영**은 각각 다른 단계입니다. 광고가 시작됐다는 이유로 입력 가능하다고 표시하지 않습니다.
+## Android 클립보드
 
-## iPhone
+`LINKO-1.0.15.apk`를 설치하고 처음 실행할 때 Bluetooth 권한을 허용하세요. 홈의 **연결할 PC 선택**에서 페어링한 PC를 한 번 선택하면 이후 해당 PC에만 자동 연결합니다. 기존에 저장된 PC는 그대로 사용합니다. 주변 키보드·마우스를 검색해 자동 접속하지 않습니다. 텍스트 동기화는 기본으로 켜져 있으며 기존 Con.Phone / LINKO에 덮어 설치할 수 있습니다.
 
-같은 BLE HID 구현을 사용합니다. 별도 iPhone 제어 API나 가짜 연결 화면을 넣지 않았습니다. 포인터를 사용하려면 iPhone에서 `설정 → 손쉬운 사용 → 터치 → AssistiveTouch`를 확인해야 합니다. iPhone 기기가 없어 실제 발견·페어링·한글·드래그·스크롤은 검증하지 않았습니다. 프로필 선택은 안내/진단 분류이며 호환성 보증이 아닙니다.
+**이미지는 전달되지 않습니다.** PC에서 복사한 텍스트는 휴대폰으로 자동 전송됩니다.
 
-## 현재 구현
+휴대폰의 **다른 앱에서 복사 → PC 자동 전송**은 LINKO의 **다른 앱에서도 자동 복사 설정**에서 설정합니다. 삼성 키보드를 그대로 유지하며, [Shizuku](https://shizuku.rikka.app/download/) 설치 후 무선 또는 USB 디버깅으로 시작하고 LINKO 권한을 승인해야 합니다. 재부팅하면 Shizuku를 다시 시작해야 합니다. 일반 Bluetooth 권한만으로 Android 백그라운드 클립보드를 읽을 수는 없습니다. Shizuku 설정 전이나 중지 상태에서는 LINKO 화면을 열거나 **공유 → LINKO**로 텍스트를 보낼 수 있습니다. 이 자동 모드의 Galaxy S25+ 실기기 검증은 아직 남아 있습니다.
 
-- Windows LE Peripheral 지원/무선 상태 진단, HID 서비스 0x1812 광고.
-- 키보드·상대 마우스 HID Report Map, Report Reference, Boot Protocol, Control Point, LED 출력 처리.
-- 암호화된 특성 접근, OS 페어링 확인, 사용자가 선택한 단일 기기에만 알림 전송.
-- 별도 스레드의 입력 수집, F8 전환/F9 복귀, 한글·한자 물리 키 매핑.
-- 순서를 보존하는 제한된 전송 큐, 버튼/키 경계를 넘지 않는 마우스 이동 병합.
-- 키 해제 보고서, 오류·구독 변경·절전·잠금 시 로컬 복귀 및 자동 원격 재개 방지.
-- 트레이 상태, 입력 내용을 제외한 진단 저장, 자체 동작 테스트, Windows 자동 빌드.
+## 설정과 도움말
 
-## 중요 제약
+감도·한영키·단축키는 **입력 설정**, 연결 상세 정보와 로그는 **도움말**에 있습니다. 마우스 속도는 1–300% 범위에서 **1% 단위**로 직접 입력하거나 화살표로 조절하고 저장합니다. 파일 전송과 화면 미러링은 포함하지 않습니다. Windows Bluetooth LE Peripheral 지원이 필요합니다.
 
-- Windows 11 x64 + 내장 Bluetooth LE Peripheral 지원을 우선 대상으로 합니다. Windows 10 API를 사용하지만 모든 OS/칩셋 지원을 보장하지 않습니다.
-- Windows가 GAP/DIS 등 일부 서비스를 관리하므로 이 프로그램은 이를 재정의하지 않습니다. 휴대폰의 HID 탐색 정책 때문에 PC가 목록에 안 보이거나 페어링 후 구독이 안 될 수 있습니다. 이는 **실기기 검증이 필요한 기술 위험**입니다.
-- F8/F9는 앱 실행 중 예약 키입니다. 휴대폰에 그대로 전달하지 않습니다. 펜/태블릿 등 절대 좌표 장치는 이 버전에서 지원하지 않습니다.
-- 보안 데스크톱, 관리자 앱, UAC, Ctrl+Alt+Delete는 일반 앱이 완전히 제어할 수 없습니다. 관리자 권한으로 강제 실행하거나 보안 기능을 끄지 않습니다.
-- 연결이 이미 끊긴 뒤에는 휴대폰에 키 해제 신호를 보낼 수 없습니다. 로컬 입력부터 복구하며, 휴대폰에 눌림이 남으면 Bluetooth 연결을 해제해야 합니다.
-- 공유 클립보드, 화면 미러링, 파일 전송, 자동 한영 상태 추측, 동글 방식은 포함하지 않습니다.
+## 개발 / 검증
 
-## 개발
+.NET 10, JDK 17, Android SDK 35를 사용합니다. `scripts/test-now.ps1 -Target all`은 EXE/APK 버전 일치를 검사한 뒤 로컬에서 빌드합니다. GitHub Actions를 실행할 필요가 없습니다.
 
-.NET 10 SDK와 Windows 개발 환경이 필요합니다. Windows에서 clone할 때 대상 디렉터리를 명시합니다.
+1.0.6은 Android의 주변 HID 기기 자동 접속과 Windows의 상대 기기 접근/연결 유지 요청을 제거합니다. 기존 3초 입력 복구 유예는 유지합니다. 검증 범위와 실기기 확인이 남은 항목은 [1.0.6 검토 기록](docs/LINKO-1.0.6.md), 자동 복사 설정은 [1.0.0 기록](docs/LINKO-1.0.0.md)에 정리했습니다. 저장소 주소와 기존 설치 데이터 식별자는 호환성을 위해 유지합니다.
 
-```powershell
-git clone https://github.com/DIA-Universe/Con.Phone.git ConPhone
-cd ConPhone
-dotnet run --project tests/ConPhone.Tests -c Release
-dotnet build src/ConPhone.Windows -c Release
-dotnet run --project src/ConPhone.Windows
-dotnet publish src/ConPhone.Windows -c Release -r win-x64 --self-contained true -o artifacts/ConPhone-win-x64
-```
-
-기술 구조와 검증 범위는 `docs/ARCHITECTURE.md`, 실기기 시험표는 `docs/TESTING.md`를 확인하세요.

@@ -1,0 +1,515 @@
+import Foundation
+import Network
+import CryptoKit
+import Security
+
+final class P2PClipboardChannel {
+    private let connection: NWConnection
+    private let secret: Data
+    private let deviceHash: Data
+    private let aad: Data
+    private let queue = DispatchQueue(label: "ConPhone.P2PClipboard")
+    private let onFrame: (Data) -> Data?
+    private let onStatus: (String) -> Void
+    private let onReady: () -> Void
+    private let onClosed: () -> Void
+
+    private struct PendingTransfer {
+        let cursor: ClipboardProtocol.FrameCursor
+        let transferId: Data
+        let completion: () -> Void
+        let failure: (Error) -> Void
+    }
+
+    private var pendingTransfers: [PendingTransfer] = []
+    private var activeTransfer: PendingTransfer?
+    private var awaitingAcks: [Data: PendingTransfer] = [:]
+    private var pendingControlFrames: [Data] = []
+    private var writing = false
+    private var sessionKey: Data?
+    private var sendSequence: UInt64 = 0
+    private var receiveSequence: UInt64 = 0
+    private(set) var ready = false
+    private var closedNotified = false
+    private var intentionalClose = false
+
+    init(
+        host: String,
+        port: UInt16,
+        deviceHash: Data,
+        secret: Data,
+        onFrame: @escaping (Data) -> Data?,
+        onStatus: @escaping (String) -> Void,
+        onReady: @escaping () -> Void = {},
+        onClosed: @escaping () -> Void = {}
+    ) {
+        self.deviceHash = deviceHash
+        self.secret = secret
+        self.aad = Data("ConPhone-Clipboard-P2P-v2".utf8) + deviceHash
+        self.onFrame = onFrame
+        self.onStatus = onStatus
+        self.onReady = onReady
+        self.onClosed = onClosed
+
+        let endpointPort = NWEndpoint.Port(rawValue: port)!
+        self.connection = NWConnection(
+            host: NWEndpoint.Host(host),
+            port: endpointPort,
+            using: .tcp
+        )
+    }
+
+    func start() {
+        connectionGeneration += 1
+        let generation = connectionGeneration
+
+        queue.asyncAfter(deadline: .now() + 8) { [weak self] in
+            guard let self,
+                  self.connectionGeneration == generation,
+                  !self.ready else { return }
+
+            self.onStatus("P2P 연결/인증 시간이 초과되어 연결을 종료합니다.")
+            self.connection.cancel()
+        }
+
+        connection.stateUpdateHandler = { [weak self] state in
+            guard let self else { return }
+            switch state {
+            case .ready:
+                self.handshake()
+            case .failed(let error):
+                self.connectionGeneration += 1
+                self.ready = false
+                if !self.intentionalClose {
+                    self.failAllTransfers(error)
+                }
+                self.onStatus("P2P TCP 연결 실패: \(error.localizedDescription)")
+                self.notifyClosedOnce()
+            case .cancelled:
+                self.connectionGeneration += 1
+                self.ready = false
+                if !self.intentionalClose {
+                    self.failAllTransfers(ChannelError.closed)
+                }
+                self.notifyClosedOnce()
+            default:
+                break
+            }
+        }
+        connection.start(queue: queue)
+    }
+
+    func send(
+        cursor: ClipboardProtocol.FrameCursor,
+        completion: @escaping () -> Void = {},
+        failure: @escaping (Error) -> Void = { _ in }
+    ) {
+        queue.async { [weak self] in
+            guard let self else { return }
+
+            guard self.ready else {
+                failure(ChannelError.closed)
+                return
+            }
+
+            let inFlight =
+                self.pendingTransfers.count +
+                self.awaitingAcks.count +
+                (self.activeTransfer == nil ? 0 : 1)
+
+            guard inFlight < 8 else {
+                self.onStatus("P2P 전송 대기열이 가득 찼습니다.")
+                failure(ChannelError.busy)
+                return
+            }
+
+            self.pendingTransfers.append(
+                PendingTransfer(
+                    cursor: cursor,
+                    transferId: cursor.transferId,
+                    completion: completion,
+                    failure: failure))
+            self.pumpWrites()
+        }
+    }
+
+    func close() {
+        queue.async { [weak self] in
+            guard let self else { return }
+            self.intentionalClose = true
+            self.connectionGeneration += 1
+            self.handshakeGeneration += 1
+            self.ready = false
+            self.sessionKey = nil
+            self.pendingTransfers.removeAll()
+            self.activeTransfer = nil
+            self.awaitingAcks.removeAll()
+            self.pendingControlFrames.removeAll()
+            self.connection.cancel()
+        }
+    }
+
+    private func notifyClosedOnce() {
+        guard !closedNotified else { return }
+        closedNotified = true
+        sessionKey = nil
+        pendingTransfers.removeAll()
+        activeTransfer = nil
+        awaitingAcks.removeAll()
+        pendingControlFrames.removeAll()
+        onClosed()
+    }
+
+    private func failAllTransfers(_ error: Error) {
+        var failed: [PendingTransfer] = []
+        if let activeTransfer {
+            failed.append(activeTransfer)
+        }
+        failed.append(contentsOf: pendingTransfers)
+        failed.append(contentsOf: awaitingAcks.values)
+
+        activeTransfer = nil
+        pendingTransfers.removeAll()
+        awaitingAcks.removeAll()
+        pendingControlFrames.removeAll()
+
+        for transfer in failed {
+            transfer.failure(error)
+        }
+    }
+
+    private func handshake() {
+        handshakeGeneration += 1
+        let generation = handshakeGeneration
+
+        queue.asyncAfter(deadline: .now() + 5) { [weak self] in
+            guard let self,
+                  self.handshakeGeneration == generation,
+                  !self.ready else { return }
+
+            self.onStatus("P2P 인증 시간이 초과되어 연결을 종료합니다.")
+            self.connection.cancel()
+        }
+
+        var clientNonce = Data(count: 16)
+        clientNonce.withUnsafeMutableBytes { bytes in
+            _ = SecRandomCopyBytes(kSecRandomDefault, 16, bytes.baseAddress!)
+        }
+
+        let hello = Data("CPHELLO2".utf8)
+        let signed = hello + deviceHash + clientNonce
+        let mac = hmac(signed)
+        let message = signed + mac
+
+        connection.send(content: message, completion: .contentProcessed { [weak self] error in
+            guard let self else { return }
+            if let error {
+                self.onStatus("P2P 인증 요청 실패: \(error.localizedDescription)")
+                self.connection.cancel()
+                return
+            }
+
+            self.receiveExact(56) { result in
+                switch result {
+                case .failure(let error):
+                    self.onStatus("P2P 인증 응답 실패: \(error.localizedDescription)")
+                    self.connection.cancel()
+                case .success(let response):
+                    guard response.count == 56,
+                          response.prefix(8) == Data("CPREADY2".utf8) else {
+                        self.onStatus("P2P 인증 응답 형식 오류")
+                        self.connection.cancel()
+                        return
+                    }
+
+                    let serverNonce = response.subdata(in: 8..<24)
+                    let serverMac = response.subdata(in: 24..<56)
+                    let expected = self.hmac(
+                        Data("CPREADY2".utf8) + clientNonce + serverNonce
+                    )
+                    guard self.constantTimeEqual(serverMac, expected) else {
+                        self.onStatus("P2P 인증 실패")
+                        self.connection.cancel()
+                        return
+                    }
+
+                    do {
+                        self.sessionKey = try P2PSecurity.deriveSessionKey(
+                            secret: self.secret,
+                            deviceHash: self.deviceHash,
+                            clientNonce: clientNonce,
+                            serverNonce: serverNonce)
+                    } catch {
+                        self.onStatus("P2P 세션키 파생 실패")
+                        self.connection.cancel()
+                        return
+                    }
+
+                    self.connectionGeneration += 1
+                    self.handshakeGeneration += 1
+                    self.ready = true
+                    self.onStatus("Clipboard P2P 고속 채널 연결됨")
+                    self.onReady()
+                    self.readEncryptedLoop()
+                    self.pumpWrites()
+                }
+            }
+        })
+    }
+
+    private func pumpWrites() {
+        guard ready, !writing else { return }
+
+        if !pendingControlFrames.isEmpty {
+            let control = pendingControlFrames.removeFirst()
+            writing = true
+            sendEncrypted(control) { [weak self] error in
+                guard let self else { return }
+                self.queue.async {
+                    self.writing = false
+
+                    if let error {
+                        self.ready = false
+                        self.failAllTransfers(error)
+                        self.onStatus(
+                            "P2P ACK 전송 실패: \(error.localizedDescription)")
+                        self.connection.cancel()
+                        return
+                    }
+
+                    self.pumpWrites()
+                }
+            }
+            return
+        }
+
+        if activeTransfer == nil {
+            guard !pendingTransfers.isEmpty else { return }
+            activeTransfer = pendingTransfers.removeFirst()
+        }
+
+        guard let transfer = activeTransfer else { return }
+
+        guard let plaintext = transfer.cursor.next() else {
+            activeTransfer = nil
+            awaitingAcks[transfer.transferId] = transfer
+
+            let transferId = transfer.transferId
+            queue.asyncAfter(deadline: .now() + 45) { [weak self] in
+                guard let self,
+                      let timedOut = self.awaitingAcks.removeValue(
+                        forKey: transferId) else { return }
+
+                timedOut.failure(ChannelError.ackTimeout)
+                self.ready = false
+                self.onStatus(
+                    "P2P Clipboard ACK 시간이 초과되어 연결을 재설정합니다.")
+                self.connection.cancel()
+            }
+
+            pumpWrites()
+            return
+        }
+
+        writing = true
+        sendEncrypted(plaintext) { [weak self] error in
+            guard let self else { return }
+            self.queue.async {
+                self.writing = false
+
+                if let error {
+                    self.ready = false
+                    self.failAllTransfers(error)
+                    self.onStatus(
+                        "P2P Clipboard 전송 실패: \(error.localizedDescription)")
+                    self.connection.cancel()
+                    return
+                }
+
+                self.pumpWrites()
+            }
+        }
+    }
+
+    private func sendEncrypted(
+        _ plaintext: Data,
+        completion: @escaping (Error?) -> Void
+    ) {
+        do {
+            sendSequence = try nextSequence(sendSequence)
+            var sequenceData = Data()
+            sequenceData.appendUInt64LE(sendSequence)
+
+            guard let sessionKey else {
+                throw ChannelError.sessionKey
+            }
+
+            let sealed = try AES.GCM.seal(
+                plaintext,
+                using: SymmetricKey(data: sessionKey),
+                authenticating: aad + sequenceData
+            )
+
+            let nonce = Data(sealed.nonce)
+            let body =
+                nonce +
+                sequenceData +
+                sealed.ciphertext +
+                sealed.tag
+
+            var prefix = Data()
+            prefix.appendInt32LE(Int32(body.count))
+
+            connection.send(
+                content: prefix + body,
+                completion: .contentProcessed { error in
+                    completion(error)
+                })
+        } catch {
+            completion(error)
+        }
+    }
+
+    private func readEncryptedLoop() {
+        receiveExact(4) { [weak self] result in
+            guard let self, self.ready else { return }
+
+            switch result {
+            case .failure(let error):
+                self.ready = false
+                self.onStatus("P2P 수신 종료: \(error.localizedDescription)")
+                self.connection.cancel()
+            case .success(let prefix):
+                let length = Int(prefix.int32LE(at: 0))
+                guard length >= 36,
+                      length <= 1024 * 1024 + 70 + 36 else {
+                    self.ready = false
+                    self.onStatus("P2P 수신 길이 오류")
+                    self.connection.cancel()
+                    return
+                }
+
+                self.receiveExact(length) { bodyResult in
+                    switch bodyResult {
+                    case .failure(let error):
+                        self.ready = false
+                        self.onStatus("P2P 수신 실패: \(error.localizedDescription)")
+                        self.connection.cancel()
+                    case .success(let body):
+                        do {
+                            let nonceData = body.subdata(in: 0..<12)
+                            let sequenceData = body.subdata(in: 12..<20)
+                            let sequence = sequenceData.uint64LE(at: 0)
+                            guard sequence == self.receiveSequence + 1 else {
+                                throw ChannelError.sequence
+                            }
+
+                            let ciphertext = body.subdata(in: 20..<(body.count - 16))
+                            let tag = body.suffix(16)
+                            let nonce = try AES.GCM.Nonce(data: nonceData)
+                            let box = try AES.GCM.SealedBox(
+                                nonce: nonce,
+                                ciphertext: ciphertext,
+                                tag: tag
+                            )
+                            guard let sessionKey = self.sessionKey else {
+                                throw ChannelError.sessionKey
+                            }
+                            let plaintext = try AES.GCM.open(
+                                box,
+                                using: SymmetricKey(data: sessionKey),
+                                authenticating: self.aad + sequenceData
+                            )
+                            self.receiveSequence = sequence
+
+                            if let ackId = ClipboardProtocol.decodeAck(plaintext) {
+                                if let transfer =
+                                    self.awaitingAcks.removeValue(forKey: ackId) {
+                                    self.onStatus("Clipboard 전송 완료 · P2P ACK")
+                                    transfer.completion()
+                                }
+                                self.readEncryptedLoop()
+                                return
+                            }
+
+                            if let response = self.onFrame(plaintext) {
+                                self.pendingControlFrames.append(response)
+                                self.pumpWrites()
+                            }
+
+                            self.readEncryptedLoop()
+                        } catch {
+                            self.ready = false
+                            self.onStatus("P2P 수신 무결성 오류")
+                            self.connection.cancel()
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private func receiveExact(
+        _ count: Int,
+        accumulated: Data = Data(),
+        completion: @escaping (Result<Data, Error>) -> Void
+    ) {
+        if accumulated.count == count {
+            completion(.success(accumulated))
+            return
+        }
+
+        connection.receive(
+            minimumIncompleteLength: 1,
+            maximumLength: count - accumulated.count
+        ) { [weak self] data, _, isComplete, error in
+            guard let self else { return }
+            if let error {
+                completion(.failure(error))
+                return
+            }
+
+            var result = accumulated
+            if let data { result.append(data) }
+
+            if result.count == count {
+                completion(.success(result))
+            } else if isComplete {
+                completion(.failure(ChannelError.closed))
+            } else {
+                self.receiveExact(count, accumulated: result, completion: completion)
+            }
+        }
+    }
+
+    private func nextSequence(_ current: UInt64) throws -> UInt64 {
+        guard current < UInt64.max else { throw ChannelError.sequence }
+        return current + 1
+    }
+
+    private func constantTimeEqual(_ lhs: Data, _ rhs: Data) -> Bool {
+        guard lhs.count == rhs.count else { return false }
+
+        var difference: UInt8 = 0
+        for index in lhs.indices {
+            difference |= lhs[index] ^ rhs[index]
+        }
+        return difference == 0
+    }
+
+    private func hmac(_ data: Data) -> Data {
+        let code = HMAC<SHA256>.authenticationCode(
+            for: data,
+            using: SymmetricKey(data: secret)
+        )
+        return Data(code)
+    }
+
+    private enum ChannelError: Error {
+        case ackTimeout
+        case busy
+        case closed
+        case sequence
+        case sessionKey
+    }
+}

@@ -1,0 +1,79 @@
+name: iOS companion build
+on:
+  push:
+    branches:
+      - main
+      - feature/clipboard-text-image-sync
+  pull_request:
+    types:
+      - opened
+      - reopened
+      - synchronize
+      - ready_for_review
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.head.repo.full_name || github.repository }}-${{ github.head_ref || github.ref_name }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: macos-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Source sanity
+        run: python3 scripts/verify-source.py
+      - name: Install XcodeGen
+        run: brew install xcodegen
+      - name: Generate Xcode project
+        working-directory: companion/ios
+        run: xcodegen generate
+      - name: iOS protocol unit tests
+        working-directory: companion/ios
+        run: |
+          DEVICE_ID="$(xcrun simctl list devices available | awk -F '[()]' '/iPhone/ {print $2; exit}')"
+          if [ -z "$DEVICE_ID" ]; then
+            echo "No available iPhone simulator found."
+            exit 1
+          fi
+          xcodebuild \
+            -project ConPhoneCompanion.xcodeproj \
+            -scheme ConPhoneCompanion \
+            -configuration Debug \
+            -sdk iphonesimulator \
+            -destination "platform=iOS Simulator,id=$DEVICE_ID" \
+            -derivedDataPath build \
+            -resultBundlePath TestResults.xcresult \
+            CODE_SIGNING_ALLOWED=NO \
+            test
+      - name: Build iOS Companion
+        working-directory: companion/ios
+        run: |
+          xcodebuild \
+            -project ConPhoneCompanion.xcodeproj \
+            -scheme ConPhoneCompanion \
+            -configuration Debug \
+            -sdk iphonesimulator \
+            -destination 'generic/platform=iOS Simulator' \
+            -derivedDataPath build \
+            CODE_SIGNING_ALLOWED=NO \
+            build
+      - name: Verify embedded Share Extension
+        working-directory: companion/ios
+        run: test -d build/Build/Products/Debug-iphonesimulator/ConPhoneCompanion.app/PlugIns/ConPhoneShare.appex
+      - name: Upload unsigned simulator app
+        uses: actions/upload-artifact@v4
+        with:
+          name: ConPhone-Companion-ios-simulator-unsigned
+          path: companion/ios/build/Build/Products/Debug-iphonesimulator/*.app
+          if-no-files-found: error
+      - name: Upload simulator test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ConPhone-ios-test-results
+          path: companion/ios/TestResults.xcresult

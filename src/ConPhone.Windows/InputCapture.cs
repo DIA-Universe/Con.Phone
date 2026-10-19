@@ -11,57 +11,89 @@ public sealed class InputCapture : IDisposable
     private readonly KeyboardState _keys = new();
     private readonly Thread _thread;
     private readonly TaskCompletionSource _started = new(TaskCreationOptions.RunContinuationsAsynchronously);
+    private readonly Func<int, short> _readKeyState;
 
     private Hook? _keyboardDelegate, _mouseDelegate;
     private nint _keyboardHook, _mouseHook;
     private Sink? _sink;
 
     private volatile bool _remote;
+    private HotkeyBinding _nextDeviceHotkey = SettingsStore.DefaultNextDevice();
     private HotkeyBinding _toggleHotkey = SettingsStore.DefaultToggle();
     private HotkeyBinding _emergencyHotkey = SettingsStore.DefaultEmergency();
     private HotkeyBinding _lockAndReturnHotkey = SettingsStore.DefaultLockAndReturn();
+    private HangulKeyMode _hangulKeyMode = HangulKeyMode.RightAlt;
+    private ModifierProfile _modifierProfile = ModifierProfile.Standard;
 
     private Action<HotkeyBinding>? _captureCallback;
     private readonly HashSet<int> _downKeys = [];
     private readonly HashSet<int> _suppressUntilUp = [];
     private readonly HashSet<int> _localPassthroughUntilUp = [];
+    private readonly System.Collections.Concurrent.ConcurrentQueue<TaskCompletionSource> _hookRefreshes = new();
+    private volatile bool _disposed;
 
     private byte _buttons;
     private int _wheel, _pan;
 
     public event Action<InputPacket>? Packet;
+    public event Action? NextDevice;
     public event Action? Toggle;
     public event Action? Emergency;
     public event Action? LockAndReturn;
+    public event Action<ConsumerAction>? Consumer;
     public event Action<string>? Fault;
 
     public bool IsRemote => _remote;
+    public bool IsCapturingHotkey { get { lock (_gate) return _captureCallback is not null; } }
     public Task Started => _started.Task;
 
-    public InputCapture()
+    public InputCapture() : this(GetAsyncKeyState) { }
+
+    internal InputCapture(Func<int, short> readKeyState)
     {
+        _readKeyState = readKeyState;
         _thread = new Thread(Run) { IsBackground = true, Name = "Con.Phone.Input" };
         _thread.SetApartmentState(ApartmentState.STA);
         _thread.Start();
     }
 
-    public void ConfigureHotkeys(HotkeyBinding toggle, HotkeyBinding emergency, HotkeyBinding lockAndReturn)
+    public void ConfigureHotkeys(
+        HotkeyBinding nextDevice,
+        HotkeyBinding toggle,
+        HotkeyBinding emergency,
+        HotkeyBinding lockAndReturn)
     {
-        if (!HotkeyCatalog.IsAllowedKey(toggle.Key) ||
-            !HotkeyCatalog.IsAllowedKey(emergency.Key) ||
-            !HotkeyCatalog.IsAllowedKey(lockAndReturn.Key))
+        var bindings = new[] { nextDevice, toggle, emergency, lockAndReturn };
+        if (bindings.Any(binding => !HotkeyCatalog.IsAllowedKey(binding.Key)))
             throw new ArgumentOutOfRangeException(nameof(toggle), "지원하지 않는 단축키입니다.");
 
-        if (HotkeyCatalog.Same(toggle, emergency) ||
-            HotkeyCatalog.Same(toggle, lockAndReturn) ||
-            HotkeyCatalog.Same(emergency, lockAndReturn))
-            throw new InvalidOperationException("각 동작의 단축키 조합은 서로 다르게 지정해 주세요.");
+        for (var i = 0; i < bindings.Length; i++)
+        {
+            for (var j = 0; j < i; j++)
+            {
+                if (HotkeyCatalog.Same(bindings[i], bindings[j]))
+                    throw new InvalidOperationException(
+                        "각 동작의 단축키 조합은 서로 다르게 지정해 주세요.");
+            }
+        }
 
         lock (_gate)
         {
+            _nextDeviceHotkey = nextDevice.Clone();
             _toggleHotkey = toggle.Clone();
             _emergencyHotkey = emergency.Clone();
             _lockAndReturnHotkey = lockAndReturn.Clone();
+        }
+    }
+
+    public void ConfigureKeyboard(
+        HangulKeyMode hangulKeyMode,
+        ModifierProfile modifierProfile)
+    {
+        lock (_gate)
+        {
+            _hangulKeyMode = hangulKeyMode;
+            _modifierProfile = modifierProfile;
         }
     }
 
@@ -121,25 +153,60 @@ public sealed class InputCapture : IDisposable
         }
     }
 
-    public void Activate()
+    public void Activate(bool preserveLocalModifierUps = true)
+    {
+        if (!TryActivate(preserveLocalModifierUps, out var blocked))
+            throw new InputTransitionBlockedException(blocked);
+    }
+
+    public async Task<bool> ActivateWhenReleasedAsync(
+        Func<bool> isCurrent, Action<string>? waiting, CancellationToken token,
+        bool preserveLocalModifierUps = true)
+    {
+        var deadline = Environment.TickCount64 + 2000;
+        string? previous = null;
+        while (true)
+        {
+            token.ThrowIfCancellationRequested();
+            if (!isCurrent()) return false;
+            if (TryActivate(preserveLocalModifierUps, out var blocked)) return true;
+            if (Environment.TickCount64 >= deadline)
+                throw new InputTransitionBlockedException(blocked);
+            var message = $"전환 대기 · {InputTransitionBlockedException.Describe(blocked)}을(를) 놓으면 전환합니다.";
+            if (message != previous) { previous = message; waiting?.Invoke(message); }
+            await Task.Delay(25, token);
+        }
+    }
+
+    private bool TryActivate(bool preserveLocalModifierUps, out int[] blocked)
     {
         lock (_gate)
         {
+            ObjectDisposedException.ThrowIf(_disposed, this);
             if (!_started.Task.IsCompletedSuccessfully)
                 throw new InvalidOperationException("입력 수집이 준비되지 않았습니다.");
 
-            var allowed = HotkeyPhysicalKeys(_toggleHotkey);
-            _localPassthroughUntilUp.Clear();
-
+            var allowed = new HashSet<int>(
+                HotkeyPhysicalKeys(_toggleHotkey));
+            allowed.UnionWith(
+                HotkeyPhysicalKeys(_nextDeviceHotkey));
+            var pressed = new List<int>();
             for (int vk = 1; vk < 255; vk++)
-            {
-                if ((GetAsyncKeyState(vk) & 0x8000) == 0) continue;
-                if (!allowed.Contains(vk))
-                    throw new InvalidOperationException("입력 전환 단축키 외의 키와 마우스 버튼을 모두 놓아 주세요.");
+                if ((_readKeyState(vk) & 0x8000) != 0) pressed.Add(vk);
+            blocked = pressed.Where(vk => !allowed.Contains(vk)).ToArray();
+            if (blocked.Length != 0) return false;
 
+            // Commit mode/keyup bookkeeping only after a complete successful
+            // snapshot. A blocked attempt leaves input local and state intact.
+            _localPassthroughUntilUp.Clear();
+            foreach (var vk in pressed)
+            {
                 // Modifier down events were delivered to Windows while input was local. Once remote
                 // mode starts their key-up events must still reach Windows or Ctrl/Alt can appear stuck.
-                if (vk != _toggleHotkey.Key && IsPhysicalModifier(vk))
+                if (preserveLocalModifierUps &&
+                    vk != _toggleHotkey.Key &&
+                    vk != _nextDeviceHotkey.Key &&
+                    IsPhysicalModifier(vk))
                     _localPassthroughUntilUp.Add(vk);
             }
 
@@ -149,6 +216,8 @@ public sealed class InputCapture : IDisposable
             _pan = 0;
             _remote = true;
         }
+        UpdateRemoteShortcutFallbacks();
+        return true;
     }
 
     public void Deactivate()
@@ -161,6 +230,52 @@ public sealed class InputCapture : IDisposable
             _wheel = 0;
             _pan = 0;
         }
+        UpdateRemoteShortcutFallbacks();
+    }
+
+    private void UpdateRemoteShortcutFallbacks()
+    {
+        // Synchronous on the owning input thread: local return must release the OS
+        // registration before the next key press, even if the UI/Bluetooth is busy.
+        // Never call while holding _gate from another thread.
+        if (_sink is not { } sink || sink.Handle == 0) return;
+        if (Thread.CurrentThread == _thread) { sink.UpdateRemoteShortcuts(); return; }
+        SendMessage(sink.Handle, 0x8003, 0, 0);
+    }
+
+    public async void RefreshHooks()
+    {
+        try { await RefreshHooksAsync().ConfigureAwait(false); }
+        catch (Exception ex) { if (!_disposed) Fault?.Invoke($"입력 훅 복구 실패: {ex.Message}"); }
+    }
+
+    public Task RefreshHooksAsync()
+    {
+        if (_disposed) return Task.CompletedTask;
+        var completion = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        _hookRefreshes.Enqueue(completion);
+        if (_sink is null || !PostMessage(_sink.Handle, 0x8002, 0, 0))
+            completion.TrySetException(new InvalidOperationException("입력 훅 스레드가 준비되지 않았습니다."));
+        return completion.Task;
+    }
+
+    private void ReinstallHooks()
+    {
+        // Windows may silently remove a low-level hook after a timeout/suspend.
+        // Restore it on its owning thread; never install hooks on the UI thread.
+        if (_remote) return;
+        if (_keyboardHook != 0) UnhookWindowsHookEx(_keyboardHook);
+        if (_mouseHook != 0) UnhookWindowsHookEx(_mouseHook);
+        _keyboardHook = SetWindowsHookEx(13, _keyboardDelegate!, GetModuleHandle(null), 0);
+        _mouseHook = SetWindowsHookEx(14, _mouseDelegate!, GetModuleHandle(null), 0);
+        if (_keyboardHook == 0 || _mouseHook == 0) throw new Win32Exception();
+        lock (_gate)
+        {
+            // A missed key-up must not permanently hide subsequent shortcut presses.
+            _downKeys.Clear();
+            _suppressUntilUp.RemoveWhere(key => (_readKeyState(key) & 0x8000) == 0);
+            _localPassthroughUntilUp.RemoveWhere(key => (_readKeyState(key) & 0x8000) == 0);
+        }
     }
 
     private nint KeyboardHook(int code, nint message, nint data)
@@ -170,14 +285,14 @@ public sealed class InputCapture : IDisposable
         try
         {
             var k = Marshal.PtrToStructure<KeyData>(data);
-            if ((k.Flags & 0x10) != 0) return CallNextHookEx(0, code, message, data); // injected
+            bool injected = (k.Flags & 0x10) != 0;
 
             int key = (int)k.Vk;
             bool up = (k.Flags & 0x80) != 0;
             bool firstDown;
             Action<HotkeyBinding>? capturedCallback = null;
             HotkeyBinding? capturedBinding = null;
-            HotkeyBinding toggle, emergency, lockAndReturn;
+            HotkeyBinding nextDevice, toggle, emergency, lockAndReturn;
 
             lock (_gate)
             {
@@ -210,6 +325,7 @@ public sealed class InputCapture : IDisposable
                     if (capturedBinding is null) return 1;
                 }
 
+                nextDevice = _nextDeviceHotkey.Clone();
                 toggle = _toggleHotkey.Clone();
                 emergency = _emergencyHotkey.Clone();
                 lockAndReturn = _lockAndReturnHotkey.Clone();
@@ -226,6 +342,26 @@ public sealed class InputCapture : IDisposable
                 HotkeyModifiers modifiers;
                 lock (_gate) modifiers = ModifiersFromDownKeysLocked();
 
+                if (Matches(nextDevice, key, modifiers))
+                {
+                    lock (_gate)
+                    {
+                        _suppressUntilUp.Add(key);
+
+                        // While Windows owns input, let already-held physical modifiers
+                        // complete locally. While the phone owns input, the switch flow
+                        // sends explicit release reports to the old target instead.
+                        if (!_remote)
+                        {
+                            foreach (var down in _downKeys)
+                                if (down != key && IsPhysicalModifier(down))
+                                    _localPassthroughUntilUp.Add(down);
+                        }
+                    }
+                    NextDevice?.Invoke();
+                    return 1;
+                }
+
                 if (Matches(toggle, key, modifiers))
                 {
                     lock (_gate)
@@ -238,11 +374,19 @@ public sealed class InputCapture : IDisposable
                                     _localPassthroughUntilUp.Add(down);
                         }
                     }
-                    Toggle?.Invoke();
+                    // Returning to the PC must not wait for the UI/action queue or Bluetooth.
+                    if (_remote)
+                    {
+                        Deactivate();
+                        Emergency?.Invoke();
+                    }
+                    else Toggle?.Invoke();
                     return 1;
                 }
 
-                if (_remote && Matches(emergency, key, modifiers))
+                // Emergency must work even while Ctrl/Shift is held (or a key-up was missed).
+                if (_remote && key == emergency.Key &&
+                    (modifiers & emergency.Modifiers) == emergency.Modifiers)
                 {
                     lock (_gate) _suppressUntilUp.Add(key);
                     Deactivate();
@@ -261,11 +405,63 @@ public sealed class InputCapture : IDisposable
 
             lock (_gate)
             {
+                // Keyboard utilities may synthesize shortcut keys. Honor those above,
+                // but never forward synthetic text/input back to the phone.
+                if (injected) return CallNextHookEx(0, code, message, data);
                 if (!_remote) return CallNextHookEx(0, code, message, data);
 
-                var report = _keys.Update(
-                    Hid.Usage(key, (int)k.Scan, (k.Flags & 1) != 0),
-                    !up);
+                if (TryConsumerAction(key, out var consumerAction))
+                {
+                    if (!up && firstDown)
+                        Consumer?.Invoke(consumerAction);
+                    return 1;
+                }
+
+                var isHangulKey =
+                    key == 0x15 ||
+                    ((int)k.Scan & 0xFF) == 0xF2;
+
+                if (isHangulKey)
+                {
+                    switch (_hangulKeyMode)
+                    {
+                        case HangulKeyMode.CtrlSpace:
+                        case HangulKeyMode.ShiftSpace:
+                            if (!up && firstDown)
+                            {
+                                var modifier = _hangulKeyMode == HangulKeyMode.CtrlSpace
+                                    ? (byte)0xE0
+                                    : (byte)0xE1;
+                                Packet?.Invoke(new KeyboardPacket(_keys.SnapshotWith(modifier, 0x2C)));
+                                Packet?.Invoke(new KeyboardPacket(_keys.Snapshot()));
+                            }
+                            return 1;
+
+                        case HangulKeyMode.RightAlt:
+                        {
+                            var rightAlt = _keys.Update(0xE6, !up);
+                            if (rightAlt is not null)
+                                Packet?.Invoke(new KeyboardPacket(rightAlt));
+                            return 1;
+                        }
+
+                        default:
+                        {
+                            var lang1 = _keys.Update(0x90, !up);
+                            if (lang1 is not null)
+                                Packet?.Invoke(new KeyboardPacket(lang1));
+                            return 1;
+                        }
+                    }
+                }
+
+                var usage = Hid.Usage(
+                    key,
+                    (int)k.Scan,
+                    (k.Flags & 1) != 0);
+                usage = Hid.MapModifierUsage(usage, _modifierProfile);
+
+                var report = _keys.Update(usage, !up);
 
                 if (report is not null) Packet?.Invoke(new KeyboardPacket(report));
                 return _remote ? 1 : CallNextHookEx(0, code, message, data);
@@ -276,6 +472,34 @@ public sealed class InputCapture : IDisposable
             Deactivate();
             Fault?.Invoke($"키보드 처리 오류 — 로컬 복귀: {ex.Message}");
             return CallNextHookEx(0, code, message, data);
+        }
+    }
+
+    private static bool TryConsumerAction(int key, out ConsumerAction action)
+    {
+        switch (key)
+        {
+            case 0xAD:
+                action = ConsumerAction.Mute;
+                return true;
+            case 0xAE:
+                action = ConsumerAction.VolumeDown;
+                return true;
+            case 0xAF:
+                action = ConsumerAction.VolumeUp;
+                return true;
+            case 0xB0:
+                action = ConsumerAction.NextTrack;
+                return true;
+            case 0xB1:
+                action = ConsumerAction.PreviousTrack;
+                return true;
+            case 0xB3:
+                action = ConsumerAction.PlayPause;
+                return true;
+            default:
+                action = default;
+                return false;
         }
     }
 
@@ -379,6 +603,7 @@ public sealed class InputCapture : IDisposable
     private sealed class Sink : NativeWindow
     {
         private readonly InputCapture _owner;
+        private const int EmergencyId = 0x4350, LockId = 0x4353;
 
         public Sink(InputCapture owner)
         {
@@ -392,6 +617,28 @@ public sealed class InputCapture : IDisposable
             {
                 if (m.Msg == 0xFF) _owner.Raw(m.LParam);
                 if (m.Msg == 0x8001) Application.ExitThread();
+                if (m.Msg == 0x8003) UpdateRemoteShortcuts();
+                if (m.Msg == 0x0312 && _owner._remote && !_owner.IsCapturingHotkey)
+                {
+                    if ((int)m.WParam == EmergencyId)
+                    {
+                        _owner.Deactivate();
+                        _owner.Emergency?.Invoke();
+                    }
+                    else if ((int)m.WParam == LockId)
+                    {
+                        _owner.Deactivate();
+                        _owner.LockAndReturn?.Invoke();
+                    }
+                }
+                if (m.Msg == 0x8002)
+                {
+                    while (_owner._hookRefreshes.TryDequeue(out var completion))
+                    {
+                        try { _owner.ReinstallHooks(); completion.TrySetResult(); }
+                        catch (Exception ex) { completion.TrySetException(ex); }
+                    }
+                }
             }
             catch (Exception ex)
             {
@@ -402,11 +649,42 @@ public sealed class InputCapture : IDisposable
             base.WndProc(ref m);
         }
 
-        public void Destroy() => DestroyHandle();
+        public void UpdateRemoteShortcuts()
+        {
+            UnregisterHotKey(Handle, EmergencyId);
+            UnregisterHotKey(Handle, LockId);
+            lock (_owner._gate)
+            {
+                if (!_owner._remote) return;
+                Register(EmergencyId, _owner._emergencyHotkey);
+                Register(LockId, _owner._lockAndReturnHotkey);
+            }
+        }
+
+        private void Register(int id, HotkeyBinding binding)
+        {
+            uint modifiers = 0x4000;
+            if (binding.Modifiers.HasFlag(HotkeyModifiers.Alt)) modifiers |= 1;
+            if (binding.Modifiers.HasFlag(HotkeyModifiers.Control)) modifiers |= 2;
+            if (binding.Modifiers.HasFlag(HotkeyModifiers.Shift)) modifiers |= 4;
+            if (binding.Modifiers.HasFlag(HotkeyModifiers.Windows)) modifiers |= 8;
+            // The low-level hook still handles remote return if another app owns the chord.
+            RegisterHotKey(Handle, id, modifiers, (uint)binding.Key);
+        }
+
+        public void Destroy()
+        {
+            UnregisterHotKey(Handle, EmergencyId);
+            UnregisterHotKey(Handle, LockId);
+            DestroyHandle();
+        }
     }
 
     public void Dispose()
     {
+        if (_disposed) return;
+        _disposed = true;
+        while (_hookRefreshes.TryDequeue(out var completion)) completion.TrySetCanceled();
         Deactivate();
         CancelHotkeyCapture();
 
@@ -460,4 +738,11 @@ public sealed class InputCapture : IDisposable
     [DllImport("user32.dll")]
     [return: MarshalAs(UnmanagedType.Bool)]
     private static extern bool PostMessage(nint window, uint message, nint wParam, nint lParam);
+
+    [DllImport("user32.dll")]
+    private static extern nint SendMessage(nint window, uint message, nint wParam, nint lParam);
+    [DllImport("user32.dll")]
+    private static extern bool RegisterHotKey(nint window, int id, uint modifiers, uint key);
+    [DllImport("user32.dll")]
+    private static extern bool UnregisterHotKey(nint window, int id);
 }
