@@ -6,6 +6,12 @@ internal static class ReleaseSelfTest
 {
     public static async Task RunAsync()
     {
+        var oldProfile = System.Text.Json.JsonSerializer.Deserialize<DeviceInputProfile>("""
+            {"HangulKeyMode":0,"ModifierProfile":0,"EdgeSwitch":{"Enabled":true,"Side":1,"Travel":1000}}
+            """)!;
+        if (System.Text.Json.JsonSerializer.Serialize(oldProfile).Contains("EdgeSwitch"))
+            throw new InvalidOperationException("Removed automatic-switch settings survived profile migration.");
+        Console.WriteLine("PASS: old preview profiles load while discarding automatic-switch settings.");
         foreach (var hresult in new[] { 0x80010108u, 0x8000000Eu, 0x80000013u })
         {
             if (BleNativeState.Read<bool>(() => throw new System.Runtime.InteropServices.COMException("peer unavailable", unchecked((int)hresult)), false))
@@ -73,7 +79,7 @@ internal static class ReleaseSelfTest
              "CaptureClipboardText":false,"CaptureClipboardImages":true,
              "ClipboardAutoSendImages":true,"MouseSpeedPercent":37}
             """);
-        if (!migrated.ClipboardSyncEnabled || !migrated.ClipboardAutoSendText ||
+        if (migrated.ClipboardSyncEnabled || migrated.ClipboardAutoSendText ||
             !migrated.CaptureClipboardText || migrated.CaptureClipboardImages ||
             migrated.ClipboardAutoSendImages || migrated.MouseSpeedPercent != 37)
             throw new InvalidOperationException("Legacy settings migration failed.");

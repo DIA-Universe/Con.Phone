@@ -15,6 +15,10 @@ public sealed record UpdateCandidate(
 
 public static class LocalUpdateService
 {
+    public static string DisplayVersion => Assembly.GetExecutingAssembly()
+        .GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion.Split('+')[0]
+        ?? CurrentVersion.ToString(3);
+
     public static Version CurrentVersion =>
         Assembly.GetExecutingAssembly().GetName().Version ?? new Version(0, 0, 0, 0);
 

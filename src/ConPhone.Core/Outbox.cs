@@ -18,7 +18,7 @@ public sealed class Outbox
     {
         lock (_gate)
         {
-            if (_items.Last is { } last && last.Value.Epoch == item.Epoch &&
+            if (_items.Last is { } last && last.Value.Epoch == item.Epoch && last.Value.CaptureGeneration == item.CaptureGeneration &&
                 last.Value.Packet is PointerPacket a && item.Packet is PointerPacket b && a.Buttons == b.Buttons &&
                 a.Wheel == 0 && a.Pan == 0 && b.Wheel == 0 && b.Pan == 0)
             {
@@ -37,14 +37,12 @@ public sealed class Outbox
 
                 if (canMerge)
                 {
-                    last.Value = new(
-                        item.Epoch,
-                        new PointerPacket(
+                    last.Value = last.Value with { Packet = new PointerPacket(
                             a.Buttons,
                             (int)x,
                             (int)y,
                             (int)wheel,
-                            (int)pan));
+                            (int)pan) };
                     return true;
                 }
 
@@ -80,13 +78,13 @@ public sealed class Outbox
         lock (_gate)
         {
             while (item.Packet is PointerPacket a && a.Wheel == 0 && a.Pan == 0 &&
-                   _items.First is { } first && first.Value.Epoch == item.Epoch &&
+                   _items.First is { } first && first.Value.Epoch == item.Epoch && first.Value.CaptureGeneration == item.CaptureGeneration &&
                    first.Value.Packet is PointerPacket b && b.Buttons == a.Buttons &&
                    b.Wheel == 0 && b.Pan == 0)
             {
                 long x = (long)a.X + b.X, y = (long)a.Y + b.Y;
                 if (x is < -32767 or > 32767 || y is < -32767 or > 32767) break;
-                item = new(item.Epoch, new PointerPacket(a.Buttons, (int)x, (int)y));
+                item = item with { Packet = new PointerPacket(a.Buttons, (int)x, (int)y) };
                 _items.RemoveFirst();
             }
             return item;

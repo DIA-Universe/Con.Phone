@@ -50,6 +50,12 @@ Write-Host "== Local/remote hotkey ownership regression ==" -ForegroundColor Cya
 dotnet run --project (Join-Path $repo "src/ConPhone.Windows") -c $Configuration -- --hotkey-scope-selftest
 Assert-NativeSuccess "Hotkey scope self-test"
 
+Write-Host "== Input isolation and activation regression ==" -ForegroundColor Cyan
+dotnet run --project (Join-Path $repo "src/ConPhone.Windows") -c $Configuration -- --input-isolation-selftest
+Assert-NativeSuccess "Input isolation self-test"
+dotnet run --project (Join-Path $repo "src/ConPhone.Windows") -c $Configuration -- --input-activation-selftest
+Assert-NativeSuccess "Input activation self-test"
+
 Write-Host "== UI disconnect and shutdown regression checks ==" -ForegroundColor Cyan
 dotnet run --project (Join-Path $repo "src/ConPhone.Windows") -c $Configuration -- --ui-lifecycle-selftest
 Assert-NativeSuccess "UI lifecycle self-test"

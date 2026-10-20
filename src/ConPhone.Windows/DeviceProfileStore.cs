@@ -58,11 +58,10 @@ public static class DeviceProfileStore
         lock (Gate)
         {
             var profiles = LoadUnsafe();
-            profiles[Key(deviceId)] = Normalize(new DeviceInputProfile
-            {
-                HangulKeyMode = hangulKeyMode,
-                ModifierProfile = modifierProfile
-            });
+            var profile = profiles.GetValueOrDefault(Key(deviceId)) ?? new DeviceInputProfile();
+            profile.HangulKeyMode = hangulKeyMode;
+            profile.ModifierProfile = modifierProfile;
+            profiles[Key(deviceId)] = Normalize(profile);
             SaveUnsafe(profiles);
         }
     }

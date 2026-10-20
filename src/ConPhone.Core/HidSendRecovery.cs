@@ -2,7 +2,7 @@ namespace ConPhone.Core;
 
 public static class HidSendRecovery
 {
-    public static readonly TimeSpan GracePeriod = TimeSpan.FromSeconds(3);
+    public static readonly TimeSpan GracePeriod = TimeSpan.FromMilliseconds(500);
 
     // false from trySend means no notification was submitted (e.g. subscriptions
     // are being restored). Never replay a submitted report: mouse deltas and
@@ -20,7 +20,9 @@ public static class HidSendRecovery
             while (current())
             {
                 deadline.Token.ThrowIfCancellationRequested();
-                if (await trySend(deadline.Token).ConfigureAwait(false))
+                // Bound even a native operation which ignores cancellation. Its late
+                // completion is fenced by the caller's input/target generation.
+                if (await trySend(deadline.Token).WaitAsync(deadline.Token).ConfigureAwait(false))
                     return current();
                 if (!current()) return false;
                 await Task.Delay(50, deadline.Token).ConfigureAwait(false);

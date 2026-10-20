@@ -68,6 +68,7 @@ public sealed class ClipboardSyncCoordinator : IAsyncDisposable
 
     public async Task PrepareBleAsync()
     {
+        if (!_enabled() || _disposed) return;
         await _lifecycle.WaitAsync().ConfigureAwait(false);
         try { await _ble.PrepareAsync().ConfigureAwait(false); }
         finally { _lifecycle.Release(); }
@@ -92,7 +93,7 @@ public sealed class ClipboardSyncCoordinator : IAsyncDisposable
 
     private async Task StartCoreAsync(bool automaticRecovery = false)
     {
-        if (_disposed || !_radioAvailable) return;
+        if (_disposed || !_radioAvailable || !_enabled()) return;
         try
         {
             await _p2p.StartAsync()
@@ -200,12 +201,14 @@ public sealed class ClipboardSyncCoordinator : IAsyncDisposable
 
             _ble.CancelPendingSends(
                 "기기간 복붙이 비활성화되어 BLE Clipboard ACK 대기를 취소했습니다.");
-            _ble.StopAdvertising();
+            // Disabling an optional feature must not mutate the host's GATT
+            // table or dispose the shared HID session. _enabled gates traffic;
+            // a subsequent app start with it disabled publishes only HID.
             _direct.Stop();
             await _p2p.StopListeningAsync()
                 .ConfigureAwait(false);
             Status?.Invoke(
-                "기기간 복붙 비활성화 · Bluetooth/P2P listener까지 중지");
+                "기기간 복붙을 껐어요. 기존 Bluetooth 입력 연결은 유지해요.");
         }
         finally
         {

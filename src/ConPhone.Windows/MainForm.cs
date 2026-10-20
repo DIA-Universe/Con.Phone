@@ -33,6 +33,10 @@ public sealed partial class MainForm : Form
     private DateTimeOffset _clipboardRetryAfter;
     private string? _lastConnectedClipboardTarget;
     private readonly SemaphoreSlim _inputActions = new(1, 1);
+    private readonly object _inputTransitionGate = new();
+    private sealed record InputReleaseTicket(long Epoch, string Target);
+    private InputReleaseTicket? _pendingInputRelease;
+    private int _releaseRetryRunning;
     private long _lastPointerDispatchTicks;
     private long _lastPointerObservedTicks;
     private readonly Label _clipboardConnection = new() { AutoSize = true, MaximumSize = new Size(780, 0) };
@@ -219,7 +223,7 @@ public sealed partial class MainForm : Form
 
     private readonly bool _previewMode;
     private Task? _pump;
-    private long _epoch, _sent, _lastPointerSentTicks, _bleNotReadySinceTicks;
+    private long _epoch, _sent, _lastPointerSentTicks;
     private int _lastObservedPointerButtons, _lastSentPointerButtons;
     private bool _closing, _closed, _exitRequested, _servicesPaused;
     private bool _startupCompleted;
@@ -231,7 +235,7 @@ public sealed partial class MainForm : Form
         _previewMode = previewMode;
         _activeHangulMode = _settings.HangulKeyMode;
         _activeModifierProfile = _settings.ModifierProfile;
-        Text = $"LINKO {LocalUpdateService.CurrentVersion.ToString(3)}";
+        Text = $"LINKO {LocalUpdateService.DisplayVersion}";
         Icon = BrandIcon.Load();
         Width = 1060;
         Height = 860;
@@ -896,8 +900,11 @@ public sealed partial class MainForm : Form
     private void ConfigureRuntimeEvents()
     {
         _clipboardSyncEnabled.CheckedChanged += (_, _) => ApplyClipboardSettings(save: true);
-        _input.Packet += packet =>
+        _input.Packet += captured =>
         {
+            if (!_input.IsRemote || captured.Generation != _input.Generation) return;
+            var epoch = Volatile.Read(ref _epoch);
+            var packet = captured.Packet;
             var outgoing = packet is PointerPacket pointer
                 ? _pointerScaler.Apply(pointer)
                 : packet;
@@ -919,10 +926,10 @@ public sealed partial class MainForm : Form
                     System.Diagnostics.Stopwatch.GetTimestamp());
             }
 
-            if (_input.IsRemote &&
-                !_outbox.TryAdd(new Envelope(Volatile.Read(ref _epoch), outgoing)))
+            if (_input.IsRemote && captured.Generation == _input.Generation && epoch == Volatile.Read(ref _epoch) &&
+                !_outbox.TryAdd(new Envelope(epoch, outgoing) { CaptureGeneration = captured.Generation, CreatedAt = captured.CreatedAt }))
             {
-                ImmediateLocal();
+                if (!TryImmediateLocal(captured.Generation)) return;
                 DispatchCritical(async () =>
                 {
                     await ReleaseAsync();
@@ -931,12 +938,18 @@ public sealed partial class MainForm : Form
             }
         };
 
-        _input.NextDevice += () => DispatchCritical(SelectNextTrustedTargetAsync);
-        _input.Toggle += () => DispatchCritical(ToggleAsync);
-        _input.Emergency += () => DispatchCritical(ReturnLocalAsync);
-        _input.LockAndReturn += () => DispatchCritical(LockPhoneAndReturnAsync);
-        _input.Consumer += action => Post(() => _ = SendConsumerActionSafeAsync(action));
-        _input.Fault += text => DispatchCritical(async () =>
+        _input.SafetyReturn += (generation, message) =>
+        {
+            if (!TryImmediateLocal(generation)) return;
+            _ = ReleaseAsync();
+            Post(() => Log(message));
+        };
+        _input.NextDevice += () => DispatchInputAction(SelectNextTrustedTargetAsync);
+        _input.Toggle += () => DispatchInputAction(ToggleAsync);
+        _input.Emergency += () => DispatchInputAction(ReturnLocalAsync);
+        _input.LockAndReturn += () => DispatchInputAction(LockPhoneAndReturnAsync);
+        _input.Consumer += action => DispatchInputAction(() => SendConsumerActionSafeAsync(action));
+        _input.Fault += text => DispatchInputAction(async () =>
         {
             ImmediateLocal();
             await ReleaseAsync();
@@ -946,7 +959,7 @@ public sealed partial class MainForm : Form
         _ble.Status += LogTransport;
         _ble.RadioAvailabilityChanged += available =>
         {
-            if (!available) Post(ImmediateLocal);
+            if (!available) { _inputConnectionReady = false; ImmediateLocal(); }
             if (_clipboardSync is not null) _ = HandleRadioChangedAsync(available);
         };
 
@@ -959,23 +972,11 @@ public sealed partial class MainForm : Form
 
         _ble.Changed += () =>
         {
+            ObserveInputConnection();
             Post(() => {
                 RefreshPeerInputStates();
                 _ = RefreshPeersInBackgroundAsync();
             });
-            if (!_input.IsRemote)
-                return;
-
-            if (_ble.Ready)
-            {
-                Interlocked.Exchange(ref _bleNotReadySinceTicks, 0);
-                return;
-            }
-
-            Interlocked.CompareExchange(
-                ref _bleNotReadySinceTicks,
-                System.Diagnostics.Stopwatch.GetTimestamp(),
-                0);
         };
 
         _timer.Tick += (_, _) =>
@@ -1002,37 +1003,7 @@ public sealed partial class MainForm : Form
                 : _clipboardSync?.ActiveTargetConnected == true
                     ? "휴대폰 클립보드 채널 연결됨 · 복사한 내용을 자동으로 보냅니다."
                     : "휴대폰 자동 연결 대기 · Bluetooth 연결과 앱 권한을 확인해 주세요.";
-            if (_input.IsRemote)
-            {
-                if (_ble.Ready)
-                {
-                    Interlocked.Exchange(ref _bleNotReadySinceTicks, 0);
-                }
-                else
-                {
-                    var since = Interlocked.Read(ref _bleNotReadySinceTicks);
-                    if (since == 0)
-                    {
-                        Interlocked.CompareExchange(
-                            ref _bleNotReadySinceTicks,
-                            System.Diagnostics.Stopwatch.GetTimestamp(),
-                            0);
-                    }
-                    else
-                    {
-                        var elapsedMs =
-                            (System.Diagnostics.Stopwatch.GetTimestamp() - since) *
-                            1000.0 /
-                            System.Diagnostics.Stopwatch.Frequency;
-
-                        if (elapsedMs >= HidSendRecovery.GracePeriod.TotalMilliseconds)
-                        {
-                            ImmediateLocal();
-                            Log("Bluetooth 입력 연결이 3초 동안 복구되지 않아 노트북 입력으로 복귀했습니다.");
-                        }
-                    }
-                }
-            }
+            ObserveInputConnection();
 
             var emergency = HotkeyCatalog.Display(_settings.EmergencyHotkey);
             var targetPeer = _peers.Items.OfType<Peer>().FirstOrDefault(peer => peer.Active)
@@ -1073,6 +1044,7 @@ public sealed partial class MainForm : Form
 
         Shown += (_, _) => Dispatch(async () =>
         {
+            SessionDiagnostics.Write($"startup version={LocalUpdateService.DisplayVersion} os={Environment.OSVersion.Version} clipboard={_settings.ClipboardSyncEnabled}");
             _servicesPaused = false;
             Log("시작 단계: 입력 수집 준비");
             await _input.Started;
@@ -1089,7 +1061,7 @@ public sealed partial class MainForm : Form
                     async () =>
                     {
                         Log("시작 단계: 클립보드 GATT 준비");
-                        if (_clipboardSync is not null) await _clipboardSync.PrepareBleAsync();
+                        if (_settings.ClipboardSyncEnabled && _clipboardSync is not null) await _clipboardSync.PrepareBleAsync();
                     },
                     async () => { Log("시작 단계: HID 시작"); await _ble.StartAsync(); },
                     async () =>
@@ -1698,6 +1670,12 @@ public sealed partial class MainForm : Form
         }
     });
 
+    private void DispatchInputAction(Func<Task> action)
+    {
+        var generation = _input.Generation;
+        DispatchCritical(() => generation == _input.Generation ? action() : Task.CompletedTask);
+    }
+
     private void HandleActionError(Exception ex)
     {
         ImmediateLocal();
@@ -1731,44 +1709,78 @@ public sealed partial class MainForm : Form
             : "연결 후 전환 버튼이나 단축키를 사용하세요.";
     }
 
-    private void ImmediateLocal()
+    private void ImmediateLocal() => TryImmediateLocal(null);
+
+    private bool TryImmediateLocal(long? generation)
     {
-        _input.Deactivate();
-        _input.RefreshHooks();
-        Interlocked.Exchange(ref _bleNotReadySinceTicks, 0);
-        _pointerScaler.Reset();
-        Interlocked.Exchange(ref _lastPointerSentTicks, 0);
-        Interlocked.Exchange(ref _lastPointerDispatchTicks, 0);
-        Interlocked.Exchange(ref _lastObservedPointerButtons, 0);
-        Interlocked.Exchange(ref _lastSentPointerButtons, 0);
-        Interlocked.Increment(ref _epoch);
-        _outbox.Clear();
+        lock (_inputTransitionGate)
+        {
+            var wasRemote = _input.IsRemote;
+            var target = _ble.ApprovedId;
+            if (generation.HasValue)
+            {
+                if (!_input.DeactivateIfGeneration(generation.Value)) return false;
+            }
+            else _input.Deactivate();
+            var sessionEpoch = Interlocked.Exchange(ref _remoteSessionEpoch, 0);
+            var epoch = Interlocked.Increment(ref _epoch);
+            // Repeated local returns must not strand an undelivered key-up on
+            // an obsolete epoch. Keep it eligible for this same target only.
+            var pending = Volatile.Read(ref _pendingInputRelease);
+            if ((wasRemote || sessionEpoch != 0 || pending?.Target == target) && target is not null)
+                Volatile.Write(ref _pendingInputRelease, new(epoch, target));
+            _outbox.Clear();
+            _ble.ClearInputReports();
+            _pointerScaler.Reset();
+            Interlocked.Exchange(ref _lastPointerSentTicks, 0);
+            Interlocked.Exchange(ref _lastPointerDispatchTicks, 0);
+            Interlocked.Exchange(ref _lastObservedPointerButtons, 0);
+            Interlocked.Exchange(ref _lastSentPointerButtons, 0);
+            if (sessionEpoch != 0) SessionDiagnostics.Write($"input=local epoch={sessionEpoch}");
+            return true;
+        }
     }
 
-    private async Task ReleaseAsync()
+    private async Task<bool> ReleaseAsync(long? requiredEpoch = null)
     {
-        if (!_ble.Ready) return;
-
-        long epoch = Volatile.Read(ref _epoch);
+        long epoch = requiredEpoch ?? Volatile.Read(ref _epoch);
+        if (!_ble.Ready || epoch != Volatile.Read(ref _epoch) || _input.IsRemote) return false;
+        var target = _ble.ApprovedId;
+        var pending = Volatile.Read(ref _pendingInputRelease);
         using var timeout = new CancellationTokenSource(TimeSpan.FromMilliseconds(350));
 
         try
         {
-            await _ble.SendAsync(
+            if (!await _ble.SendAsync(
                 new WireReport(true, new byte[Hid.KeyboardReportLength]),
-                () => epoch == Volatile.Read(ref _epoch),
-                timeout.Token);
+                () => epoch == Volatile.Read(ref _epoch) && target == _ble.ApprovedId && !_input.IsRemote,
+                timeout.Token)) return false;
 
-            await _ble.SendAsync(
+            if (!await _ble.SendAsync(
                 new WireReport(false, new byte[Hid.MouseReportLength]),
-                () => epoch == Volatile.Read(ref _epoch),
-                timeout.Token);
+                () => epoch == Volatile.Read(ref _epoch) && target == _ble.ApprovedId && !_input.IsRemote,
+                timeout.Token)) return false;
+            if (pending?.Target == target) Interlocked.CompareExchange(ref _pendingInputRelease, null, pending);
+            return true;
         }
         catch (Exception ex)
         {
             _lastError = $"Release:{ex.GetType().Name}:0x{ex.HResult:X8}";
-            Log("휴대폰에 입력 해제 Report를 확인하지 못했지만 Bluetooth 서비스는 유지합니다.");
+            SessionDiagnostics.Write($"input-release=pending epoch={epoch} type={ex.GetType().Name}");
+            return false;
         }
+    }
+
+    private void RetryPendingInputRelease()
+    {
+        var pending = Volatile.Read(ref _pendingInputRelease);
+        if (pending is null || pending.Epoch != Volatile.Read(ref _epoch) || pending.Target != _ble.ApprovedId ||
+            _input.IsRemote || Interlocked.CompareExchange(ref _releaseRetryRunning, 1, 0) != 0) return;
+        _ = Task.Run(async () =>
+        {
+            try { await ReleaseAsync(pending.Epoch); }
+            finally { Interlocked.Exchange(ref _releaseRetryRunning, 0); }
+        });
     }
 
     private async Task ReturnLocalAsync()
@@ -1779,47 +1791,30 @@ public sealed partial class MainForm : Form
 
     private async Task ToggleAsync()
     {
-        if (_input.IsRemote)
-        {
-            await ReturnLocalAsync();
-            return;
-        }
-
-        if (!_ble.Ready)
-            throw new InvalidOperationException("키보드·마우스 구독과 기기 승인을 먼저 완료하세요.");
-
-        ImmediateLocal();
-        long epoch = Volatile.Read(ref _epoch);
-        await ReleaseAsync();
-
-        if (epoch != Volatile.Read(ref _epoch) || !_ble.Ready)
-            return;
-
-        await _input.RefreshHooksAsync();
-        if (epoch != Volatile.Read(ref _epoch) || !_ble.Ready) return;
-        _pointerScaler.Reset();
-        Interlocked.Exchange(ref _bleNotReadySinceTicks, 0);
-        if (!await ActivateInputWhenReleasedAsync(epoch)) return;
-
-        Log(
-            $"휴대폰 입력 시작 · 마우스 pacing {_ble.MousePacingIntervalMs}ms · " +
-            $"{HotkeyCatalog.Display(_settings.EmergencyHotkey)}로 즉시 복귀");
-
-        // Clipboard data transfer must never block or cancel HID input switching.
-        _ = SyncLatestClipboardToPhoneSafeAsync(
-            Volatile.Read(ref _epoch),
-            _ble.ApprovedId);
+        if (_input.IsRemote) await ReturnLocalAsync();
+        else await EnterRemoteAsync();
     }
 
     private async Task<bool> ActivateInputWhenReleasedAsync(long epoch, bool preserveLocalModifierUps = true)
     {
         var target = _ble.ApprovedId;
-        var activated = await _input.ActivateWhenReleasedAsync(
-            () => !_closing && epoch == Volatile.Read(ref _epoch) && _ble.Ready && target == _ble.ApprovedId,
-            message => { Log(message); _feedback.Text = message; },
-            _lifetime.Token, preserveLocalModifierUps);
-        if (!activated && !_closing) _feedback.Text = "입력 전환을 취소했습니다. 연결 상태를 확인하세요.";
-        return activated;
+        var generation = _input.Generation;
+        var activated = false;
+        Interlocked.Exchange(ref _remoteSessionEpoch, epoch);
+        try
+        {
+            activated = await _input.ActivateWhenReleasedAsync(
+                () => !_closing && _desktopInteractive && epoch == Volatile.Read(ref _epoch) &&
+                    generation == _input.Generation && _inputConnectionReady && target == _ble.ApprovedId,
+                message => { Log(message); _feedback.Text = message; },
+                _lifetime.Token, preserveLocalModifierUps);
+            if (!activated && !_closing) _feedback.Text = "입력 전환을 취소했습니다. 연결 상태를 확인하세요.";
+            return activated;
+        }
+        finally
+        {
+            if (!activated) Interlocked.CompareExchange(ref _remoteSessionEpoch, 0, epoch);
+        }
     }
 
     private async Task SyncLatestClipboardToPhoneSafeAsync(
@@ -2247,10 +2242,14 @@ public sealed partial class MainForm : Form
         while (!_lifetime.IsCancellationRequested)
         {
             var sendingEpoch = Volatile.Read(ref _epoch);
+            var sendingGeneration = _input.Generation;
             try
             {
                 var envelope = await _outbox.TakeAsync(_lifetime.Token).ConfigureAwait(false);
                 sendingEpoch = envelope.Epoch;
+                sendingGeneration = envelope.CaptureGeneration;
+                if (sendingEpoch != Volatile.Read(ref _epoch) || sendingGeneration != _input.Generation || !_input.IsRemote) continue;
+                if (Environment.TickCount64 - envelope.CreatedAt > 500) throw new TimeoutException("입력 대기열이 500ms 이상 지연됐어요.");
                 var pointer = envelope.Packet as PointerPacket;
                 if (pointer is not null)
                 {
@@ -2261,7 +2260,8 @@ public sealed partial class MainForm : Form
 
                 foreach (var report in Hid.Encode(envelope.Packet))
                 {
-                    if (envelope.Epoch != Volatile.Read(ref _epoch) || !_input.IsRemote) break;
+                    if (envelope.Epoch != Volatile.Read(ref _epoch) || envelope.CaptureGeneration != _input.Generation || !_input.IsRemote) break;
+                    if (Environment.TickCount64 - envelope.CreatedAt > 500) throw new TimeoutException("입력 전송 대기 시간이 초과됐어요.");
                     // Cadence is start-to-start: awaiting Notify already consumes radio time.
                     if (pointer is not null)
                         Interlocked.Exchange(ref _lastPointerDispatchTicks,
@@ -2271,7 +2271,7 @@ public sealed partial class MainForm : Form
                         report,
                         () =>
                             envelope.Epoch == Volatile.Read(ref _epoch) &&
-                            _input.IsRemote,
+                            envelope.CaptureGeneration == _input.Generation && _input.IsRemote,
                         _lifetime.Token).ConfigureAwait(false);
                     if (!sent) break;
 
@@ -2295,27 +2295,11 @@ public sealed partial class MainForm : Form
             }
             catch (Exception ex)
             {
-                // Serialize fallback with UI target/F8/F9 actions and discard
-                // failures from a send that belonged to a previous activation.
-                var fallback = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-                Post(() =>
-                {
-                    try
-                    {
-                        if (sendingEpoch != Volatile.Read(ref _epoch) || !_input.IsRemote) return;
-                        var queued = _outbox.Count;
-                        ImmediateLocal();
-                        _lastError = $"Send:{ex.GetType().Name}:0x{ex.HResult:X8}";
-                        Log($"Bluetooth 입력 전송을 복구하지 못해 노트북으로 복귀했습니다. " +
-                            $"원인: {ex.Message} ({_lastError}); HID 준비: {_ble.Ready}; 대기열: {queued}");
-                        _ = ReleaseAsync();
-                    }
-                    finally { fallback.TrySetResult(); }
-                });
-                // Do not send later reports while the failed report's fallback
-                // is still queued on the UI thread.
-                try { await fallback.Task.WaitAsync(_lifetime.Token).ConfigureAwait(false); }
-                catch (OperationCanceledException) when (_lifetime.IsCancellationRequested) { break; }
+                if (sendingEpoch != Volatile.Read(ref _epoch) || !_input.IsRemote || !TryImmediateLocal(sendingGeneration)) continue;
+                _lastError = $"Send:{ex.GetType().Name}:0x{ex.HResult:X8}";
+                SessionDiagnostics.Write($"send-fallback epoch={sendingEpoch} type={ex.GetType().Name} hresult=0x{ex.HResult:X8}");
+                _ = ReleaseAsync();
+                Post(() => Log($"입력 전달이 지연되어 PC로 돌아왔어요. {ex.Message}"));
             }
         }
     }
@@ -2469,11 +2453,14 @@ public sealed partial class MainForm : Form
     {
         if (e.Mode == PowerModes.Suspend)
         {
+            _desktopSuspended = true;
             ImmediateLocal();
-            Log("절전 진입 · 입력만 노트북으로 복귀하고 Bluetooth provider는 OS에 맡깁니다.");
+            Post(() => Log("절전 진입 · PC로 복귀하고 Bluetooth 연결은 OS에 맡겨요."));
         }
         else if (e.Mode == PowerModes.Resume)
         {
+            _desktopSuspended = false;
+            _input.RefreshHooks();
             Dispatch(async () =>
             {
                 if (_servicesPaused)
@@ -2568,11 +2555,18 @@ public sealed partial class MainForm : Form
     {
         if (e.Reason == SessionSwitchReason.SessionLock)
         {
+            _desktopLocked = true;
             ImmediateLocal();
-            Log("Windows 잠금 감지 · Bluetooth 승인/검색 신호는 유지하고 입력만 노트북으로 복귀했습니다.");
+            Post(() => Log("Windows가 잠겨 PC로 돌아왔어요. Bluetooth 연결은 유지해요."));
+        }
+        else if (e.Reason == SessionSwitchReason.SessionUnlock)
+        {
+            _desktopLocked = false;
+            _input.RefreshHooks();
         }
         else if (e.Reason == SessionSwitchReason.SessionLogoff)
         {
+            _desktopLocked = true;
             ImmediateLocal();
             EmergencyBleCleanup();
         }

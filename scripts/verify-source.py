@@ -58,8 +58,9 @@ p2p_security = read("src/ConPhone.Core/P2PSecurity.cs")
 
 # Released Windows and Android versions must agree. The archived iOS companion
 # is versioned separately; iPhone HID works without installing that companion.
-win_version = re.search(r"<Version>(\d+\.\d+\.\d+)</Version>", win_project)
-android_version = re.search(r'versionName = "(\d+\.\d+\.\d+)"', android_gradle)
+release_version = r"(\d+\.\d+\.\d+(?:-[A-Za-z0-9.-]+)?)"
+win_version = re.search(r"<Version>" + release_version + r"</Version>", win_project)
+android_version = re.search(r'versionName = "' + release_version + '"', android_gradle)
 require(win_version is not None and android_version is not None and
         win_version.group(1) == android_version.group(1), "Windows/Android version mismatch")
 require('MARKETING_VERSION: "0.3.0"' in ios_project, "iOS marketing version must be 0.3.0")

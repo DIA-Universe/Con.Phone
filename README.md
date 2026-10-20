@@ -2,6 +2,10 @@
 
 PC의 키보드와 마우스를 Bluetooth로 휴대폰에서 사용하세요.
 
+**Bluetooth 안정화 버전 1.1.0-preview.2** · [EXE 다운로드](https://github.com/DIA-Universe/Con.Phone/releases/download/v1.1.0-preview.2/LINKO.exe) · [변경 내용과 검증 범위](docs/LINKO-1.1.0-preview.2.md)
+
+화면 가장자리 자동 전환은 제거했어요. **F8로 휴대폰 조작, F9로 PC 복귀**를 사용해 주세요. Windows 입력 처리를 Bluetooth 전송에서 분리하고, 전송 지연 시 PC 입력을 돌려주며, 연결 중 서비스 반복 재게시를 억제해요. 이전 자동 전환 설정이 남아 있어도 작동하지 않아요. 실기기 장시간 검증은 남아 있어 테스트 릴리스로 배포하며 정식 최신 버전은 아래 1.0.15를 유지해요.
+
 **Windows / Android 1.0.15** · [EXE 다운로드](https://github.com/DIA-Universe/Con.Phone/releases/download/v1.0.15/LINKO.exe) · [Android APK](https://github.com/DIA-Universe/Con.Phone/releases/download/v1.0.15/LINKO-1.0.15.apk) · [릴리스](https://github.com/DIA-Universe/Con.Phone/releases/tag/v1.0.15)
 
 **1.0.15 연결 안정화:** 연결 중 검색 신호 오류만으로 Bluetooth 서비스를 반복 게시하지 않도록 바꿨습니다. Android LINKO는 외부 키보드·마우스 연결 상태가 바뀌어도 화면을 유지하고, 같은 알림을 반복 갱신하지 않습니다. PC의 EXE를 교체하고 Android LINKO를 사용한다면 APK도 함께 업데이트하세요. 기존 페어링과 설정은 유지합니다. 자동 검사와 Windows 네이티브 서비스 검사는 통과했지만, 사용자가 겪은 실제 휴대폰의 끊김·화면 깜빡임 개선 여부는 아직 확인하지 못했습니다. [변경 내용과 검증 범위](docs/LINKO-1.0.15.md).
@@ -35,5 +39,5 @@ PC의 키보드와 마우스를 Bluetooth로 휴대폰에서 사용하세요.
 
 .NET 10, JDK 17, Android SDK 35를 사용합니다. `scripts/test-now.ps1 -Target all`은 EXE/APK 버전 일치를 검사한 뒤 로컬에서 빌드합니다. GitHub Actions를 실행할 필요가 없습니다.
 
-1.0.6은 Android의 주변 HID 기기 자동 접속과 Windows의 상대 기기 접근/연결 유지 요청을 제거합니다. 기존 3초 입력 복구 유예는 유지합니다. 검증 범위와 실기기 확인이 남은 항목은 [1.0.6 검토 기록](docs/LINKO-1.0.6.md), 자동 복사 설정은 [1.0.0 기록](docs/LINKO-1.0.0.md)에 정리했습니다. 저장소 주소와 기존 설치 데이터 식별자는 호환성을 위해 유지합니다.
+1.0.6은 Android의 주변 HID 기기 자동 접속과 Windows의 상대 기기 접근/연결 유지 요청을 제거했습니다. 당시 3초였던 입력 전송 유예는 1.1.0-preview.1에서 500ms로 줄였습니다. 과거 검증 범위는 [1.0.6 검토 기록](docs/LINKO-1.0.6.md), 자동 복사 설정은 [1.0.0 기록](docs/LINKO-1.0.0.md)에 정리했습니다. 저장소 주소와 기존 설치 데이터 식별자는 호환성을 위해 유지합니다.
 
