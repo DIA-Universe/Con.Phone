@@ -58,22 +58,23 @@ internal static class InputIsolationSelfTest
             var newer = input.Generation;
             Check(newer != old && !input.DeactivateIfGeneration(old) && input.IsRemote,
                 "late failure from an old activation cannot cancel a new one");
-            input.Deactivate();
+            clock.Restart();
+            await Key(input, 0x78);
+            Check(!input.IsRemote && clock.ElapsedMilliseconds < 150,
+                "F9 returns immediately even while the packet observer is blocked");
+            await Key(input, 0x78, true);
             release.Set();
             await Task.Delay(100);
             lock (delivered) Check(delivered.Count == 1, "queued old key-up is not delivered after reactivation");
             await input.OnInputThreadAsync(() => true); // Drain owner-thread cleanup.
             input.Activate();
-            input.CalibrationMode = true;
-            var marked = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-            input.Packet += captured => { if (captured.Packet is CalibrationMarkPacket) marked.TrySetResult(); };
             await Key(input, 0x77);
             await Key(input, 0x77, true);
-            await marked.Task.WaitAsync(TimeSpan.FromSeconds(1));
-            Check(input.IsRemote, "calibration marker is ordered in the input queue without toggling mode");
+            Check(!input.IsRemote, "F8 returns locally without calibration or transport work");
+            input.Activate();
             await Key(input, 0x78);
             await Key(input, 0x78, true);
-            Check(!input.IsRemote, "F9 cancels calibration immediately");
+            Check(!input.IsRemote, "F9 returns locally immediately");
 
             // A late activation snapshot may not overwrite a newer safety return.
             using var snapshotStarted = new ManualResetEventSlim();
@@ -86,7 +87,11 @@ internal static class InputIsolationSelfTest
             });
             await competing.Started;
             block = true;
-            var activation = competing.TryActivateAutomaticAsync(() => true);
+            var activation = competing.OnInputThreadAsync(() =>
+            {
+                try { competing.Activate(); return true; }
+                catch (InputTransitionBlockedException) { return false; }
+            });
             Check(snapshotStarted.Wait(1000), "activation key snapshot started");
             competing.Deactivate();
             finishSnapshot.Set();

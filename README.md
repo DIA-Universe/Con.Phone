@@ -2,9 +2,9 @@
 
 PC의 키보드와 마우스를 Bluetooth로 휴대폰에서 사용하세요.
 
-**자동 전환 테스트 버전 1.1.0-preview.1** · [테스트 EXE 다운로드](https://github.com/DIA-Universe/Con.Phone/releases/download/v1.1.0-preview.1/LINKO.exe) · [사용법과 검증 범위](docs/LINKO-1.1.0-preview.1.md)
+**Bluetooth 안정화 버전 1.1.0-preview.2** · [EXE 다운로드](https://github.com/DIA-Universe/Con.Phone/releases/download/v1.1.0-preview.2/LINKO.exe) · [변경 내용과 검증 범위](docs/LINKO-1.1.0-preview.2.md)
 
-휴대폰 앱 없이 PC 화면의 왼쪽 또는 오른쪽 끝에서 휴대폰으로 넘어가는 기능을 추가했어요. **입력 설정 → 이동 범위 보정**을 마치면 자동 전환이 켜져요. 돌아올 때는 보정한 이동량으로 위치를 추정하므로 실제 휴대폰 경계와 어긋날 수 있어요. Bluetooth 전송과 Windows 입력 처리를 분리하고 지연 시 PC로 복귀하도록 바꿨어요. Android·iPhone 실기기 장시간 검증은 남아 있어 테스트 버전으로 배포해요. 정식 최신 버전은 아래 1.0.15를 유지해요.
+화면 가장자리 자동 전환은 제거했어요. **F8로 휴대폰 조작, F9로 PC 복귀**를 사용해 주세요. Windows 입력 처리를 Bluetooth 전송에서 분리하고, 전송 지연 시 PC 입력을 돌려주며, 연결 중 서비스 반복 재게시를 억제해요. 이전 자동 전환 설정이 남아 있어도 작동하지 않아요. 실기기 장시간 검증은 남아 있어 테스트 릴리스로 배포하며 정식 최신 버전은 아래 1.0.15를 유지해요.
 
 **Windows / Android 1.0.15** · [EXE 다운로드](https://github.com/DIA-Universe/Con.Phone/releases/download/v1.0.15/LINKO.exe) · [Android APK](https://github.com/DIA-Universe/Con.Phone/releases/download/v1.0.15/LINKO-1.0.15.apk) · [릴리스](https://github.com/DIA-Universe/Con.Phone/releases/tag/v1.0.15)
 

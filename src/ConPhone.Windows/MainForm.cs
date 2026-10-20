@@ -300,7 +300,6 @@ public sealed partial class MainForm : Form
 
             SystemEvents.PowerModeChanged += PowerChanged;
             SystemEvents.SessionSwitch += SessionChanged;
-            SystemEvents.DisplaySettingsChanged += DisplayLayoutChanged;
             FormClosing += ClosingAsync;
         }
     }
@@ -480,7 +479,6 @@ public sealed partial class MainForm : Form
         var tab = NewTab("입력 설정");
         var flow = TabFlow();
         tab.Controls.Add(flow);
-        flow.Controls.Add(BuildEdgeSwitchSection());
 
         var pointer = AutoSection();
         pointer.Controls.Add(SectionTitle("마우스 / 스크롤"));
@@ -940,7 +938,6 @@ public sealed partial class MainForm : Form
             }
         };
 
-        _input.EdgeEntered += (generation, entry) => DispatchCritical(() => EnterFromEdgeAsync(generation, entry));
         _input.SafetyReturn += (generation, message) =>
         {
             if (!TryImmediateLocal(generation)) return;
@@ -962,7 +959,7 @@ public sealed partial class MainForm : Form
         _ble.Status += LogTransport;
         _ble.RadioAvailabilityChanged += available =>
         {
-            if (!available) { _inputConnectionReady = false; _input.SetAutomaticReady(false); ImmediateLocal(); }
+            if (!available) { _inputConnectionReady = false; ImmediateLocal(); }
             if (_clipboardSync is not null) _ = HandleRadioChangedAsync(available);
         };
 
@@ -1290,7 +1287,6 @@ public sealed partial class MainForm : Form
 
         _modifierProfile.SelectedIndex =
             modifiers == ModifierProfile.MacCtrlCommandSwap ? 1 : 0;
-        LoadEdgeSwitchProfile();
     }
 
     private void RefreshHotkeyUi()
@@ -1726,9 +1722,12 @@ public sealed partial class MainForm : Form
                 if (!_input.DeactivateIfGeneration(generation.Value)) return false;
             }
             else _input.Deactivate();
-            var session = Interlocked.Exchange(ref _pointerSession, null);
+            var sessionEpoch = Interlocked.Exchange(ref _remoteSessionEpoch, 0);
             var epoch = Interlocked.Increment(ref _epoch);
-            if ((wasRemote || session is not null) && target is not null)
+            // Repeated local returns must not strand an undelivered key-up on
+            // an obsolete epoch. Keep it eligible for this same target only.
+            var pending = Volatile.Read(ref _pendingInputRelease);
+            if ((wasRemote || sessionEpoch != 0 || pending?.Target == target) && target is not null)
                 Volatile.Write(ref _pendingInputRelease, new(epoch, target));
             _outbox.Clear();
             _ble.ClearInputReports();
@@ -1737,9 +1736,7 @@ public sealed partial class MainForm : Form
             Interlocked.Exchange(ref _lastPointerDispatchTicks, 0);
             Interlocked.Exchange(ref _lastObservedPointerButtons, 0);
             Interlocked.Exchange(ref _lastSentPointerButtons, 0);
-            if (session?.Entry is { } entry) _input.RestoreCursor(entry);
-            if (session?.Calibration is not null) Post(() => _edgeStatus.Text = "보정을 끝내고 PC로 돌아왔어요. 완료되지 않은 보정값은 저장하지 않아요.");
-            if (session is not null) SessionDiagnostics.Write($"input=local epoch={session.Epoch}");
+            if (sessionEpoch != 0) SessionDiagnostics.Write($"input=local epoch={sessionEpoch}");
             return true;
         }
     }
@@ -2242,7 +2239,6 @@ public sealed partial class MainForm : Form
                 sendingGeneration = envelope.CaptureGeneration;
                 if (sendingEpoch != Volatile.Read(ref _epoch) || sendingGeneration != _input.Generation || !_input.IsRemote) continue;
                 if (Environment.TickCount64 - envelope.CreatedAt > 500) throw new TimeoutException("입력 대기열이 500ms 이상 지연됐어요.");
-                if (envelope.Packet is CalibrationMarkPacket) { ProcessCalibrationMark(sendingEpoch, sendingGeneration); continue; }
                 var pointer = envelope.Packet as PointerPacket;
                 if (pointer is not null)
                 {
@@ -2272,7 +2268,6 @@ public sealed partial class MainForm : Form
 
                     if (pointer is not null)
                     {
-                        ObserveDeliveredPointer(envelope.Epoch, envelope.CaptureGeneration, report.Data);
                         // Update after every emitted mouse report, not once per source packet.
                         // A large coalesced move can encode into several HID reports; each
                         // subsequent pure-motion report must respect the negotiated BLE cadence.
@@ -2448,7 +2443,6 @@ public sealed partial class MainForm : Form
         if (e.Mode == PowerModes.Suspend)
         {
             _desktopSuspended = true;
-            _input.SetAutomaticReady(false);
             ImmediateLocal();
             Post(() => Log("절전 진입 · PC로 복귀하고 Bluetooth 연결은 OS에 맡겨요."));
         }
@@ -2456,7 +2450,6 @@ public sealed partial class MainForm : Form
         {
             _desktopSuspended = false;
             _input.RefreshHooks();
-            Post(ConfigureAutomaticSwitch);
             Dispatch(async () =>
             {
                 if (_servicesPaused)
@@ -2552,7 +2545,6 @@ public sealed partial class MainForm : Form
         if (e.Reason == SessionSwitchReason.SessionLock)
         {
             _desktopLocked = true;
-            _input.SetAutomaticReady(false);
             ImmediateLocal();
             Post(() => Log("Windows가 잠겨 PC로 돌아왔어요. Bluetooth 연결은 유지해요."));
         }
@@ -2560,12 +2552,10 @@ public sealed partial class MainForm : Form
         {
             _desktopLocked = false;
             _input.RefreshHooks();
-            Post(ConfigureAutomaticSwitch);
         }
         else if (e.Reason == SessionSwitchReason.SessionLogoff)
         {
             _desktopLocked = true;
-            _input.SetAutomaticReady(false);
             ImmediateLocal();
             EmergencyBleCleanup();
         }
@@ -2613,7 +2603,6 @@ public sealed partial class MainForm : Form
 
         SystemEvents.PowerModeChanged -= PowerChanged;
         SystemEvents.SessionSwitch -= SessionChanged;
-        SystemEvents.DisplaySettingsChanged -= DisplayLayoutChanged;
 
         _timer.Stop();
         _timer.Dispose();

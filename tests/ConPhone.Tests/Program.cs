@@ -715,7 +715,7 @@ recoveryClipboard.Retire();
 Check("retired generation cannot block discovery recovery", !SharedBleResource<RecoveryResource>.HasActiveResources);
 recoveryClipboard.Detach();
 
-EdgeSwitchTests.Run(Check);
+InputRecoveryTests.Run(Check);
 
 Console.WriteLine($"{passed} checks passed. No Windows/Bluetooth/phone hardware has been tested by these checks.");
 

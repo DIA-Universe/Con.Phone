@@ -122,7 +122,6 @@ public sealed partial class InputCapture : IDisposable
     {
         try
         {
-            DesktopGeometry.UsePhysicalCoordinates();
             _sink = new Sink(this);
             var devices = new[] { new RawDevice { Page = 1, Usage = 2, Flags = 0x100, Target = _sink.Handle } };
             if (!RegisterRawInputDevices(devices, 1, (uint)Marshal.SizeOf<RawDevice>())) throw new Win32Exception();
@@ -195,7 +194,7 @@ public sealed partial class InputCapture : IDisposable
         }
     }
 
-    private bool TryActivateCore(bool preserveLocalModifierUps, out int[] blocked, bool allowSwitchChord = true)
+    private bool TryActivateCore(bool preserveLocalModifierUps, out int[] blocked)
     {
         var before = Generation;
         lock (_gate)
@@ -208,7 +207,6 @@ public sealed partial class InputCapture : IDisposable
                 HotkeyPhysicalKeys(_toggleHotkey));
             allowed.UnionWith(
                 HotkeyPhysicalKeys(_nextDeviceHotkey));
-            if (!allowSwitchChord) allowed.Clear();
             var pressed = new List<int>();
             for (int vk = 1; vk < 255; vk++)
                 if ((_readKeyState(vk) & 0x8000) != 0) pressed.Add(vk);
@@ -255,7 +253,6 @@ public sealed partial class InputCapture : IDisposable
     public bool DeactivateIfGeneration(long before)
     {
         if (Interlocked.CompareExchange(ref _captureState, (before | 1) + 1, before) != before) return false;
-        _calibrating = false;
         PostInput(() =>
         {
             if (_remote) return; // A newer activation owns its own clean state.
@@ -263,7 +260,6 @@ public sealed partial class InputCapture : IDisposable
             _buttons = 0;
             _wheel = 0;
             _pan = 0;
-            _edgeEntry.Disarm();
             UpdateRemoteShortcutFallbacks();
         });
         return true;
@@ -309,10 +305,6 @@ public sealed partial class InputCapture : IDisposable
         {
             // A missed key-up must not permanently hide subsequent shortcut presses.
             _downKeys.Clear();
-            _physicalMouseButtons = 0;
-            foreach (var key in new[] { 0x01, 0x02, 0x04, 0x05, 0x06 })
-                if ((_readKeyState(key) & 0x8000) != 0) _physicalMouseButtons = 1;
-            UpdateHeldInputs();
             _suppressUntilUp.RemoveWhere(key => (_readKeyState(key) & 0x8000) == 0);
             _localPassthroughUntilUp.RemoveWhere(key => (_readKeyState(key) & 0x8000) == 0);
         }
@@ -338,7 +330,6 @@ public sealed partial class InputCapture : IDisposable
             {
                 firstDown = !up && _downKeys.Add(key);
                 if (up) _downKeys.Remove(key);
-                UpdateHeldInputs();
 
                 if (_suppressUntilUp.Contains(key))
                 {
@@ -414,11 +405,6 @@ public sealed partial class InputCapture : IDisposable
                                 if (down != key && IsPhysicalModifier(down))
                                     _localPassthroughUntilUp.Add(down);
                         }
-                    }
-                    if (_remote && _calibrating)
-                    {
-                        Emit(new CalibrationMarkPacket());
-                        return 1;
                     }
                     // Returning to the PC must not wait for the UI/action queue or Bluetooth.
                     if (_remote)
@@ -600,6 +586,7 @@ public sealed partial class InputCapture : IDisposable
 
     private void Raw(nint handle)
     {
+        if (!_remote) return;
 
         uint size = (uint)Marshal.SizeOf<RawInput>();
         uint read = GetRawInputData(
@@ -613,28 +600,8 @@ public sealed partial class InputCapture : IDisposable
 
         lock (_gate)
         {
+            if (!_remote) return;
             var m = raw.Mouse;
-            var physicalFlags = m.Buttons & 0xFFFF;
-            for (var i = 0; i < 5; i++)
-            {
-                if ((physicalFlags & (1u << (i * 2))) != 0) _physicalMouseButtons |= (byte)(1 << i);
-                if ((physicalFlags & (2u << (i * 2))) != 0) _physicalMouseButtons &= (byte)~(1 << i);
-            }
-            UpdateHeldInputs();
-            if (!_remote)
-            {
-                if (_automaticEnabled && (m.Flags & 1) == 0 && DesktopGeometry.Cursor(out var point))
-                {
-                    var edge = _edgeEntry.Observe(_screens, _phoneSide, point.X, point.Y, m.X,
-                        !_automaticReady || _captureCallback is not null || HasHeldInput);
-                    if (edge is not null)
-                    {
-                        var generation = Generation;
-                        Notify(() => EdgeEntered?.Invoke(generation, edge));
-                    }
-                }
-                return;
-            }
             if ((m.Flags & 1) != 0)
             {
                 Deactivate();
