@@ -2,7 +2,15 @@ namespace ConPhone.Windows;
 
 internal static class SessionDiagnostics
 {
-    private static readonly object Gate = new();
+    private static readonly System.Threading.Channels.Channel<string> Pending =
+        System.Threading.Channels.Channel.CreateBounded<string>(new System.Threading.Channels.BoundedChannelOptions(2048)
+        { SingleReader = true, FullMode = System.Threading.Channels.BoundedChannelFullMode.DropOldest });
+    private static readonly Task Writer = Task.Run(WriteLoopAsync);
+    static SessionDiagnostics() => AppDomain.CurrentDomain.ProcessExit += (_, _) =>
+    {
+        Pending.Writer.TryComplete();
+        try { Writer.Wait(200); } catch { }
+    };
     public static readonly string LogPath = Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
         "ConPhone", "diagnostics", "session.log");
@@ -10,17 +18,22 @@ internal static class SessionDiagnostics
     public static void Write(string message)
     {
         // Only connection/status messages are logged, never clipboard contents or keys.
-        try
+        Pending.Writer.TryWrite($"{DateTimeOffset.Now:O} mono={Environment.TickCount64} {message}{Environment.NewLine}");
+    }
+
+    private static async Task WriteLoopAsync()
+    {
+        await foreach (var line in Pending.Reader.ReadAllAsync().ConfigureAwait(false))
         {
-            lock (Gate)
+            try
             {
                 Directory.CreateDirectory(Path.GetDirectoryName(LogPath)!);
                 if (File.Exists(LogPath) && new FileInfo(LogPath).Length > 1_000_000)
                     File.Move(LogPath, LogPath + ".previous", true);
-                File.AppendAllText(LogPath, $"{DateTimeOffset.Now:O} {message}{Environment.NewLine}");
+                await File.AppendAllTextAsync(LogPath, line).ConfigureAwait(false);
             }
+            catch { /* Logging must never backpressure input or BLE callbacks. */ }
         }
-        catch { /* Diagnostics must not stop HID input. */ }
     }
 
     public static void WriteException(string operation, Exception error)

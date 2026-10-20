@@ -7,6 +7,13 @@ internal static class Program
     {
         ApplicationConfiguration.Initialize();
 
+        if (args.Length == 1 && args[0] == "--input-isolation-selftest")
+        {
+            try { InputIsolationSelfTest.RunAsync().GetAwaiter().GetResult(); }
+            catch (Exception ex) { Console.Error.WriteLine(ex); Environment.ExitCode = 1; }
+            return;
+        }
+
         if (args.Length == 3 && args[0] == "--restart-after" &&
             int.TryParse(args[1], out var parentId) && long.TryParse(args[2], out var parentStarted))
         {

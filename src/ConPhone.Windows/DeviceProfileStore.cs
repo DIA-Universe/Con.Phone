@@ -9,6 +9,7 @@ public sealed class DeviceInputProfile
 {
     public HangulKeyMode HangulKeyMode { get; set; } = HangulKeyMode.RightAlt;
     public ModifierProfile ModifierProfile { get; set; } = ModifierProfile.Standard;
+    public EdgeSwitchProfile EdgeSwitch { get; set; } = new();
 }
 
 public static class DeviceProfileStore
@@ -58,11 +59,10 @@ public static class DeviceProfileStore
         lock (Gate)
         {
             var profiles = LoadUnsafe();
-            profiles[Key(deviceId)] = Normalize(new DeviceInputProfile
-            {
-                HangulKeyMode = hangulKeyMode,
-                ModifierProfile = modifierProfile
-            });
+            var profile = profiles.GetValueOrDefault(Key(deviceId)) ?? new DeviceInputProfile();
+            profile.HangulKeyMode = hangulKeyMode;
+            profile.ModifierProfile = modifierProfile;
+            profiles[Key(deviceId)] = Normalize(profile);
             SaveUnsafe(profiles);
         }
     }
@@ -80,11 +80,33 @@ public static class DeviceProfileStore
         }
     }
 
+    public static void SaveEdgeSwitch(string deviceId, EdgeSwitchProfile edge,
+        HangulKeyMode fallbackHangul, ModifierProfile fallbackModifier)
+    {
+        if (string.IsNullOrWhiteSpace(deviceId)) return;
+        lock (Gate)
+        {
+            var profiles = LoadUnsafe();
+            profiles[Key(deviceId)] = WithEdgeSwitch(profiles.GetValueOrDefault(Key(deviceId)),
+                edge, fallbackHangul, fallbackModifier);
+            SaveUnsafe(profiles);
+        }
+    }
+
+    internal static DeviceInputProfile WithEdgeSwitch(DeviceInputProfile? profile, EdgeSwitchProfile edge,
+        HangulKeyMode fallbackHangul, ModifierProfile fallbackModifier)
+    {
+        profile ??= new DeviceInputProfile { HangulKeyMode = fallbackHangul, ModifierProfile = fallbackModifier };
+        profile.EdgeSwitch = edge.Normalized();
+        return Normalize(profile);
+    }
+
     private static string Key(string deviceId) =>
         Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(deviceId)));
 
     private static DeviceInputProfile Normalize(DeviceInputProfile profile)
     {
+        profile.EdgeSwitch = (profile.EdgeSwitch ?? new()).Normalized();
         if (!Enum.IsDefined(typeof(HangulKeyMode), profile.HangulKeyMode))
             profile.HangulKeyMode = HangulKeyMode.RightAlt;
         if (!Enum.IsDefined(typeof(ModifierProfile), profile.ModifierProfile))

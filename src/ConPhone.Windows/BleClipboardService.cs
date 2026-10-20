@@ -210,7 +210,7 @@ public sealed class BleClipboardService : IDisposable
         var tx = _tx; var rx = _rx; var secret = _secret;
         var capabilities = _capabilities; var direct = _directLink;
         TypedEventHandler<GattLocalCharacteristic, object> subscribed = (_, _) => {
-            if (!lifetime.IsDisposed) RefreshSubscriptions();
+            if (!lifetime.IsDisposed) { BlePeerActivity.Observe(); RefreshSubscriptions(); }
         };
         tx.SubscribedClientsChanged += subscribed;
         lifetime.Register(() => tx.SubscribedClientsChanged -= subscribed);
@@ -239,7 +239,8 @@ public sealed class BleClipboardService : IDisposable
             if (Running) { _advertisingBackoff.Reset(); return; }
             // An optional service must not change the GATT table under a live
             // HID connection, including when its initial construction failed.
-            if (automaticRecovery && _hasConnectedPeer()) { _advertisingBackoff.Reset(); return; }
+            if (_hasConnectedPeer()) { _advertisingBackoff.Reset(); return; }
+            if (!BlePeerActivity.IsQuiet) return;
             if (automaticRecovery && !_advertisingBackoff.TryBegin(Environment.TickCount64)) return;
             await PrepareCoreAsync().ConfigureAwait(false);
             _resources.Token.ThrowIfCancellationRequested();
@@ -683,6 +684,7 @@ public sealed class BleClipboardService : IDisposable
                     var subscription = new Subscription(lease, lifetime);
                     _subscriptions.Add(id, subscription);
                     TypedEventHandler<GattSession, GattSessionStatusChangedEventArgs> changed = (sender, args) => {
+                        BlePeerActivity.Observe();
                         if (args.Status == GattSessionStatus.Closed) {
                             if (lease.IsActive || BleNativeState.IsActive(sender)) {
                                 Status?.Invoke($"[BLE][Session {lifetime.Id}] late clipboard Closed callback ignored; native session already Active");

@@ -472,9 +472,22 @@ foreach (var reportName in new[] { "key down", "key up", "mouse delta", "button 
 Check("HID recovery preserves report order exactly once", submittedReports.SequenceEqual(
     new[] { "key down", "key up", "mouse delta", "button up" }));
 var delayedNotifications = 0;
-Check("750ms notification delay does not force local input", await HidSendRecovery.SendAsync(
-    () => true, async token => { delayedNotifications++; await Task.Delay(850, token); return true; },
-    CancellationToken.None) && delayedNotifications == 1);
+try
+{
+    await HidSendRecovery.SendAsync(() => true,
+        async token => { delayedNotifications++; await Task.Delay(850, token); return true; }, CancellationToken.None);
+    Check("delayed notification should time out", false);
+}
+catch (TimeoutException) { Check("500ms input deadline never retries a slow notification", delayedNotifications == 1); }
+var nonCooperative = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+var deadlineWatch = System.Diagnostics.Stopwatch.StartNew();
+try
+{
+    await HidSendRecovery.SendAsync(() => true, _ => nonCooperative.Task, CancellationToken.None);
+    Check("native operation ignoring cancellation must be bounded", false);
+}
+catch (TimeoutException) { Check("uncooperative native task cannot block input for 2 seconds", deadlineWatch.ElapsedMilliseconds < 1000); }
+nonCooperative.SetResult(true);
 var ambiguousAttempts = 0;
 try
 {
@@ -701,6 +714,8 @@ recoveryLink.Active = true;
 recoveryClipboard.Retire();
 Check("retired generation cannot block discovery recovery", !SharedBleResource<RecoveryResource>.HasActiveResources);
 recoveryClipboard.Detach();
+
+EdgeSwitchTests.Run(Check);
 
 Console.WriteLine($"{passed} checks passed. No Windows/Bluetooth/phone hardware has been tested by these checks.");
 

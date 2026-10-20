@@ -3,7 +3,11 @@ namespace ConPhone.Core;
 public abstract record InputPacket;
 public sealed record KeyboardPacket(byte[] Data) : InputPacket;
 public sealed record PointerPacket(byte Buttons, int X = 0, int Y = 0, int Wheel = 0, int Pan = 0) : InputPacket;
-public sealed record Envelope(long Epoch, InputPacket Packet);
+public sealed record Envelope(long Epoch, InputPacket Packet)
+{
+    public long CaptureGeneration { get; init; }
+    public long CreatedAt { get; init; } = Environment.TickCount64;
+}
 public sealed record WireReport(bool Keyboard, byte[] Data);
 
 public enum HangulKeyMode

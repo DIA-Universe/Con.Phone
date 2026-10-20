@@ -6,6 +6,15 @@ internal static class ReleaseSelfTest
 {
     public static async Task RunAsync()
     {
+        var edge = new EdgeSwitchProfile { Enabled = true, Side = PhoneSide.Left, Travel = 1000 };
+        var created = DeviceProfileStore.WithEdgeSwitch(null, edge, HangulKeyMode.CtrlSpace, ModifierProfile.MacCtrlCommandSwap);
+        if (created.HangulKeyMode != HangulKeyMode.CtrlSpace || created.ModifierProfile != ModifierProfile.MacCtrlCommandSwap)
+            throw new InvalidOperationException("Saving first edge profile reset global keyboard defaults.");
+        var existing = new DeviceInputProfile { HangulKeyMode = HangulKeyMode.Lang1 };
+        var updated = DeviceProfileStore.WithEdgeSwitch(existing, edge, HangulKeyMode.RightAlt, ModifierProfile.MacCtrlCommandSwap);
+        if (updated.HangulKeyMode != HangulKeyMode.Lang1 || updated.ModifierProfile != ModifierProfile.Standard || !updated.EdgeSwitch.Enabled)
+            throw new InvalidOperationException("Edge profile replaced existing keyboard configuration.");
+        Console.WriteLine("PASS: edge profiles preserve saved keyboard settings and first-use global defaults.");
         foreach (var hresult in new[] { 0x80010108u, 0x8000000Eu, 0x80000013u })
         {
             if (BleNativeState.Read<bool>(() => throw new System.Runtime.InteropServices.COMException("peer unavailable", unchecked((int)hresult)), false))
@@ -73,7 +82,7 @@ internal static class ReleaseSelfTest
              "CaptureClipboardText":false,"CaptureClipboardImages":true,
              "ClipboardAutoSendImages":true,"MouseSpeedPercent":37}
             """);
-        if (!migrated.ClipboardSyncEnabled || !migrated.ClipboardAutoSendText ||
+        if (migrated.ClipboardSyncEnabled || migrated.ClipboardAutoSendText ||
             !migrated.CaptureClipboardText || migrated.CaptureClipboardImages ||
             migrated.ClipboardAutoSendImages || migrated.MouseSpeedPercent != 37)
             throw new InvalidOperationException("Legacy settings migration failed.");

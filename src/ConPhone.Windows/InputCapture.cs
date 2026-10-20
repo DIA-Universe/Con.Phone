@@ -5,7 +5,7 @@ using ConPhone.Core;
 namespace ConPhone.Windows;
 
 // Hooks run on their own message-loop thread. They never await Bluetooth or touch the UI.
-public sealed class InputCapture : IDisposable
+public sealed partial class InputCapture : IDisposable
 {
     private readonly object _gate = new();
     private readonly KeyboardState _keys = new();
@@ -17,7 +17,7 @@ public sealed class InputCapture : IDisposable
     private nint _keyboardHook, _mouseHook;
     private Sink? _sink;
 
-    private volatile bool _remote;
+    private bool _remote => (Generation & 1) != 0;
     private HotkeyBinding _nextDeviceHotkey = SettingsStore.DefaultNextDevice();
     private HotkeyBinding _toggleHotkey = SettingsStore.DefaultToggle();
     private HotkeyBinding _emergencyHotkey = SettingsStore.DefaultEmergency();
@@ -35,7 +35,7 @@ public sealed class InputCapture : IDisposable
     private byte _buttons;
     private int _wheel, _pan;
 
-    public event Action<InputPacket>? Packet;
+    public event Action<CapturedInput>? Packet;
     public event Action? NextDevice;
     public event Action? Toggle;
     public event Action? Emergency;
@@ -44,7 +44,7 @@ public sealed class InputCapture : IDisposable
     public event Action<string>? Fault;
 
     public bool IsRemote => _remote;
-    public bool IsCapturingHotkey { get { lock (_gate) return _captureCallback is not null; } }
+    public bool IsCapturingHotkey => Volatile.Read(ref _captureCallback) is not null;
     public Task Started => _started.Task;
 
     public InputCapture() : this(GetAsyncKeyState) { }
@@ -52,6 +52,8 @@ public sealed class InputCapture : IDisposable
     internal InputCapture(Func<int, short> readKeyState)
     {
         _readKeyState = readKeyState;
+        _dispatchTask = Task.Run(DispatchInputAsync);
+        _dispatchWatchdog = new System.Threading.Timer(CheckDispatchDeadline, null, 100, 100);
         _thread = new Thread(Run) { IsBackground = true, Name = "Con.Phone.Input" };
         _thread.SetApartmentState(ApartmentState.STA);
         _thread.Start();
@@ -77,24 +79,24 @@ public sealed class InputCapture : IDisposable
             }
         }
 
-        lock (_gate)
+        PostInput(() =>
         {
             _nextDeviceHotkey = nextDevice.Clone();
             _toggleHotkey = toggle.Clone();
             _emergencyHotkey = emergency.Clone();
             _lockAndReturnHotkey = lockAndReturn.Clone();
-        }
+        });
     }
 
     public void ConfigureKeyboard(
         HangulKeyMode hangulKeyMode,
         ModifierProfile modifierProfile)
     {
-        lock (_gate)
+        PostInput(() =>
         {
             _hangulKeyMode = hangulKeyMode;
             _modifierProfile = modifierProfile;
-        }
+        });
     }
 
     // Capturing is performed inside the low-level hook, not in a TextBox. This prevents the
@@ -102,23 +104,25 @@ public sealed class InputCapture : IDisposable
     public void BeginHotkeyCapture(Action<HotkeyBinding> completed)
     {
         ArgumentNullException.ThrowIfNull(completed);
-        lock (_gate)
+        if (_remote) throw new InvalidOperationException("먼저 PC로 복귀한 뒤 단축키를 변경해 주세요.");
+        PostInput(() =>
         {
-            if (_remote) throw new InvalidOperationException("휴대폰 입력 중에는 단축키를 변경할 수 없습니다. 먼저 노트북으로 복귀해 주세요.");
+            if (_remote) return;
             _captureCallback = completed;
             _suppressUntilUp.Clear();
-        }
+        });
     }
 
     public void CancelHotkeyCapture()
     {
-        lock (_gate) _captureCallback = null;
+        PostInput(() => _captureCallback = null);
     }
 
     private void Run()
     {
         try
         {
+            DesktopGeometry.UsePhysicalCoordinates();
             _sink = new Sink(this);
             var devices = new[] { new RawDevice { Page = 1, Usage = 2, Flags = 0x100, Target = _sink.Handle } };
             if (!RegisterRawInputDevices(devices, 1, (uint)Marshal.SizeOf<RawDevice>())) throw new Win32Exception();
@@ -130,12 +134,13 @@ public sealed class InputCapture : IDisposable
             if (_keyboardHook == 0 || _mouseHook == 0) throw new Win32Exception();
 
             _started.TrySetResult();
+            if (!_commands.IsEmpty) PostMessage(_sink.Handle, 0x8004, 0, 0);
             Application.Run();
         }
         catch (Exception ex)
         {
             _started.TrySetException(ex);
-            Fault?.Invoke($"입력 훅 시작 실패: {ex.Message}");
+            Notify(() => Fault?.Invoke($"입력 훅 시작 실패: {ex.GetType().Name}"));
         }
         finally
         {
@@ -155,8 +160,12 @@ public sealed class InputCapture : IDisposable
 
     public void Activate(bool preserveLocalModifierUps = true)
     {
-        if (!TryActivate(preserveLocalModifierUps, out var blocked))
-            throw new InputTransitionBlockedException(blocked);
+        OnInputThreadAsync(() =>
+        {
+            if (!TryActivateCore(preserveLocalModifierUps, out var blocked))
+                throw new InputTransitionBlockedException(blocked);
+            return true;
+        }).GetAwaiter().GetResult();
     }
 
     public async Task<bool> ActivateWhenReleasedAsync(
@@ -169,7 +178,15 @@ public sealed class InputCapture : IDisposable
         {
             token.ThrowIfCancellationRequested();
             if (!isCurrent()) return false;
-            if (TryActivate(preserveLocalModifierUps, out var blocked)) return true;
+            var attempt = await OnInputThreadAsync(() =>
+            {
+                if (!isCurrent()) return (Active: false, Blocked: Array.Empty<int>());
+                var active = TryActivateCore(preserveLocalModifierUps, out var keys);
+                return (Active: active, Blocked: keys);
+            });
+            if (attempt.Active) return true;
+            if (!isCurrent()) return false;
+            var blocked = attempt.Blocked;
             if (Environment.TickCount64 >= deadline)
                 throw new InputTransitionBlockedException(blocked);
             var message = $"전환 대기 · {InputTransitionBlockedException.Describe(blocked)}을(를) 놓으면 전환합니다.";
@@ -178,8 +195,9 @@ public sealed class InputCapture : IDisposable
         }
     }
 
-    private bool TryActivate(bool preserveLocalModifierUps, out int[] blocked)
+    private bool TryActivateCore(bool preserveLocalModifierUps, out int[] blocked, bool allowSwitchChord = true)
     {
+        var before = Generation;
         lock (_gate)
         {
             ObjectDisposedException.ThrowIf(_disposed, this);
@@ -190,6 +208,7 @@ public sealed class InputCapture : IDisposable
                 HotkeyPhysicalKeys(_toggleHotkey));
             allowed.UnionWith(
                 HotkeyPhysicalKeys(_nextDeviceHotkey));
+            if (!allowSwitchChord) allowed.Clear();
             var pressed = new List<int>();
             for (int vk = 1; vk < 255; vk++)
                 if ((_readKeyState(vk) & 0x8000) != 0) pressed.Add(vk);
@@ -214,7 +233,11 @@ public sealed class InputCapture : IDisposable
             _buttons = 0;
             _wheel = 0;
             _pan = 0;
-            _remote = true;
+            if ((before & 1) != 0 || Interlocked.CompareExchange(ref _captureState, before + 1, before) != before)
+            {
+                blocked = [];
+                return false;
+            }
         }
         UpdateRemoteShortcutFallbacks();
         return true;
@@ -222,15 +245,28 @@ public sealed class InputCapture : IDisposable
 
     public void Deactivate()
     {
-        lock (_gate)
+        // Fail open before any lock, message, UI or Bluetooth work. Cleanup is
+        // ordered on the owner thread, never a synchronous cross-thread SendMessage.
+        long before;
+        do { before = Generation; }
+        while (!DeactivateIfGeneration(before));
+    }
+
+    public bool DeactivateIfGeneration(long before)
+    {
+        if (Interlocked.CompareExchange(ref _captureState, (before | 1) + 1, before) != before) return false;
+        _calibrating = false;
+        PostInput(() =>
         {
-            _remote = false;
+            if (_remote) return; // A newer activation owns its own clean state.
             _keys.Clear();
             _buttons = 0;
             _wheel = 0;
             _pan = 0;
-        }
-        UpdateRemoteShortcutFallbacks();
+            _edgeEntry.Disarm();
+            UpdateRemoteShortcutFallbacks();
+        });
+        return true;
     }
 
     private void UpdateRemoteShortcutFallbacks()
@@ -240,7 +276,7 @@ public sealed class InputCapture : IDisposable
         // Never call while holding _gate from another thread.
         if (_sink is not { } sink || sink.Handle == 0) return;
         if (Thread.CurrentThread == _thread) { sink.UpdateRemoteShortcuts(); return; }
-        SendMessage(sink.Handle, 0x8003, 0, 0);
+        PostMessage(sink.Handle, 0x8003, 0, 0);
     }
 
     public async void RefreshHooks()
@@ -273,6 +309,10 @@ public sealed class InputCapture : IDisposable
         {
             // A missed key-up must not permanently hide subsequent shortcut presses.
             _downKeys.Clear();
+            _physicalMouseButtons = 0;
+            foreach (var key in new[] { 0x01, 0x02, 0x04, 0x05, 0x06 })
+                if ((_readKeyState(key) & 0x8000) != 0) _physicalMouseButtons = 1;
+            UpdateHeldInputs();
             _suppressUntilUp.RemoveWhere(key => (_readKeyState(key) & 0x8000) == 0);
             _localPassthroughUntilUp.RemoveWhere(key => (_readKeyState(key) & 0x8000) == 0);
         }
@@ -298,6 +338,7 @@ public sealed class InputCapture : IDisposable
             {
                 firstDown = !up && _downKeys.Add(key);
                 if (up) _downKeys.Remove(key);
+                UpdateHeldInputs();
 
                 if (_suppressUntilUp.Contains(key))
                 {
@@ -333,7 +374,7 @@ public sealed class InputCapture : IDisposable
 
             if (capturedBinding is not null && capturedCallback is not null)
             {
-                capturedCallback(capturedBinding);
+                Notify(() => capturedCallback(capturedBinding));
                 return 1;
             }
 
@@ -358,7 +399,7 @@ public sealed class InputCapture : IDisposable
                                     _localPassthroughUntilUp.Add(down);
                         }
                     }
-                    NextDevice?.Invoke();
+                    Notify(() => NextDevice?.Invoke());
                     return 1;
                 }
 
@@ -374,13 +415,18 @@ public sealed class InputCapture : IDisposable
                                     _localPassthroughUntilUp.Add(down);
                         }
                     }
+                    if (_remote && _calibrating)
+                    {
+                        Emit(new CalibrationMarkPacket());
+                        return 1;
+                    }
                     // Returning to the PC must not wait for the UI/action queue or Bluetooth.
                     if (_remote)
                     {
                         Deactivate();
-                        Emergency?.Invoke();
+                        Notify(() => Emergency?.Invoke());
                     }
-                    else Toggle?.Invoke();
+                    else Notify(() => Toggle?.Invoke());
                     return 1;
                 }
 
@@ -390,7 +436,7 @@ public sealed class InputCapture : IDisposable
                 {
                     lock (_gate) _suppressUntilUp.Add(key);
                     Deactivate();
-                    Emergency?.Invoke();
+                    Notify(() => Emergency?.Invoke());
                     return 1;
                 }
 
@@ -398,7 +444,7 @@ public sealed class InputCapture : IDisposable
                 {
                     lock (_gate) _suppressUntilUp.Add(key);
                     Deactivate();
-                    LockAndReturn?.Invoke();
+                    Notify(() => LockAndReturn?.Invoke());
                     return 1;
                 }
             }
@@ -413,7 +459,7 @@ public sealed class InputCapture : IDisposable
                 if (TryConsumerAction(key, out var consumerAction))
                 {
                     if (!up && firstDown)
-                        Consumer?.Invoke(consumerAction);
+                        Notify(() => Consumer?.Invoke(consumerAction));
                     return 1;
                 }
 
@@ -432,8 +478,8 @@ public sealed class InputCapture : IDisposable
                                 var modifier = _hangulKeyMode == HangulKeyMode.CtrlSpace
                                     ? (byte)0xE0
                                     : (byte)0xE1;
-                                Packet?.Invoke(new KeyboardPacket(_keys.SnapshotWith(modifier, 0x2C)));
-                                Packet?.Invoke(new KeyboardPacket(_keys.Snapshot()));
+                                Emit(new KeyboardPacket(_keys.SnapshotWith(modifier, 0x2C)));
+                                Emit(new KeyboardPacket(_keys.Snapshot()));
                             }
                             return 1;
 
@@ -441,7 +487,7 @@ public sealed class InputCapture : IDisposable
                         {
                             var rightAlt = _keys.Update(0xE6, !up);
                             if (rightAlt is not null)
-                                Packet?.Invoke(new KeyboardPacket(rightAlt));
+                                Emit(new KeyboardPacket(rightAlt));
                             return 1;
                         }
 
@@ -449,7 +495,7 @@ public sealed class InputCapture : IDisposable
                         {
                             var lang1 = _keys.Update(0x90, !up);
                             if (lang1 is not null)
-                                Packet?.Invoke(new KeyboardPacket(lang1));
+                                Emit(new KeyboardPacket(lang1));
                             return 1;
                         }
                     }
@@ -463,14 +509,14 @@ public sealed class InputCapture : IDisposable
 
                 var report = _keys.Update(usage, !up);
 
-                if (report is not null) Packet?.Invoke(new KeyboardPacket(report));
+                if (report is not null) Emit(new KeyboardPacket(report));
                 return _remote ? 1 : CallNextHookEx(0, code, message, data);
             }
         }
         catch (Exception ex)
         {
             Deactivate();
-            Fault?.Invoke($"키보드 처리 오류 — 로컬 복귀: {ex.Message}");
+            Notify(() => Fault?.Invoke($"키보드 처리 오류 — PC 복귀: {ex.GetType().Name}"));
             return CallNextHookEx(0, code, message, data);
         }
     }
@@ -554,7 +600,6 @@ public sealed class InputCapture : IDisposable
 
     private void Raw(nint handle)
     {
-        if (!_remote) return;
 
         uint size = (uint)Marshal.SizeOf<RawInput>();
         uint read = GetRawInputData(
@@ -568,13 +613,32 @@ public sealed class InputCapture : IDisposable
 
         lock (_gate)
         {
-            if (!_remote) return;
-
             var m = raw.Mouse;
+            var physicalFlags = m.Buttons & 0xFFFF;
+            for (var i = 0; i < 5; i++)
+            {
+                if ((physicalFlags & (1u << (i * 2))) != 0) _physicalMouseButtons |= (byte)(1 << i);
+                if ((physicalFlags & (2u << (i * 2))) != 0) _physicalMouseButtons &= (byte)~(1 << i);
+            }
+            UpdateHeldInputs();
+            if (!_remote)
+            {
+                if (_automaticEnabled && (m.Flags & 1) == 0 && DesktopGeometry.Cursor(out var point))
+                {
+                    var edge = _edgeEntry.Observe(_screens, _phoneSide, point.X, point.Y, m.X,
+                        !_automaticReady || _captureCallback is not null || HasHeldInput);
+                    if (edge is not null)
+                    {
+                        var generation = Generation;
+                        Notify(() => EdgeEntered?.Invoke(generation, edge));
+                    }
+                }
+                return;
+            }
             if ((m.Flags & 1) != 0)
             {
                 Deactivate();
-                Fault?.Invoke("절대 좌표 입력 장치 미지원 — 로컬 복귀");
+                Notify(() => Fault?.Invoke("절대 좌표 입력 장치 미지원 — PC 복귀"));
                 return;
             }
 
@@ -596,7 +660,7 @@ public sealed class InputCapture : IDisposable
             _pan %= 120;
 
             if (m.X != 0 || m.Y != 0 || flags != 0)
-                Packet?.Invoke(new PointerPacket(_buttons, m.X, m.Y, wheel, pan));
+                Emit(new PointerPacket(_buttons, m.X, m.Y, wheel, pan));
         }
     }
 
@@ -618,17 +682,19 @@ public sealed class InputCapture : IDisposable
                 if (m.Msg == 0xFF) _owner.Raw(m.LParam);
                 if (m.Msg == 0x8001) Application.ExitThread();
                 if (m.Msg == 0x8003) UpdateRemoteShortcuts();
+                if (m.Msg == 0x8004)
+                    while (_owner._commands.TryDequeue(out var command)) command();
                 if (m.Msg == 0x0312 && _owner._remote && !_owner.IsCapturingHotkey)
                 {
                     if ((int)m.WParam == EmergencyId)
                     {
                         _owner.Deactivate();
-                        _owner.Emergency?.Invoke();
+                        _owner.Notify(() => _owner.Emergency?.Invoke());
                     }
                     else if ((int)m.WParam == LockId)
                     {
                         _owner.Deactivate();
-                        _owner.LockAndReturn?.Invoke();
+                        _owner.Notify(() => _owner.LockAndReturn?.Invoke());
                     }
                 }
                 if (m.Msg == 0x8002)
@@ -643,7 +709,7 @@ public sealed class InputCapture : IDisposable
             catch (Exception ex)
             {
                 _owner.Deactivate();
-                _owner.Fault?.Invoke($"마우스 처리 오류 — 로컬 복귀: {ex.Message}");
+                _owner.Notify(() => _owner.Fault?.Invoke($"마우스 처리 오류 — PC 복귀: {ex.GetType().Name}"));
             }
 
             base.WndProc(ref m);
@@ -684,6 +750,8 @@ public sealed class InputCapture : IDisposable
     {
         if (_disposed) return;
         _disposed = true;
+        _dispatchWatchdog?.Dispose();
+        _dispatch.Writer.TryComplete();
         while (_hookRefreshes.TryDequeue(out var completion)) completion.TrySetCanceled();
         Deactivate();
         CancelHotkeyCapture();

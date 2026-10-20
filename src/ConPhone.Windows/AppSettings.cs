@@ -94,9 +94,7 @@ public static class SettingsStore
 
     public static ConPhoneSettings Normalize(ConPhoneSettings settings)
     {
-        // 1.0 migrates even explicitly disabled legacy settings to automatic text sync.
-        settings.ClipboardSyncEnabled = true;
-        settings.ClipboardAutoSendText = true;
+        // Keep an explicit opt-out: HID-only use must survive restart.
         settings.CaptureClipboardText = true;
         settings.ClipboardAutoSendImages = false;
         settings.CaptureClipboardImages = false;

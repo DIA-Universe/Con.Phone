@@ -175,9 +175,9 @@ internal static class InputSelfTest
             for (var offset = 0; offset < 24; offset += 4) Marshal.WriteInt32(data, offset, 0);
             Marshal.WriteInt32(data, key);
             Marshal.WriteInt32(data, 8, 0x10 | (up ? 0x80 : 0));
-            typeof(InputCapture).GetMethod("KeyboardHook",
+            input.OnInputThreadAsync(() => typeof(InputCapture).GetMethod("KeyboardHook",
                 System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!
-                .Invoke(input, [0, (nint)(up ? 0x101 : 0x100), data]);
+                .Invoke(input, [0, (nint)(up ? 0x101 : 0x100), data])).GetAwaiter().GetResult();
         }
         finally { Marshal.FreeHGlobal(data); }
     }

@@ -123,6 +123,12 @@ public sealed class BleHidServer : IDisposable
     public bool Ready => ServiceAvailable && _approved is { } id && IsReady(id);
     public int MousePacingIntervalMs => PointerPacing.FallbackIntervalMs;
 
+    public void ClearInputReports()
+    {
+        _keyboardValue = new byte[Hid.KeyboardReportLength];
+        _mouseValue = new byte[Hid.MouseReportLength];
+    }
+
     public BleHidServer() : this((provider, parameters) => provider.StartAdvertising(parameters)) { }
 
     internal BleHidServer(Action<GattServiceProvider, GattServiceProviderAdvertisingParameters> startAdvertising,
@@ -162,7 +168,7 @@ public sealed class BleHidServer : IDisposable
         await _startGate.WaitAsync();
         try {
             if (stopGeneration == Interlocked.Read(ref _stopGeneration) &&
-                (!automaticRecovery || !_hasConnectedPeer())) await StartCoreAsync();
+                (!automaticRecovery || (!_hasConnectedPeer() && BlePeerActivity.IsQuiet))) await StartCoreAsync();
         }
         catch {
             // An advertisement error must not remove a constructed HID service
@@ -319,7 +325,7 @@ public sealed class BleHidServer : IDisposable
         if (IsAdvertising(_advertisementStatus(provider))) return;
         // Publication status is not connection health. Keep the existing GATT
         // table untouched even during partial subscription or HID suspend.
-        if (_hasConnectedPeer()) return;
+        if (_hasConnectedPeer() || !BlePeerActivity.IsQuiet) return;
         _lastOperation = "GattServiceProvider.StartAdvertising";
 
         try
@@ -355,6 +361,7 @@ public sealed class BleHidServer : IDisposable
             _advertisingBackoff.Reset();
             return false; // The link is usable; discovery is deferred until idle.
         }
+        if (!BlePeerActivity.IsQuiet) return false;
 
         if (!await _recoveryGate.WaitAsync(0).ConfigureAwait(false))
             return false;
@@ -443,6 +450,7 @@ public sealed class BleHidServer : IDisposable
         TypedEventHandler<GattLocalCharacteristic, object> subscribed = (_, _) =>
         {
             if (lifetime.IsDisposed) return;
+            BlePeerActivity.Observe();
             try {
                 foreach (var client in c.SubscribedClients)
                     if (TryActiveSession(client, out var session, out var id) && session is not null)
@@ -463,6 +471,7 @@ public sealed class BleHidServer : IDisposable
 
     private void TrackSession(string id, GattSession session)
     {
+        BlePeerActivity.Observe();
         lock (_sessionGate)
         {
             if (_disposed || _resources.IsDisposed || !BleNativeState.IsActive(session)) return;
@@ -486,6 +495,7 @@ public sealed class BleHidServer : IDisposable
                 {
                     if (_disposed || _resources.IsDisposed || _resources.Id != generation || !_sessions.TryGetValue(id, out var current) ||
                         !ReferenceEquals(current, lease)) return;
+                    BlePeerActivity.Observe();
                     if (args.Status == GattSessionStatus.Closed)
                     {
                         // A queued Closed event can arrive after Windows has
