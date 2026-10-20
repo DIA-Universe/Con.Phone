@@ -25,13 +25,8 @@ public sealed partial class MainForm
             return;
         }
         if (!Current()) return;
-        Interlocked.Exchange(ref _remoteSessionEpoch, epoch);
         _pointerScaler.Reset();
-        if (!await ActivateInputWhenReleasedAsync(epoch))
-        {
-            Interlocked.CompareExchange(ref _remoteSessionEpoch, 0, epoch);
-            return;
-        }
+        if (!await ActivateInputWhenReleasedAsync(epoch)) return;
         SessionDiagnostics.Write($"input=remote source=manual epoch={epoch}");
         Log($"휴대폰 조작 중 · {HotkeyCatalog.Display(_settings.EmergencyHotkey)}로 PC에 바로 돌아와요.");
         _ = SyncLatestClipboardToPhoneSafeAsync(epoch, target);

@@ -87,15 +87,13 @@ internal static class InputIsolationSelfTest
             });
             await competing.Started;
             block = true;
-            var activation = competing.OnInputThreadAsync(() =>
-            {
-                try { competing.Activate(); return true; }
-                catch (InputTransitionBlockedException) { return false; }
-            });
+            var activationGeneration = competing.Generation;
+            var activation = competing.ActivateWhenReleasedAsync(
+                () => competing.Generation == activationGeneration, null, CancellationToken.None);
             Check(snapshotStarted.Wait(1000), "activation key snapshot started");
             competing.Deactivate();
             finishSnapshot.Set();
-            Check(!await activation && !competing.IsRemote, "safety return wins a concurrent activation snapshot");
+            Check(!await activation && !competing.IsRemote, "safety return cancels pending manual activation without a later retry");
         }
         finally { release.Set(); input.Deactivate(); }
         Console.WriteLine("PASS: Native input-thread isolation and stale-generation tests; physical Bluetooth/phone NOT tested.");

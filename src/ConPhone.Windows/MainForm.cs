@@ -1798,12 +1798,23 @@ public sealed partial class MainForm : Form
     private async Task<bool> ActivateInputWhenReleasedAsync(long epoch, bool preserveLocalModifierUps = true)
     {
         var target = _ble.ApprovedId;
-        var activated = await _input.ActivateWhenReleasedAsync(
-            () => !_closing && _desktopInteractive && epoch == Volatile.Read(ref _epoch) && _inputConnectionReady && target == _ble.ApprovedId,
-            message => { Log(message); _feedback.Text = message; },
-            _lifetime.Token, preserveLocalModifierUps);
-        if (!activated && !_closing) _feedback.Text = "입력 전환을 취소했습니다. 연결 상태를 확인하세요.";
-        return activated;
+        var generation = _input.Generation;
+        var activated = false;
+        Interlocked.Exchange(ref _remoteSessionEpoch, epoch);
+        try
+        {
+            activated = await _input.ActivateWhenReleasedAsync(
+                () => !_closing && _desktopInteractive && epoch == Volatile.Read(ref _epoch) &&
+                    generation == _input.Generation && _inputConnectionReady && target == _ble.ApprovedId,
+                message => { Log(message); _feedback.Text = message; },
+                _lifetime.Token, preserveLocalModifierUps);
+            if (!activated && !_closing) _feedback.Text = "입력 전환을 취소했습니다. 연결 상태를 확인하세요.";
+            return activated;
+        }
+        finally
+        {
+            if (!activated) Interlocked.CompareExchange(ref _remoteSessionEpoch, 0, epoch);
+        }
     }
 
     private async Task SyncLatestClipboardToPhoneSafeAsync(
